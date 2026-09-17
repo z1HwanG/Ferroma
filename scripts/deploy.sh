@@ -642,11 +642,16 @@ print_db_help() {
     printf '\n' >&2
     if [ -n "${_pgc:-}" ]; then
         # The database is a container (1Panel and friends): there is no `postgres`
-        # system user on the host, so the commands go through `docker exec`.
-        printf "    docker exec -i %s psql -U %s -c \"ALTER ROLE %s WITH PASSWORD '<the password in .env>';\"\n" \
-            "$_pgc" "$PG_SUPERUSER" "$DB_USER" >&2
-        printf '    docker exec -i %s createdb -U %s -O %s --encoding=UTF8 --locale=C %s\n' \
-            "$_pgc" "$PG_SUPERUSER" "$DB_USER" "$DB_NAME" >&2
+        # system user on the host, so the commands go through `docker exec`. `-d
+        # template1` and `--maintenance-db=template1` because the cluster may have
+        # no database called postgres to be the default one.
+        _su=$(docker exec -i "$_pgc" sh -c 'printf "%s" "$POSTGRES_USER"' 2>/dev/null || true)
+        [ -n "$_su" ] || _su="$PG_SUPERUSER"
+        printf "    docker exec -i %s psql -d template1 -U %s -c \"ALTER ROLE %s WITH PASSWORD '<the password in .env>';\"\n" \
+            "$_pgc" "$_su" "$DB_USER" >&2
+        printf '    docker exec -i %s createdb --maintenance-db=template1 -U %s -O %s --encoding=UTF8 --locale=C %s\n' \
+            "$_pgc" "$_su" "$DB_USER" "$DB_NAME" >&2
+        info "this container's configured superuser is '$_su' — the app role may itself be it"
     else
         printf "    sudo -u postgres psql -c \"CREATE ROLE %s LOGIN PASSWORD '<the password in .env>';\"\n" "$DB_USER" >&2
         printf '    sudo -u postgres createdb -O %s --encoding=UTF8 --locale=C %s\n' "$DB_USER" "$DB_NAME" >&2
@@ -678,9 +683,18 @@ run_superuser_sql() {
     # has peer/trust access to its server, which is the only way in when the host
     # has no `postgres` system user. Only when the configured database *is* this
     # machine, so a remote database is never provisioned by accident.
+    #
+    # The superuser is not necessarily `postgres`: the image creates the role named
+    # by POSTGRES_USER, and a panel-provisioned cluster often makes that the only
+    # one — there may be no role called postgres at all, and no database called
+    # postgres either. The container knows what it was told, so ask it.
     if db_host_is_local; then
         for _c in $(local_postgres_containers); do
-            docker exec -i "$_c" psql -d template1 -U "$PG_SUPERUSER" -v ON_ERROR_STOP=1 -tA < "$_file" >/dev/null 2>&1 && return 0
+            _configured=$(docker exec -i "$_c" sh -c 'printf "%s" "$POSTGRES_USER"' 2>/dev/null || true)
+            for _role in "$_configured" "$PG_SUPERUSER" "$DB_USER"; do
+                [ -n "$_role" ] || continue
+                docker exec -i "$_c" psql -d template1 -U "$_role" -v ON_ERROR_STOP=1 -tA < "$_file" >/dev/null 2>&1 && return 0
+            done
         done
     fi
     if [ -n "$PG_SUPER_PASSWORD" ] && have psql; then
