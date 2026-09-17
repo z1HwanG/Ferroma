@@ -966,18 +966,28 @@ prepare_data_volume() {
 }
 
 migrate_database() {
-    step "Creating the schema (ferroma database init)"
-    # `database init` also *creates* the database, and to do that it connects to a
-    # maintenance database named `postgres` — which a managed or panel-provisioned
-    # cluster does not always have. That is not fatal: the server applies the
-    # migrations itself on startup (`database.run_migrations` defaults to true), so
-    # this is a convenience step, not a prerequisite.
+    step "Creating the schema"
+
+    # `database init` also *creates* the database when it is missing, and to do
+    # that it connects to a maintenance database named `postgres` — which a
+    # managed or panel-provisioned cluster does not always have. The server applies
+    # the migrations itself on startup (`database.run_migrations` defaults to true),
+    # so on such a cluster the step is skipped rather than left to fail.
+    if _maint=$(psql_app -tAc "select 1 from pg_database where datname = 'postgres'"); then
+        if [ "$(printf '%s' "$_maint" | tr -d ' \r\n')" != "1" ]; then
+            info "this cluster has no maintenance database named postgres"
+            info "the migrations are applied by the server at startup — skipping database init"
+            MIGRATE_DEFERRED=1
+            return 0
+        fi
+    fi
+
     if compose run --rm -T ferroma database init; then
         return 0
     fi
 
-    warn "ferroma database init could not complete — most often because this cluster has"
-    warn "no maintenance database named postgres, or the role may not create databases."
+    warn "ferroma database init could not complete — most often because the role may not"
+    warn "create databases, or the target database is not the one it connected to."
     info "the server applies the migrations itself when it starts, so this is not fatal:"
     info "starting the stack now, and checking the schema afterwards."
     MIGRATE_DEFERRED=1
