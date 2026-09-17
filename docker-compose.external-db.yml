@@ -54,6 +54,13 @@ services:
     environment:
       FERROMA_CONFIG: /etc/ferroma/ferroma.toml
       FERROMA_DATA_DIR: /var/lib/ferroma
+      # `.env` writes the short name — the one the other compose files
+      # interpolate — and the server reads the *alias*. Without this line the
+      # value is passed through under a name `Config::load` does not know, so
+      # `api.public_url` silently falls back to its default
+      # (`http://localhost:8080`), which is what then lands in `.well-known/ferroma`
+      # and in the links inside notification mail.
+      FERROMA_API_PUBLIC_URL: ${FERROMA_PUBLIC_URL:?set FERROMA_PUBLIC_URL in .env}
     volumes:
       # Maildir, attachments, DKIM keys, backups. This is the volume to back up.
       - ferroma-data:/var/lib/ferroma
