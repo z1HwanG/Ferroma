@@ -313,6 +313,9 @@ NO_TLS=0
 ENABLE_DKIM=0
 REBUILD=0
 DOWN_VOLUMES=0
+# 1 when `database init` could not create the schema itself, so the stack has to
+# prove it afterwards that the server applied the migrations on startup.
+MIGRATE_DEFERRED=0
 
 need_value() {
     [ "$#" -ge 2 ] || die "option $1 needs a value"
@@ -406,6 +409,12 @@ load_defaults() {
     DB_USER="${DB_USER_ARG:-${DB_USER:-$DEFAULT_DB_USER}}"
     DB_NAME="${DB_NAME_ARG:-${DB_NAME:-$DEFAULT_DB_NAME}}"
     DB_PASSWORD="${DB_PASSWORD_ARG:-$DB_PASSWORD}"
+    # A hand-edited DATABASE_URL survives a re-run: the component flags are the
+    # only thing that asks the script to rebuild it. (See `database_url`.)
+    DB_COMPONENTS_GIVEN=0
+    if [ -n "$DB_HOST_ARG$DB_PORT_ARG$DB_USER_ARG$DB_NAME_ARG$DB_PASSWORD_ARG" ]; then
+        DB_COMPONENTS_GIVEN=1
+    fi
     FERROMA_IMAGE="${IMAGE_ARG:-${FERROMA_IMAGE:-$DEFAULT_IMAGE}}"
     POSTGRES_IMAGE="${POSTGRES_IMAGE:-$DEFAULT_PG_IMAGE}"
     DKIM_SELECTOR="${DKIM_SELECTOR:-default}"
@@ -467,6 +476,19 @@ public_url() {
     fi
 }
 
+# The connection string. A hand-edited `DATABASE_URL` is left alone — somebody who
+# appended `?sslmode=require`, used `postgresql://` rather than `postgres://`, or
+# pointed it at a differently named database meant it — and only a `--db-*` flag
+# on the command line, or a missing value, makes the script write its own.
+database_url() {
+    _existing=$(env_get DATABASE_URL)
+    if [ -n "$_existing" ] && [ "$DB_COMPONENTS_GIVEN" = 0 ]; then
+        printf '%s' "$_existing"
+    else
+        printf 'postgres://%s:%s@%s:%s/%s' "$DB_USER" "$DB_PASSWORD" "$DB_HOST" "$DB_PORT" "$DB_NAME"
+    fi
+}
+
 seed_env_file() {
     if [ ! -f "$ENV_FILE" ]; then
         {
@@ -486,7 +508,11 @@ seed_env_file() {
 write_env() {
     step "Writing .env"
 
-    env_set DATABASE_URL "postgres://$DB_USER:$DB_PASSWORD@$DB_HOST:$DB_PORT/$DB_NAME"
+    env_set DATABASE_URL "$(database_url)"
+    if [ -n "$(env_get DATABASE_URL)" ] && [ "$DB_COMPONENTS_GIVEN" = 0 ] \
+        && [ "$(env_get DATABASE_URL)" != "postgres://$DB_USER:$DB_PASSWORD@$DB_HOST:$DB_PORT/$DB_NAME" ]; then
+        info "kept the DATABASE_URL already in .env (a --db-* flag rewrites it)"
+    fi
     env_set POSTGRES_USER "$DB_USER"
     env_set POSTGRES_PASSWORD "$DB_PASSWORD"
     env_set POSTGRES_DB "$DB_NAME"
@@ -638,11 +664,15 @@ print_db_help() {
 # deliberately runs as.
 run_superuser_sql() {
     _file="$1"
+    # `-d template1`, not the default database: psql defaults to a database named
+    # after the user (`postgres` for the postgres role), and a cluster — a managed
+    # or panel-provisioned one especially — does not always have it. Every cluster
+    # has template1.
     if [ "$USE_SUDO" = 1 ]; then
-        sudo -n -u postgres psql -v ON_ERROR_STOP=1 -tA < "$_file" >/dev/null 2>&1 && return 0
+        sudo -n -u postgres psql -d template1 -v ON_ERROR_STOP=1 -tA < "$_file" >/dev/null 2>&1 && return 0
     fi
     if [ "$(id -u)" = 0 ]; then
-        su -s /bin/sh postgres -c 'psql -v ON_ERROR_STOP=1 -tA' < "$_file" >/dev/null 2>&1 && return 0
+        su -s /bin/sh postgres -c 'psql -d template1 -v ON_ERROR_STOP=1 -tA' < "$_file" >/dev/null 2>&1 && return 0
     fi
     # PostgreSQL in a container on this host (1Panel and friends): its own psql
     # has peer/trust access to its server, which is the only way in when the host
@@ -650,17 +680,17 @@ run_superuser_sql() {
     # machine, so a remote database is never provisioned by accident.
     if db_host_is_local; then
         for _c in $(local_postgres_containers); do
-            docker exec -i "$_c" psql -U "$PG_SUPERUSER" -v ON_ERROR_STOP=1 -tA < "$_file" >/dev/null 2>&1 && return 0
+            docker exec -i "$_c" psql -d template1 -U "$PG_SUPERUSER" -v ON_ERROR_STOP=1 -tA < "$_file" >/dev/null 2>&1 && return 0
         done
     fi
     if [ -n "$PG_SUPER_PASSWORD" ] && have psql; then
-        PGPASSWORD="$PG_SUPER_PASSWORD" PGCONNECT_TIMEOUT=5 psql -w -h "$DB_HOST" -p "$DB_PORT" -U "$PG_SUPERUSER" \
+        PGPASSWORD="$PG_SUPER_PASSWORD" PGCONNECT_TIMEOUT=5 psql -w -d template1 -h "$DB_HOST" -p "$DB_PORT" -U "$PG_SUPERUSER" \
             -v ON_ERROR_STOP=1 -tA < "$_file" >/dev/null 2>&1 && return 0
     fi
     if [ -n "$PG_SUPER_PASSWORD" ]; then
         docker run --rm --network host -v "$_file:/ferroma-provision.sql:ro" \
             -e PGPASSWORD="$PG_SUPER_PASSWORD" -e PGCONNECT_TIMEOUT=5 "$POSTGRES_IMAGE" \
-            psql -w -h "$DB_HOST" -p "$DB_PORT" -U "$PG_SUPERUSER" \
+            psql -w -d template1 -h "$DB_HOST" -p "$DB_PORT" -U "$PG_SUPERUSER" \
             -v ON_ERROR_STOP=1 -tAf /ferroma-provision.sql >/dev/null 2>&1 && return 0
     fi
     return 1
@@ -937,7 +967,21 @@ prepare_data_volume() {
 
 migrate_database() {
     step "Creating the schema (ferroma database init)"
-    compose run --rm -T ferroma database init
+    # `database init` also *creates* the database, and to do that it connects to a
+    # maintenance database named `postgres` — which a managed or panel-provisioned
+    # cluster does not always have. That is not fatal: the server applies the
+    # migrations itself on startup (`database.run_migrations` defaults to true), so
+    # this is a convenience step, not a prerequisite.
+    if compose run --rm -T ferroma database init; then
+        return 0
+    fi
+
+    warn "ferroma database init could not complete — most often because this cluster has"
+    warn "no maintenance database named postgres, or the role may not create databases."
+    info "the server applies the migrations itself when it starts, so this is not fatal:"
+    info "starting the stack now, and checking the schema afterwards."
+    MIGRATE_DEFERRED=1
+    return 0
 }
 
 start_stack() {
@@ -1178,6 +1222,11 @@ cmd_deploy() {
     install_tls
     start_stack
     wait_healthy
+    if [ "$MIGRATE_DEFERRED" = 1 ]; then
+        step "Confirming the schema the server just applied"
+        compose exec -T ferroma ferroma database status \
+            || warn "that failed too — read the container log for the migration error"
+    fi
     first_run
     dkim_key
     if [ "$ENABLE_DKIM" = 1 ]; then
