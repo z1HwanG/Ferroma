@@ -1,0 +1,94 @@
+# =============================================================================
+# Ferroma — end-to-end acceptance configuration
+# =============================================================================
+# Used by the acceptance run (`tests/e2e/`) and by anyone who wants a complete,
+# running platform on a developer machine without privileged ports.
+#
+#   ferroma serve --config config/ferroma.smoke.toml
+#
+# Ports are all above 1024 so no elevation is needed, and TLS is served with a
+# certificate generated at boot — mail clients cannot verify it, which is exactly
+# why this file is not the one production uses.
+# =============================================================================
+
+[server]
+name = "Ferroma"
+hostname = "localhost"
+data_dir = "./.cache/ferroma-smoke"
+log_level = "info"
+log_format = "text"
+
+[database]
+# Overridden by DATABASE_URL when the acceptance run points at a scratch database.
+url = "postgres://ferroma@127.0.0.1:5433/postgres"
+run_migrations = true
+
+[smtp]
+enabled = true
+host = "127.0.0.1"
+# 25/587/465 need root on Unix and a firewall rule everywhere; 2525/2587 keep the
+# acceptance run self-contained.
+port = 2525
+submission_port = 2587
+smtps_port = 2465
+banner = "Ferroma ESMTP acceptance"
+# Unencrypted AUTH is allowed here so the run can exercise the SASL path without a
+# trusted certificate. Never do this in production.
+require_tls_for_auth = false
+require_auth_on_submission = true
+
+[imap]
+enabled = true
+host = "127.0.0.1"
+port = 1143
+imaps_port = 1993
+banner = "Ferroma IMAP acceptance"
+require_tls_for_login = false
+
+[tls]
+enabled = true
+# No PEM configured: a self-signed certificate is generated at boot.
+self_signed_fallback = true
+allow_insecure_dev_mode = true
+min_version = "1.2"
+
+[queue]
+enabled = true
+workers = 2
+# Short schedule so the acceptance run does not wait an hour to observe a retry.
+retry_schedule_secs = [2, 5, 15, 60]
+max_attempts = 3
+poll_interval_secs = 1
+bounce_on_failure = true
+
+[api]
+enabled = true
+host = "127.0.0.1"
+port = 8080
+# HTTPS on 8443 with the generated certificate.
+tls_port = 8443
+base_path = "/api/v1"
+public_url = "http://127.0.0.1:8080"
+jwt_secret = "acceptance-run-secret-that-is-at-least-32-bytes"
+secure_cookies = false
+serve_frontend = true
+trust_proxy_headers = false
+
+[storage]
+# fsync off: the acceptance run creates and discards dozens of mailboxes, and the
+# data is worthless. `config/ferroma.toml` leaves it on.
+fsync_on_write = false
+enforce_quota = true
+
+[limits]
+# Small enough that the message-size and quota paths can actually be exercised.
+# `max_attachment_size` has to come down with `max_message_size`: the validator
+# refuses an attachment limit larger than the message limit.
+max_message_size = 1048576
+max_attachment_size = 1048576
+max_recipients = 10
+max_connections = 50
+max_connections_per_ip = 20
+mailbox_quota = 8388608
+max_failed_logins = 5
+login_lockout_secs = 60

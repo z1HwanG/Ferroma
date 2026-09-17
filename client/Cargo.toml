@@ -1,0 +1,48 @@
+[package]
+name = "ferroma-client"
+description = "Ferroma official desktop client: shared core (sync, cache, outbox, search) plus the platform UI shell"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "ferroma-client"
+path = "src/main.rs"
+
+[dependencies]
+ferroma-core = { workspace = true }
+tokio = { workspace = true }
+futures-util = { workspace = true }
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio-rustls",
+    "sqlite",
+    "macros",
+    "migrate",
+    "chrono",
+] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+base64 = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+rand = { workspace = true }
+url = { workspace = true }
+once_cell = { workspace = true }
+regex = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+dirs = "6"
+tokio-tungstenite = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = { workspace = true }

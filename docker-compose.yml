@@ -1,0 +1,109 @@
+# =============================================================================
+# Ferroma — development / single-host deployment
+# =============================================================================
+#   cp .env.example .env      # then edit the secrets
+#   docker compose up -d
+#   docker compose logs -f ferroma
+#
+# This file is the "just make it run" stack: Ferroma plus PostgreSQL, plaintext
+# ports, TLS off. For a real MX see docker-compose.prod.yml.
+# =============================================================================
+
+name: ferroma
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ferroma-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ferroma}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-ferroma}
+      # Deterministic collation: an MX must sort the same on every host.
+      POSTGRES_INITDB_ARGS: '--encoding=UTF8 --locale=C'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-ferroma} -d ${POSTGRES_DB:-ferroma}']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - ferroma-internal
+    # Not published by default: only Ferroma needs to reach the database.
+    expose:
+      - '5432'
+
+  ferroma:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ferroma:${FERROMA_VERSION:-dev}
+    container_name: ferroma
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # --- database ---
+      DATABASE_URL: postgres://${POSTGRES_USER:-ferroma}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ferroma}
+      # --- identity ---
+      FERROMA_HOSTNAME: ${FERROMA_HOSTNAME:-mail.example.com}
+      FERROMA_DATA_DIR: /var/lib/ferroma
+      FERROMA_LOG_LEVEL: ${FERROMA_LOG_LEVEL:-info}
+      FERROMA_API_PUBLIC_URL: ${FERROMA_PUBLIC_URL:-http://localhost:8080}
+      # --- secrets (see .env.example) ---
+      FERROMA_JWT_SECRET: ${FERROMA_JWT_SECRET:?set FERROMA_JWT_SECRET in .env}
+      # --- TLS ---
+      FERROMA_TLS_ENABLED: ${FERROMA_TLS_ENABLED:-false}
+      FERROMA_TLS_CERT: ${FERROMA_TLS_CERT:-}
+      FERROMA_TLS_KEY: ${FERROMA_TLS_KEY:-}
+    ports:
+      # Inbound mail. Port 25 must be reachable from the internet for Ferroma to
+      # receive mail from other servers.
+      - '${SMTP_PORT:-25}:25'
+      # Authenticated submission from mail clients.
+      - '${SUBMISSION_PORT:-587}:587'
+      # IMAP for Thunderbird, Apple Mail, Outlook, phones.
+      - '${IMAP_PORT:-143}:143'
+      # HTTP API + Webmail + Admin.
+      - '${HTTP_PORT:-8080}:8080'
+    volumes:
+      # Maildir, attachments, TLS material. Back this up.
+      - ferroma-data:/var/lib/ferroma
+      # Operator configuration; the image ships a full default at the same path.
+      - ./config/ferroma.toml:/etc/ferroma/ferroma.toml:ro
+      # Certificates, when TLS is terminated here rather than by a reverse proxy.
+      - ./tls:/etc/ferroma/tls:ro
+    healthcheck:
+      test: ['CMD', 'ferroma', 'healthcheck', '--url', 'http://127.0.0.1:8080/api/v1/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '5'
+    networks:
+      - ferroma-internal
+      - ferroma-public
+
+volumes:
+  postgres-data:
+    name: ferroma-postgres-data
+  ferroma-data:
+    name: ferroma-data
+
+networks:
+  # Database traffic stays here and never touches the host network.
+  ferroma-internal:
+    name: ferroma-internal
+    internal: false
+  # Mail and HTTP ports.
+  ferroma-public:
+    name: ferroma-public

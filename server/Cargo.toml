@@ -1,0 +1,54 @@
+[package]
+name = "ferroma-server"
+description = "Ferroma server binary: wires the SMTP, IMAP, HTTP, queue, sync and storage subsystems into one process"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "ferroma"
+path = "src/main.rs"
+
+[dependencies]
+ferroma-core = { workspace = true }
+ferroma-mail = { workspace = true }
+ferroma-storage = { workspace = true }
+ferroma-auth = { workspace = true }
+ferroma-events = { workspace = true }
+ferroma-smtp = { workspace = true }
+ferroma-imap = { workspace = true }
+ferroma-sync = { workspace = true }
+ferroma-api = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+futures-util = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+sqlx = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+rustls-pki-types = { workspace = true }
+rand = { workspace = true }
+rcgen = { workspace = true }
+rsa = { workspace = true }
+pkcs8 = { workspace = true }
+pkcs1 = { workspace = true }
+url = { workspace = true }
+base64 = { workspace = true }
+walkdir = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = { workspace = true }

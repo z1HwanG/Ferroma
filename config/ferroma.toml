@@ -1,0 +1,265 @@
+# =============================================================================
+# Ferroma — default configuration
+# =============================================================================
+#
+# This file is compiled into the binary (`include_str!`), so Ferroma always has a
+# usable configuration even with no file on disk. Copy it to
+# `config/ferroma.toml` (or mount it in Docker) and edit what you need.
+#
+# Precedence:  embedded defaults  <  this file  <  environment variables
+#
+# Environment overrides come in two flavours:
+#   * generic:  FERROMA__SERVER__HOSTNAME=mail.example.com
+#               FERROMA__SMTP__PORT=2525
+#   * aliases:  DATABASE_URL, FERROMA_HOSTNAME, FERROMA_API_PORT,
+#               FERROMA_JWT_SECRET, FERROMA_TLS_CERT, FERROMA_TLS_KEY, …
+#
+# Unknown keys are rejected: a typo stops the server at boot instead of silently
+# leaving a limit disabled.
+# =============================================================================
+
+[server]
+# Product name shown in banners, the Admin UI and generated mail headers.
+name = "Ferroma"
+# FQDN this server identifies itself as. Used in the SMTP EHLO, in `Received:`
+# headers and in generated `Message-ID`s. Set this to your real MX hostname.
+hostname = "localhost"
+# Root of all Ferroma state: Maildir, attachments, TLS material, backups.
+data_dir = "./data"
+# tracing filter directive. Examples: "info", "debug",
+# "ferroma_smtp=debug,ferroma_core=info,warn".
+log_level = "info"
+# "text" for humans reading `docker compose logs`, "json" for log shipping.
+log_format = "text"
+# Tokio worker threads. 0 = one per CPU.
+worker_threads = 0
+# Grace period for in-flight work during shutdown, in seconds.
+shutdown_timeout_secs = 30
+# Reject startup when the configuration is self-inconsistent.
+strict_config = true
+
+[database]
+# PostgreSQL. In Docker Compose this is overridden to point at the `postgres` service.
+url = "postgres://ferroma:ferroma@localhost:5432/ferroma"
+max_connections = 20
+min_connections = 2
+# Bounds both waiting for a pooled connection and opening a new one.
+acquire_timeout_secs = 10
+idle_timeout_secs = 600
+# Recycle connections periodically; PostgreSQL and pgbouncer both dislike immortals.
+max_lifetime_secs = 1800
+# Apply migrations/*.sql at startup.
+run_migrations = true
+# Log every SQL statement. Never enable in production: it prints message subjects.
+log_statements = false
+
+[smtp]
+enabled = true
+host = "0.0.0.0"
+# Inbound MX port: plaintext + STARTTLS.
+port = 25
+# Authenticated submission (mail clients sending your users' mail out).
+submission_port = 587
+# Implicit TLS. 0 = disabled until [tls] is configured; production sets 465.
+smtps_port = 0
+banner = "Ferroma ESMTP ready"
+# Require EHLO/HELO before MAIL FROM.
+helo_required = true
+# Refuse AUTH on an unencrypted connection. Turn this on once TLS is configured.
+require_tls_for_auth = false
+# On submission ports, require authentication before MAIL FROM.
+require_auth_on_submission = true
+advertise_size = true
+# Seconds a client may take to send the next command.
+command_timeout_secs = 300
+# Seconds a client may take to finish DATA.
+data_timeout_secs = 600
+# Prepend a Received: header to inbound mail.
+add_received_header = true
+# Advertise PIPELINING / 8BITMIME / ENHANCEDSTATUSCODES / SMTPUTF8.
+advertise_extensions = true
+
+[imap]
+enabled = true
+host = "0.0.0.0"
+# Plaintext IMAP, normally upgraded with STARTTLS.
+port = 143
+# Implicit TLS. 0 = disabled until [tls] is configured; production sets 993.
+imaps_port = 0
+banner = "Ferroma IMAP4rev1 ready"
+# Refuse LOGIN on an unencrypted connection. Turn this on once TLS is configured.
+require_tls_for_login = false
+# Seconds an idle session may live before "* BYE".
+idle_timeout_secs = 1800
+# Longest a client may hold IDLE, in seconds (RFC 2177 recommends < 30 min).
+max_idle_secs = 1740
+enable_idle = true
+enable_move = true
+# Largest literal accepted by APPEND, in bytes.
+max_append_size = 26214400
+
+[queue]
+enabled = true
+workers = 4
+max_attempts = 12
+# Backoff schedule in seconds: 1m, 5m, 15m, 1h, 6h, 24h. The last entry repeats.
+retry_schedule_secs = [60, 300, 900, 3600, 21600, 86400]
+poll_interval_secs = 10
+delivery_timeout_secs = 300
+connect_timeout_secs = 30
+max_connections_per_host = 4
+bounce_on_failure = true
+retention_days = 30
+
+[tls]
+# Off by default so a bare `cargo run` boots without certificates. Production
+# sets this to true and points cert_path/key_path at a Let's Encrypt bundle.
+enabled = false
+# PEM bundle: leaf certificate followed by intermediates.
+# cert_path = "/etc/ferroma/tls/fullchain.pem"
+# PEM private key (PKCS#8 or PKCS#1).
+# key_path = "/etc/ferroma/tls/privkey.pem"
+# Generate a self-signed certificate at boot when no PEM is configured. Local
+# development and CI only — never for a production MX.
+self_signed_fallback = true
+# "1.2" or "1.3".
+min_version = "1.2"
+# Also trust OS-installed roots for outbound TLS verification.
+use_platform_roots = true
+allow_insecure_dev_mode = true
+
+[dns]
+# Explicit resolvers, e.g. ["1.1.1.1:53", "9.9.9.9:53"]. Empty = system config.
+resolvers = []
+# Per-query timeout, in seconds.
+#
+# This is the single most latency-sensitive setting on the server, because the
+# inbound SPF/DKIM/DMARC step runs *before* the SMTP reply: a resolver that does not
+# answer costs `timeout_secs x (attempts + 1)` on the first lookup of every message,
+# and the sending MTA waits for it. A working resolver answers in tens of
+# milliseconds, so a short timeout costs nothing in the normal case and is the
+# difference between an instant `250` and a stalled one when DNS misbehaves.
+timeout_secs = 3
+# Retries *after* a failure (PostgreSQL's libpq counts the same way hickory does), so
+# `1` means two datagrams at most.
+attempts = 1
+# Cache positive answers for this many seconds (bounded by record TTL).
+cache_ttl_secs = 300
+# Cache negative answers for this many seconds.
+negative_ttl_secs = 60
+tcp_fallback = true
+
+[dkim]
+enabled = false
+selector = "default"
+# private_key_path = "/etc/ferroma/dkim/default.private"
+# Sign only mail from this domain. Omit to sign every local domain.
+# domain = "example.com"
+canonicalization = "relaxed"
+headers_to_sign = [
+    "From", "To", "Cc", "Subject", "Date", "Message-ID",
+    "MIME-Version", "Content-Type", "Content-Transfer-Encoding",
+    "Reply-To", "In-Reply-To", "References",
+]
+# Reject inbound mail whose DKIM signature does not verify.
+verify_inbound = true
+# NOTE: the `Authentication-Results:` header is controlled by
+# `policy.add_auth_results` — one switch, in one place. There is deliberately no
+# second copy under `[dkim]`, because two switches that both default to true leave
+# an operator no working way to turn the header off.
+
+[policy]
+spf_enabled = true
+dmarc_enabled = true
+# What to do when DMARC says p=reject and the message fails: none | quarantine | reject.
+dmarc_failure_action = "quarantine"
+add_auth_results = true
+# Maximum DNS lookups while evaluating one SPF record (RFC 7208 §4.6.4).
+spf_max_lookups = 10
+
+[api]
+enabled = true
+host = "0.0.0.0"
+port = 8080
+# Optional HTTPS listener. 0 = let the reverse proxy terminate TLS.
+tls_port = 0
+base_path = "/api/v1"
+# Externally reachable URL: used in `.well-known/ferroma` and in generated links.
+public_url = "http://localhost:8080"
+# Built Webmail assets. Omit to use the copy embedded in the binary.
+# webmail_dir = "./web/dist"
+# Built Admin assets.
+# admin_dir = "./admin/dist"
+# Allowed CORS origins. Empty = same-origin only.
+cors_origins = []
+# HMAC secret for access/refresh tokens. REQUIRED in production: without it every
+# session is invalidated on restart. Set via FERROMA_JWT_SECRET.
+# jwt_secret = "change-me"
+access_token_ttl_secs = 3600
+refresh_token_ttl_secs = 2592000
+session_ttl_secs = 86400
+# Set the `Secure` flag on cookies. Must be true in production.
+secure_cookies = false
+max_request_size = 26214400
+# Trust X-Forwarded-For / X-Real-IP from a reverse proxy.
+trust_proxy_headers = false
+serve_frontend = true
+# Allow the first-run wizard to create the initial admin account.
+enable_setup_wizard = true
+
+[client]
+# Ferroma Client Protocol (FCP) version this server speaks.
+protocol_version = 1
+# Oldest client protocol still accepted.
+min_protocol_version = 1
+# Changes returned per sync page.
+sync_page_size = 500
+ws_heartbeat_secs = 30
+attachment_chunk_size = 1048576
+# Keep deletion tombstones this long so offline clients can catch up.
+tombstone_retention_days = 30
+session_idle_days = 90
+push_enabled = false
+
+[storage]
+# Maildir root. Defaults to <data_dir>/mail.
+# maildir_root = "/var/lib/ferroma/mail"
+# Attachment blob root. Defaults to <data_dir>/attachments.
+# attachment_root = "/var/lib/ferroma/attachments"
+# fsync every message before acknowledging DATA. Costs throughput, buys durability.
+fsync_on_write = true
+# "maildir" = domain/user/Maildir/{cur,new,tmp} with folders as Maildir/.Folder
+# "maildirperfolder" = one Maildir per folder
+layout = "maildir"
+# Store the SHA-256 of every message and attachment.
+checksum = true
+enforce_quota = true
+soft_delete = true
+
+[limits]
+# --- values from the Ferroma specification (§39) ---
+# Largest message accepted or sent, in bytes (25 MiB).
+max_message_size = 26214400
+# Maximum RCPT TO fan-out per transaction.
+max_recipients = 100
+# Global cap on simultaneous SMTP connections.
+max_connections = 100
+# Per-source-IP cap on simultaneous SMTP connections.
+max_connections_per_ip = 10
+# Inbound SMTP commands accepted per minute per IP.
+smtp_rate_limit = 100
+# Authenticated submission messages accepted per hour per account.
+submission_rate_limit = 50
+# Messages per account per day.
+daily_send_limit = 500
+# Default mailbox quota in bytes (1 GiB).
+mailbox_quota = 1073741824
+# --- additional safety rails ---
+max_attachments = 50
+max_attachment_size = 26214400
+idle_timeout_secs = 300
+data_timeout_secs = 600
+max_fetch_messages = 5000
+max_mime_depth = 20
+max_failed_logins = 10
+login_lockout_secs = 900

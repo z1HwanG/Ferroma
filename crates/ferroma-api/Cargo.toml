@@ -1,0 +1,52 @@
+[package]
+name = "ferroma-api"
+description = "Ferroma HTTP surface: REST API, Ferroma Client Protocol (FCP), WebSocket events, Webmail and Admin hosting"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+ferroma-core = { workspace = true }
+ferroma-mail = { workspace = true }
+ferroma-storage = { workspace = true }
+ferroma-auth = { workspace = true }
+ferroma-events = { workspace = true }
+ferroma-sync = { workspace = true }
+ferroma-smtp = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+hyper = { workspace = true }
+http = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+base64 = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+subtle = { workspace = true }
+rand = { workspace = true }
+once_cell = { workspace = true }
+regex = { workspace = true }
+mime = { workspace = true }
+url = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = { workspace = true }
+pretty_assertions = "1"
+# Test infrastructure only. `ferroma-storage` never re-exports a *lazy* pool
+# constructor (the runtime one is eager, because the server wants to know at boot
+# whether the database is reachable), and the unit tests here need repositories over a
+# pool that opens no socket. The published library does not depend on `sqlx`.
+sqlx = { workspace = true }

@@ -1,0 +1,22 @@
+[package]
+name = "ferroma-events"
+description = "Ferroma event bus: typed domain events consumed by Webmail, clients, admin and notifications"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+ferroma-core = { workspace = true }
+tokio = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+once_cell = { workspace = true }

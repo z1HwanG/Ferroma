@@ -1,0 +1,25 @@
+[package]
+name = "ferroma-mail"
+description = "Ferroma mail core: RFC 5322 messages, MIME parsing/building, headers, addresses and flags"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+ferroma-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+base64 = { workspace = true }
+encoding_rs = "0.8"
+thiserror = { workspace = true }
+tracing = { workspace = true }
+once_cell = { workspace = true }
+regex = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = "1"

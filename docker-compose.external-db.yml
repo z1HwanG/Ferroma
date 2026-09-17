@@ -1,0 +1,150 @@
+# =============================================================================
+# Ferroma — deployment onto a host that already runs PostgreSQL (and Docker)
+# =============================================================================
+#   scripts/deploy.sh                 # the supported entry point; do this first
+#
+# How this stack differs from docker-compose.prod.yml:
+#
+#   * **No PostgreSQL container.** Ferroma talks to the PostgreSQL that is
+#     already running on this host, over 127.0.0.1. Nothing about that server's
+#     configuration has to change: 127.0.0.1 is already in `listen_addresses`
+#     and already in `pg_hba.conf` on every distribution.
+#   * **Host networking.** The container binds 25/587/465/143/993 and the HTTP
+#     API directly on the host, which is what makes the loopback database
+#     reachable without a `host-gateway` route, and which keeps every mail
+#     client's real source address (the login throttle and the logs depend on
+#     it). Ports are therefore *not* published with `ports:` — see
+#     `network_mode: host`.
+#   * **HTTPS belongs to your reverse proxy.** Ferroma has no HTTPS listener;
+#     nginx/Caddy/… proxies to the loopback API port. docs/deployment.md §5.3
+#     has the nginx server block.
+#   * **`.env` is the only configuration.** Every setting is an environment
+#     variable, so there is no `ferroma.toml` to edit and no `-f` flags to
+#     remember. See `.env.example` for the full list.
+#
+# Doing it by hand, without scripts/deploy.sh:
+#
+#   cp .env.example .env      # then edit it: DATABASE_URL, FERROMA_HOSTNAME, …
+#   docker build -t ferroma:latest .
+#   docker compose -f docker-compose.external-db.yml run --rm ferroma database init
+#   docker compose -f docker-compose.external-db.yml up -d
+# =============================================================================
+
+name: ferroma
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: '20m'
+    max-file: '10'
+
+services:
+  ferroma:
+    # Built on this host (`docker build -t ferroma:latest .`) or pulled from a
+    # registry — either way, the tag lives in .env so upgrades are one line.
+    image: ${FERROMA_IMAGE:-ferroma:latest}
+    container_name: ferroma
+    restart: always
+    # Shares the host's network namespace: no NAT, no port mappings, and the
+    # host's own PostgreSQL is simply 127.0.0.1 from inside the container.
+    network_mode: host
+    # Everything the platform reads comes from here.
+    env_file:
+      - .env
+    environment:
+      FERROMA_CONFIG: /etc/ferroma/ferroma.toml
+      FERROMA_DATA_DIR: /var/lib/ferroma
+    volumes:
+      # Maildir, attachments, DKIM keys, backups. This is the volume to back up.
+      - ferroma-data:/var/lib/ferroma
+      # Certificates for SMTPS (465) and IMAPS (993). Read-only: Ferroma never
+      # writes here. `deploy.sh` installs them with the ownership uid 10001
+      # needs; docs/deployment.md §5.5 explains the manual path.
+      - ./tls:/etc/ferroma/tls:ro
+    healthcheck:
+      # Follows the configured bind address and port: with the API on loopback the
+      # probe is a loopback connection, and when it is bound to the Docker bridge
+      # address (a containerised reverse proxy cannot reach loopback) the probe
+      # follows it there too.
+      test: ['CMD', 'ferroma', 'healthcheck', '--url', 'http://${FERROMA_API_HOST:-127.0.0.1}:${FERROMA_API_PORT:-18080}/api/v1/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    stop_grace_period: 60s
+    ulimits:
+      # One file descriptor per open IMAP/SMTP connection, plus the Maildir.
+      nofile:
+        soft: 65536
+        hard: 65536
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+  # Nightly logical dump of PostgreSQL plus the mail store, on the host network
+  # so that it reaches the same 127.0.0.1 database. scripts/backup.sh keeps the
+  # two halves in step — restoring one without the other loses messages — and
+  # prunes to BACKUP_RETENTION_DAYS.
+  backup:
+    # Match the server's major version, or pg_dump refuses to dump it:
+    # `POSTGRES_IMAGE=postgres:16-alpine` for a PostgreSQL 16 server.
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    container_name: ferroma-backup
+    restart: unless-stopped
+    network_mode: host
+    entrypoint: ['/bin/sh', '/usr/local/bin/backup.sh']
+    # Loop, rather than exit and be restarted: a one-shot script under
+    # `restart: always` writes a full backup every restart backoff.
+    command: ['--loop']
+    environment:
+      PGHOST: ${DB_HOST:-127.0.0.1}
+      PGPORT: ${DB_PORT:-5432}
+      PGUSER: ${POSTGRES_USER:-ferroma}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      PGDATABASE: ${POSTGRES_DB:-ferroma}
+      BACKUP_DIR: /backups
+      MAIL_DIR: /mail
+      CONFIG_DIR: /etc/ferroma
+      RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+    volumes:
+      - ./scripts/backup.sh:/usr/local/bin/backup.sh:ro
+      # The mail store is mounted read-only: the backup never writes to it.
+      - ferroma-data:/mail:ro
+      - ./tls:/etc/ferroma/tls:ro
+      - backups:/backups
+    logging: *default-logging
+
+  # One-off restore helper, deliberately *not* started by `up` (hence the
+  # profile): restoring has to write to the mail store, which the nightly sidecar
+  # above is not allowed to do. deploy.sh stops Ferroma before running it.
+  #
+  #   docker compose -f docker-compose.external-db.yml --profile tools run --rm \
+  #     restore /backups/20260916T030000Z
+  restore:
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    profiles: ['tools']
+    network_mode: host
+    entrypoint: ['/bin/sh', '/usr/local/bin/restore.sh']
+    environment:
+      PGHOST: ${DB_HOST:-127.0.0.1}
+      PGPORT: ${DB_PORT:-5432}
+      PGUSER: ${POSTGRES_USER:-ferroma}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      PGDATABASE: ${POSTGRES_DB:-ferroma}
+      MAIL_DIR: /mail
+      CONFIG_DIR: /etc/ferroma
+    volumes:
+      - ./scripts/restore.sh:/usr/local/bin/restore.sh:ro
+      - ferroma-data:/mail
+      - ./tls:/etc/ferroma/tls
+      - backups:/backups
+    logging: *default-logging
+
+volumes:
+  ferroma-data:
+    name: ferroma-data
+  backups:
+    name: ferroma-backups

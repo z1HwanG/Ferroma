@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en" data-theme="auto" data-app="webmail">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Ferroma Webmail</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#message-list">Skip to message list</a>
+
+  <div id="offline-banner" class="banner banner-offline" role="status" hidden>
+    <span class="banner-text">You are offline. Ferroma could not reach the server; showing the last content it loaded.</span>
+    <button type="button" class="btn btn-small" id="offline-retry">Retry</button>
+  </div>
+
+  <!-- Sign-in / first-run panel -->
+  <div id="login-view" class="login-view" hidden>
+    <form class="login-card" id="login-form" novalidate>
+      <h1 class="login-title">Ferroma</h1>
+      <p class="login-subtitle">Sign in to your mailbox</p>
+
+      <label class="field">
+        <span class="field-label">Email address</span>
+        <input class="input" id="login-email" name="email" type="email" autocomplete="username"
+               spellcheck="false" required>
+      </label>
+      <p class="field-error" id="login-email-error" hidden></p>
+
+      <label class="field">
+        <span class="field-label">Password</span>
+        <input class="input" id="login-password" name="password" type="password"
+               autocomplete="current-password" required>
+      </label>
+      <p class="field-error" id="login-password-error" hidden></p>
+
+      <p class="field-error" id="login-error" role="alert" hidden></p>
+
+      <button class="btn btn-primary btn-block" id="login-submit" type="submit">Sign in</button>
+      <p class="login-hint" id="login-hint">Use the address and password your administrator gave you.</p>
+    </form>
+  </div>
+
+  <!-- Application shell: folders | message list | reading pane -->
+  <div class="app" id="app-view" hidden>
+    <header class="topbar">
+      <button type="button" class="btn btn-icon" id="nav-toggle"
+              aria-label="Show folders" aria-expanded="false" aria-controls="folder-pane">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M3 6h18M3 12h18M3 18h18" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round"></path>
+        </svg>
+      </button>
+
+      <span class="brand">Ferroma</span>
+
+      <form class="search-form" id="search-form" role="search">
+        <label class="visually-hidden" for="search-input">Search this folder</label>
+        <input class="input search-input" id="search-input" type="search" name="q"
+               placeholder="Search mail" autocomplete="off" spellcheck="false">
+        <button type="submit" class="btn btn-icon" aria-label="Run search" id="search-submit">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <circle cx="11" cy="11" r="6" fill="none" stroke="currentColor" stroke-width="2"></circle>
+            <path d="M15.5 15.5 21 21" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round"></path>
+          </svg>
+        </button>
+      </form>
+
+      <div class="topbar-actions">
+        <button type="button" class="btn btn-primary" id="compose-button" title="Compose (c)">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M4 20h4l10-10-4-4L4 16v4Z" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linejoin="round"></path>
+            <path d="m14 6 4 4" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round"></path>
+          </svg>
+          <span class="btn-label">Compose</span>
+        </button>
+        <button type="button" class="btn btn-icon" id="settings-button" aria-label="Settings"
+                title="Settings">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"></circle>
+            <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"
+                  fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+          </svg>
+        </button>
+        <button type="button" class="btn btn-icon" id="account-button" aria-label="Account menu"
+                aria-haspopup="true" aria-expanded="false" title="Account">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="2"></circle>
+            <path d="M4 21c0-4 3.6-6 8-6s8 2 8 6" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round"></path>
+          </svg>
+        </button>
+      </div>
+
+      <div class="menu" id="account-menu" role="menu" hidden>
+        <p class="menu-heading" id="account-menu-name">Signed in</p>
+        <p class="menu-sub" id="account-menu-email"></p>
+        <button type="button" class="menu-item" role="menuitem" id="account-settings">Settings…</button>
+        <button type="button" class="menu-item" role="menuitem" id="account-logout">Sign out</button>
+      </div>
+    </header>
+
+    <div class="panes">
+      <!-- Pane 1: folders -->
+      <nav class="pane pane-folders" id="folder-pane" aria-label="Folders">
+        <div class="pane-head">
+          <h2 class="pane-title">Folders</h2>
+          <button type="button" class="btn btn-icon pane-close" id="folder-pane-close"
+                  aria-label="Hide folders">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round"></path>
+            </svg>
+          </button>
+        </div>
+        <label class="visually-hidden" for="mailbox-select">Send-from address</label>
+        <select class="input mailbox-select" id="mailbox-select"></select>
+        <ul class="folder-list" id="folder-list"></ul>
+        <div class="pane-foot">
+          <button type="button" class="btn btn-block" id="new-folder-button">New folder</button>
+        </div>
+      </nav>
+
+      <!-- Pane 2: message list -->
+      <section class="pane pane-list" id="list-pane" aria-label="Messages">
+        <div class="pane-head">
+          <h2 class="pane-title" id="list-title">Inbox</h2>
+          <span class="count-pill" id="list-count"></span>
+        </div>
+
+        <div class="bulk-bar" id="bulk-bar" hidden>
+          <span class="bulk-count" id="bulk-count">0 selected</span>
+          <div class="bulk-actions">
+            <button type="button" class="btn btn-small" data-bulk="read">Mark read</button>
+            <button type="button" class="btn btn-small" data-bulk="unread">Mark unread</button>
+            <button type="button" class="btn btn-small" data-bulk="flag">Star</button>
+            <button type="button" class="btn btn-small" data-bulk="move">Move…</button>
+            <button type="button" class="btn btn-small btn-danger" data-bulk="delete">Delete</button>
+            <button type="button" class="btn btn-small" data-bulk="clear">Clear</button>
+          </div>
+        </div>
+
+        <div class="list-scroll" id="list-scroll">
+          <ul class="message-list" id="message-list" role="listbox" aria-label="Message list"
+              aria-multiselectable="true" tabindex="0"></ul>
+          <p class="empty" id="list-empty" hidden></p>
+          <div class="list-more" id="list-more" hidden>
+            <button type="button" class="btn btn-block" id="load-more-button">Load more</button>
+          </div>
+          <div class="list-sentinel" id="list-sentinel" aria-hidden="true"></div>
+          <div class="skeleton-list" id="list-skeleton" hidden>
+            <div class="skeleton-row"></div>
+            <div class="skeleton-row"></div>
+            <div class="skeleton-row"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Pane 3: reading pane -->
+      <section class="pane pane-reader" id="reader-pane" aria-label="Message">
+        <div class="reader-empty" id="reader-empty">
+          <p>Select a message to read it.</p>
+        </div>
+
+        <article class="reader" id="reader" hidden>
+          <header class="reader-head">
+            <button type="button" class="btn btn-small back-button" id="reader-back">Back to list</button>
+            <h2 class="reader-subject" id="reader-subject"></h2>
+            <div class="reader-meta">
+              <p class="reader-line"><span class="meta-label">From</span>
+                <span class="reader-address" id="reader-from"></span></p>
+              <p class="reader-line"><span class="meta-label">To</span>
+                <span class="reader-address" id="reader-to"></span></p>
+              <p class="reader-line" id="reader-cc-line" hidden><span class="meta-label">Cc</span>
+                <span class="reader-address" id="reader-cc"></span></p>
+              <p class="reader-line"><span class="meta-label">Date</span>
+                <time class="reader-date" id="reader-date"></time></p>
+            </div>
+            <div class="reader-actions">
+              <button type="button" class="btn btn-small" id="action-reply">Reply</button>
+              <button type="button" class="btn btn-small" id="action-reply-all">Reply all</button>
+              <button type="button" class="btn btn-small" id="action-forward">Forward</button>
+              <button type="button" class="btn btn-small" id="action-star" aria-pressed="false">Star</button>
+              <button type="button" class="btn btn-small" id="action-unread">Mark unread</button>
+              <button type="button" class="btn btn-small" id="action-archive">Archive</button>
+              <button type="button" class="btn btn-small" id="action-move">Move…</button>
+              <button type="button" class="btn btn-small btn-danger" id="action-delete">Delete</button>
+            </div>
+            <div class="reader-tabs" id="reader-tabs" hidden>
+              <button type="button" class="btn btn-small" id="tab-html" aria-pressed="true">Rich text</button>
+              <button type="button" class="btn btn-small" id="tab-text" aria-pressed="false">Plain text</button>
+            </div>
+          </header>
+
+          <div class="attachments" id="reader-attachments" hidden>
+            <h3 class="attachments-title">Attachments</h3>
+            <ul class="attachment-list" id="attachment-list"></ul>
+          </div>
+
+          <div class="reader-body" id="reader-body">
+            <pre class="reader-text" id="reader-text"></pre>
+            <iframe class="reader-html" id="reader-html" sandbox="" referrerpolicy="no-referrer"
+                    title="Message HTML body" hidden></iframe>
+          </div>
+          <p class="reader-error" id="reader-error" role="alert" hidden></p>
+        </article>
+      </section>
+    </div>
+  </div>
+
+  <!-- Compose window host (used as a full-height panel on narrow screens). -->
+  <div class="compose-host" id="compose-host" hidden></div>
+
+  <!-- Modal host: dialogs are created by JS into this container. -->
+  <div class="modal-host" id="modal-host"></div>
+  <div class="modal-host" id="dialog-host"></div>
+
+  <div class="toasts" id="toast-region" role="status" aria-live="polite" aria-atomic="false"></div>
+  <div class="toasts toasts-alert" id="alert-region" role="alert" aria-live="assertive" aria-atomic="false"></div>
+
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

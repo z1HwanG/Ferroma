@@ -1,0 +1,163 @@
+#!/usr/bin/env node
+/**
+ * Check that the ten Chinese documents read as one document set.
+ *
+ * Ten translators working in parallel produce ten internally-consistent documents
+ * and, without a pass like this, a set that contradicts itself: three renderings of
+ * "specification §N", some files translating the `_(planned)_` marker and others not,
+ * and two different conventions for the space between Chinese and Latin text. None of
+ * those is a translation error, and all of them are visible to a reader.
+ *
+ *   node tools/check-zh.mjs
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+
+const root = process.cwd();
+const zhDir = path.join(root, 'docs', 'zh');
+const enDir = path.join(root, 'docs');
+
+const read = (p) => fs.readFileSync(p, 'utf8');
+
+/** Strip fenced blocks and inline code, leaving prose. */
+function prose(text) {
+  return text.replace(/```[\s\S]*?```/g, '').replace(/`[^`\n]*`/g, '');
+}
+
+const CJK = '\u3400-\u4dbf\u4e00-\u9fff\u3000-\u303f\uff01-\uff60';
+
+function spacing(text) {
+  const p = prose(text);
+  const spaced =
+    (p.match(new RegExp(`[${CJK}] +[A-Za-z0-9]`, 'g')) || []).length +
+    (p.match(new RegExp(`[A-Za-z0-9] +[${CJK}]`, 'g')) || []).length;
+  const tight =
+    (p.match(new RegExp(`[${CJK}][A-Za-z0-9]`, 'g')) || []).length +
+    (p.match(new RegExp(`[A-Za-z0-9][${CJK}]`, 'g')) || []).length;
+  return { spaced, tight };
+}
+
+const problems = [];
+const notes = [];
+
+// --- 1. what the project book does ------------------------------------------
+const spec = read(path.join(root, 'Ferroma-完整项目书.md'));
+const specSpacing = spacing(spec);
+const specRatio = specSpacing.spaced / Math.max(1, specSpacing.spaced + specSpacing.tight);
+notes.push(
+  `project book prose: ${specSpacing.spaced} spaced vs ${specSpacing.tight} tight ` +
+    `(${(specRatio * 100).toFixed(0)}% spaced) -> convention is ` +
+    `${specRatio > 0.5 ? 'SPACE' : 'NO SPACE'}`,
+);
+
+// --- 2. per-file structure parity and terminology ---------------------------
+const files = fs.readdirSync(zhDir).filter((f) => f.endsWith('.md') && f !== 'GLOSSARY.md');
+const missing = fs
+  .readdirSync(enDir)
+  .filter((f) => f.endsWith('.md') && !files.includes(f));
+
+let totalLines = 0;
+let totalEnLines = 0;
+
+console.log('file                 lines(en/zh)  fences(en/zh)  headings(en/zh)  spaced/tight');
+for (const file of files.sort()) {
+  const en = read(path.join(enDir, file));
+  const zh = read(path.join(zhDir, file));
+
+  const count = (t, re) => (t.match(re) || []).length;
+  const enLines = en.split('\n').length;
+  const zhLines = zh.split('\n').length;
+  totalLines += zhLines;
+  totalEnLines += enLines;
+
+  const enFences = count(en, /^```/gm);
+  const zhFences = count(zh, /^```/gm);
+  const enHeads = count(en, /^#{2,3} /gm);
+  const zhHeads = count(zh, /^#{2,3} /gm);
+  const s = spacing(zh);
+
+  console.log(
+    `${file.padEnd(20)} ${String(enLines).padStart(4)}/${String(zhLines).padEnd(6)} ` +
+      `${String(enFences).padStart(4)}/${String(zhFences).padEnd(7)} ` +
+      `${String(enHeads).padStart(4)}/${String(zhHeads).padEnd(8)} ` +
+      `${s.spaced}/${s.tight}`,
+  );
+
+  if (enFences !== zhFences) {
+    problems.push(`${file}: ${enFences} fences in English, ${zhFences} in Chinese — a block was dropped or added`);
+  }
+  if (enHeads !== zhHeads) {
+    problems.push(`${file}: ${enHeads} headings in English, ${zhHeads} in Chinese — a section was dropped or added`);
+  }
+  if (Math.abs(zhLines - enLines) / enLines > 0.15) {
+    problems.push(
+      `${file}: ${zhLines} lines against ${enLines} — outside the 15% band, which usually means a section was compressed`,
+    );
+  }
+}
+
+console.log('');
+if (missing.length) {
+  notes.push(`no Chinese version yet: ${missing.join(', ')}`);
+}
+
+// --- 3. cross-document terminology ------------------------------------------
+for (const [label, patterns, preferred] of [
+  ['"specification §N"', ['规格说明 §', '规格书 §', '规范 §'], '项目书 §'],
+  ['the planned marker', ['_(planned)_', '_(计划中)_'], '_(planned)_'],
+]) {
+  const counts = new Map();
+  for (const file of files) {
+    const text = read(path.join(zhDir, file));
+    for (const pattern of patterns) {
+      const n = (text.match(new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+      if (n) counts.set(pattern, (counts.get(pattern) || 0) + n);
+    }
+  }
+  const found = [...counts.entries()];
+  if (found.length > 1) {
+    problems.push(
+      `${label} is rendered ${found.length} different ways: ` +
+        found.map(([p, n]) => `"${p}" x${n}`).join(', ') +
+        ` — pick one (preferred: "${preferred}")`,
+    );
+  } else if (found.length === 1) {
+    notes.push(`${label}: uniformly "${found[0][0]}" (x${found[0][1]})`);
+  }
+}
+
+// --- 4. links resolve --------------------------------------------------------
+for (const file of files) {
+  const text = read(path.join(zhDir, file));
+  for (const [, target] of text.matchAll(/\]\(([^)]+)\)/g)) {
+    if (target.startsWith('http') || target.startsWith('#')) continue;
+    const resolved = path.resolve(zhDir, target.split('#')[0]);
+    if (!fs.existsSync(resolved)) {
+      problems.push(`${file}: link ${target} does not resolve`);
+    }
+  }
+}
+
+// --- 5. spacing consistency --------------------------------------------------
+const tightFiles = files.filter((f) => {
+  const s = spacing(read(path.join(zhDir, f)));
+  return s.tight > s.spaced;
+});
+if (tightFiles.length && tightFiles.length !== files.length) {
+  problems.push(
+    `spacing convention differs between files: ${tightFiles.length} of ${files.length} ` +
+      `write Chinese directly against Latin text (${tightFiles.join(', ')}) while the rest use a space`,
+  );
+}
+
+// --- report ------------------------------------------------------------------
+console.log(`Chinese docs: ${files.length} files, ${totalLines} lines (English: ${totalEnLines})`);
+console.log('');
+for (const note of notes) console.log(`  note   ${note}`);
+if (!problems.length) {
+  console.log('  result PASS — the set is internally consistent');
+  process.exit(0);
+}
+for (const problem of problems) console.log(`  FAIL   ${problem}`);
+console.log(`  result FAIL — ${problems.length} problem(s)`);
+process.exit(1);

@@ -1,0 +1,56 @@
+[package]
+name = "ferroma-smtp"
+description = "Ferroma SMTP: server state machine, SMTP client for outbound delivery, MX resolution, DKIM/SPF/DMARC"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+ferroma-core = { workspace = true }
+ferroma-mail = { workspace = true }
+ferroma-storage = { workspace = true }
+ferroma-auth = { workspace = true }
+ferroma-events = { workspace = true }
+tokio = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+base64 = { workspace = true }
+rand = { workspace = true }
+regex = { workspace = true }
+once_cell = { workspace = true }
+hickory-resolver = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+rustls-pki-types = { workspace = true }
+webpki-roots = { workspace = true }
+sha1 = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+rsa = { workspace = true }
+pkcs1 = { workspace = true }
+pkcs8 = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = { workspace = true }
+pretty_assertions = "1"
+# Integration tests only: they create and drop a per-test PostgreSQL **schema** and
+# read `current_schema()` to prove the isolation took effect, exactly like
+# `ferroma-storage`'s own `tests/common/mod.rs`. `sqlx` is already in the workspace
+# dependency table and in `Cargo.lock`, so this adds no crate to the build; it only
+# makes the name available to `tests/`. Nothing in `src/` uses it.
+sqlx = { workspace = true }
+# Integration tests only: generates the self-signed certificate the STARTTLS handshake
+# test needs. Already in the workspace table and in `Cargo.lock`, so no new crate.
+# Nothing in `src/` uses it — a real deployment takes its certificate from `[tls]`,
+# never from a generator.
+rcgen = { workspace = true }

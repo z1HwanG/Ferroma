@@ -1,0 +1,146 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ferroma-core",
+    "crates/ferroma-mail",
+    "crates/ferroma-storage",
+    "crates/ferroma-auth",
+    "crates/ferroma-events",
+    "crates/ferroma-smtp",
+    "crates/ferroma-imap",
+    "crates/ferroma-sync",
+    "crates/ferroma-api",
+    "server",
+    "client",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+# The floor is set by the dependency graph, not by preference: `encoding_rs`, `home`,
+# the ICU crates and `time` all require 1.88. Claiming anything lower makes `cargo`
+# refuse to build on a toolchain that would otherwise work, with a message about a
+# dependency rather than about this line. `tools/msrv.mjs` recomputes this from the
+# lockfile and the registry index, and fails if the claim and the graph disagree.
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ferroma/ferroma"
+authors = ["Ferroma Contributors"]
+description = "Ferroma — a Rust-native self-hosted mail platform"
+
+[workspace.dependencies]
+# --- internal crates ---
+ferroma-core = { path = "crates/ferroma-core" }
+ferroma-mail = { path = "crates/ferroma-mail" }
+ferroma-storage = { path = "crates/ferroma-storage" }
+ferroma-auth = { path = "crates/ferroma-auth" }
+ferroma-events = { path = "crates/ferroma-events" }
+ferroma-smtp = { path = "crates/ferroma-smtp" }
+ferroma-imap = { path = "crates/ferroma-imap" }
+ferroma-sync = { path = "crates/ferroma-sync" }
+ferroma-api = { path = "crates/ferroma-api" }
+
+# --- async runtime / primitives ---
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+futures-util = "0.3"
+async-trait = "0.1"
+bytes = "1"
+pin-project-lite = "0.2"
+
+# --- HTTP ---
+axum = { version = "0.8", features = ["ws", "macros", "multipart"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "trace", "cors", "limit", "compression-gzip"] }
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+http = "1"
+http-body-util = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "multipart"] }
+
+# --- database ---
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio-rustls",
+    "postgres",
+    "macros",
+    "migrate",
+    "chrono",
+    "uuid",
+    "json",
+] }
+
+# --- TLS: rustls only. This host's Windows schannel is broken; never link native-tls. ---
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+rustls-pemfile = "2"
+rustls-pki-types = "1"
+webpki-roots = "0.26"
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+
+# --- crypto primitives ---
+sha1 = "0.10"
+sha2 = "0.10"
+hmac = "0.12"
+md-5 = "0.10"
+argon2 = { version = "0.5", features = ["std", "password-hash"] }
+password-hash = { version = "0.5", features = ["rand_core"] }
+rsa = { version = "0.9", features = ["sha2", "pem"] }
+pkcs1 = "0.7"
+pkcs8 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+rand = "0.8"
+subtle = "2"
+
+# --- DNS ---
+hickory-resolver = { version = "0.24", features = ["tokio-runtime"] }
+
+# --- serialization ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+url = "2"
+percent-encoding = "2"
+encoding_rs = "0.8"
+mime = "0.3"
+
+# --- test helpers ---
+pretty_assertions = "1"
+
+# --- time / ids ---
+chrono = { version = "0.4", features = ["serde"] }
+time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# --- config / cli / logging ---
+clap = { version = "4", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+
+# --- errors / misc ---
+thiserror = "2"
+anyhow = "1"
+regex = "1"
+once_cell = "1"
+tempfile = "3"
+walkdir = "2"
+glob = "0.3"
+
+# --- realtime ---
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["rustls-tls-webpki-roots", "handshake"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "unwind"
+strip = "debuginfo"
+
+[profile.dev]
+opt-level = 0
+debug = 1
+# Protocol parsers are exercised by tests constantly; keep dev builds responsive.
+incremental = true
+
+[profile.dev.package."*"]
+opt-level = 2

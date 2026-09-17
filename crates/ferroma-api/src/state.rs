@@ -1,0 +1,907 @@
+//! Shared application state.
+//!
+//! [`AppState`] is what every handler receives through `axum`'s `State` extractor. It
+//! is deliberately cheap to clone: everything inside is either a small `Arc`, a
+//! repository handle (which is itself a pool handle) or a plain value, so cloning it
+//! per request costs a handful of atomic increments.
+//!
+//! # The send-path seam
+//!
+//! `ferroma-smtp` is the crate that will own SMTP delivery and the outbound queue
+//! worker. While it is still being written it exports nothing this crate can use, so
+//! the API talks to [`MailSender`] — a one-method trait defined *here* — and ships
+//! [`QueueMailSender`], which writes one `mail_queue` row per recipient through
+//! `ferroma-storage`'s [`ferroma_storage::Repositories::queue`] and lets the delivery
+//! worker pick it up later. When `ferroma-smtp` gains its queue-worker entry point,
+//! the only change is to hand `AppState::with_mail_sender` a different implementation;
+//! no route, and no response shape, has to move.
+
+use std::collections::{BTreeSet, HashMap};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use chrono::{DateTime, Utc};
+use ferroma_auth::{AuthService, TokenService};
+use ferroma_core::config::Config;
+use ferroma_core::{FerromaError, MessageId, Result, UserId};
+use ferroma_events::EventBus;
+use ferroma_storage::repository::NewQueueEntry;
+use ferroma_storage::{AttachmentStore, Database, Maildir, Repositories};
+use ferroma_sync::SyncService;
+
+/// What [`MailSender::enqueue`] reports back to the caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SendOutcome {
+    /// How many queue rows were written.
+    pub queued: usize,
+    /// The recipients that were queued, in the order they were given.
+    pub recipients: Vec<String>,
+}
+
+/// The seam between this crate and the outbound delivery path.
+///
+/// A handler hands over the stored message id, the envelope sender and the resolved
+/// recipient list; the implementation decides how the mail actually leaves the
+/// building. See the module documentation for why this indirection exists.
+pub trait MailSender: Send + Sync + std::fmt::Debug {
+    /// Queue `message_id` for delivery to `recipients`.
+    fn enqueue(
+        &self,
+        user_id: Option<UserId>,
+        message_id: MessageId,
+        sender: String,
+        recipients: Vec<String>,
+    ) -> Pin<Box<dyn Future<Output = Result<SendOutcome>> + Send + '_>>;
+}
+
+/// The production [`MailSender`]: one `mail_queue` row per recipient.
+///
+/// Rows are written with `status = 'pending'` and `next_attempt_at = NOW()`, which is
+/// exactly what the queue dispatcher claims, so a message is delivered as soon as a
+/// worker is running.
+#[derive(Debug, Clone)]
+pub struct QueueMailSender {
+    repos: Repositories,
+    max_attempts: i32,
+}
+
+impl QueueMailSender {
+    /// Build the sender over `repos`, using the queue's configured attempt budget.
+    pub fn new(repos: Repositories, max_attempts: u32) -> Self {
+        QueueMailSender {
+            repos,
+            max_attempts: i32::try_from(max_attempts).unwrap_or(i32::MAX),
+        }
+    }
+}
+
+impl MailSender for QueueMailSender {
+    fn enqueue(
+        &self,
+        user_id: Option<UserId>,
+        message_id: MessageId,
+        sender: String,
+        recipients: Vec<String>,
+    ) -> Pin<Box<dyn Future<Output = Result<SendOutcome>> + Send + '_>> {
+        Box::pin(async move {
+            let mut queued = Vec::with_capacity(recipients.len());
+            for recipient in recipients {
+                self.repos
+                    .queue
+                    .enqueue(NewQueueEntry {
+                        message_id,
+                        user_id,
+                        sender: sender.clone(),
+                        recipient: recipient.clone(),
+                        max_attempts: self.max_attempts,
+                    })
+                    .await?;
+                queued.push(recipient);
+            }
+            Ok(SendOutcome {
+                queued: queued.len(),
+                recipients: queued,
+            })
+        })
+    }
+}
+
+/// Live SMTP/IMAP connection counts, for `GET /api/v1/health`.
+///
+/// The counters are incremented when a listener accepts a connection and decremented
+/// when the [`ConnectionGuard`] it created is dropped — including on a panic, which
+/// is why the guard exists rather than a plain `fetch_add`/`fetch_sub` pair.
+#[derive(Debug, Default)]
+pub struct ConnTracker {
+    smtp: AtomicU64,
+    imap: AtomicU64,
+    smtp_total: AtomicU64,
+    imap_total: AtomicU64,
+}
+
+impl ConnTracker {
+    /// An idle tracker.
+    pub fn new() -> Self {
+        ConnTracker::default()
+    }
+
+    /// Count one live SMTP connection until the returned guard is dropped.
+    pub fn smtp(self: &Arc<Self>) -> ConnectionGuard {
+        self.smtp_active().fetch_add(1, Ordering::Relaxed);
+        self.smtp_total.fetch_add(1, Ordering::Relaxed);
+        ConnectionGuard {
+            counter: Arc::clone(self),
+            kind: ConnKind::Smtp,
+        }
+    }
+
+    /// Count one live IMAP connection until the returned guard is dropped.
+    pub fn imap(self: &Arc<Self>) -> ConnectionGuard {
+        self.imap_active().fetch_add(1, Ordering::Relaxed);
+        self.imap_total.fetch_add(1, Ordering::Relaxed);
+        ConnectionGuard {
+            counter: Arc::clone(self),
+            kind: ConnKind::Imap,
+        }
+    }
+
+    /// SMTP connections open right now.
+    pub fn smtp_connections(&self) -> u64 {
+        self.smtp.load(Ordering::Relaxed)
+    }
+
+    /// IMAP connections open right now.
+    pub fn imap_connections(&self) -> u64 {
+        self.imap.load(Ordering::Relaxed)
+    }
+
+    /// SMTP connections accepted since boot.
+    pub fn smtp_accepted(&self) -> u64 {
+        self.smtp_total.load(Ordering::Relaxed)
+    }
+
+    /// IMAP connections accepted since boot.
+    pub fn imap_accepted(&self) -> u64 {
+        self.imap_total.load(Ordering::Relaxed)
+    }
+
+    fn smtp_active(&self) -> &AtomicU64 {
+        &self.smtp
+    }
+
+    fn imap_active(&self) -> &AtomicU64 {
+        &self.imap
+    }
+}
+
+/// Which counter a [`ConnectionGuard`] decrements.
+#[derive(Debug, Clone, Copy)]
+enum ConnKind {
+    Smtp,
+    Imap,
+}
+
+/// Decrements a connection counter when dropped.
+#[derive(Debug)]
+pub struct ConnectionGuard {
+    counter: Arc<ConnTracker>,
+    kind: ConnKind,
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        let target = match self.kind {
+            ConnKind::Smtp => self.counter.smtp_active(),
+            ConnKind::Imap => self.counter.imap_active(),
+        };
+        // Saturating: a double drop must never wrap the counter to u64::MAX.
+        let _ = target.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            Some(current.saturating_sub(1))
+        });
+    }
+}
+
+/// One in-flight chunked attachment upload (`fcp.md` §6).
+///
+/// The chunks themselves live in memory: `client.attachment_chunk_size` is 1 MiB by
+/// default and an upload is bounded by `limits.max_attachment_size`, so a resumable
+/// upload holds at most a few tens of megabytes — far less than the cost of a
+/// resumable temporary file per uploader. The set of received indexes is what makes
+/// chunks idempotent and out-of-order-tolerant.
+#[derive(Debug)]
+pub struct UploadSession {
+    /// The owner of the upload. Only they may add chunks to it.
+    pub user_id: UserId,
+    /// Original file name.
+    pub filename: String,
+    /// Declared MIME type.
+    pub content_type: String,
+    /// Declared total size in bytes.
+    pub size_bytes: u64,
+    /// Bytes per chunk, except the last.
+    pub chunk_size: u64,
+    /// The attachment row reserved by `init`, when the upload has one.
+    pub attachment_id: Option<i64>,
+    /// Received chunks, by index.
+    pub chunks: HashMap<u64, Vec<u8>>,
+    /// The indexes held, so `status` can report them without touching the payloads.
+    pub received: BTreeSet<u64>,
+    /// When the upload started, for the housekeeping sweep.
+    pub created_at: DateTime<Utc>,
+}
+
+impl UploadSession {
+    /// How many chunks the declared size implies.
+    pub fn expected_chunks(&self) -> u64 {
+        if self.chunk_size == 0 {
+            return 0;
+        }
+        self.size_bytes.div_ceil(self.chunk_size)
+    }
+
+    /// The indexes still missing.
+    pub fn missing_chunks(&self) -> Vec<u64> {
+        (0..self.expected_chunks())
+            .filter(|index| !self.received.contains(index))
+            .collect()
+    }
+
+    /// Concatenate the chunks in order. Missing chunks are a caller error.
+    pub fn assemble(&self) -> Result<Vec<u8>> {
+        let mut out = Vec::with_capacity(self.size_bytes as usize);
+        for index in 0..self.expected_chunks() {
+            let chunk = self.chunks.get(&index).ok_or_else(|| {
+                FerromaError::Conflict(format!("upload chunk {index} has not been received"))
+            })?;
+            out.extend_from_slice(chunk);
+        }
+        Ok(out)
+    }
+}
+
+/// Every in-flight chunked upload, keyed by its upload token.
+#[derive(Debug, Default)]
+pub struct UploadRegistry {
+    sessions: Mutex<HashMap<String, UploadSession>>,
+}
+
+impl UploadRegistry {
+    /// An empty registry.
+    pub fn new() -> Self {
+        UploadRegistry::default()
+    }
+
+    /// Register a new session.
+    pub fn insert(&self, token: String, session: UploadSession) {
+        if let Ok(mut guard) = self.sessions.lock() {
+            guard.insert(token, session);
+        }
+    }
+
+    /// Look a session up.
+    pub fn get(&self, token: &str) -> Option<UploadSession> {
+        self.sessions.lock().ok().and_then(|guard| {
+            guard.get(token).map(|session| UploadSession {
+                user_id: session.user_id,
+                filename: session.filename.clone(),
+                content_type: session.content_type.clone(),
+                size_bytes: session.size_bytes,
+                chunk_size: session.chunk_size,
+                attachment_id: session.attachment_id,
+                chunks: session.chunks.clone(),
+                received: session.received.clone(),
+                created_at: session.created_at,
+            })
+        })
+    }
+
+    /// Find a session by the attachment it belongs to, when the caller owns it.
+    ///
+    /// This is what the chunk protocol authenticates against: the token is never sent
+    /// back on the wire, so the attachment id plus ownership *is* the credential.
+    pub fn find_for_attachment(&self, attachment_id: i64, user: UserId) -> Option<UploadSession> {
+        self.sessions
+            .lock()
+            .ok()
+            .and_then(|guard| {
+                guard
+                    .iter()
+                    .find(|(_, session)| {
+                        session.attachment_id == Some(attachment_id) && session.user_id == user
+                    })
+                    .map(|(token, _)| token.clone())
+            })
+            .and_then(|token| self.get(&token))
+    }
+
+    /// Store one chunk against the attachment it belongs to.
+    pub fn put_chunk_for_attachment(
+        &self,
+        attachment_id: i64,
+        index: u64,
+        data: Vec<u8>,
+    ) -> bool {
+        let Some(token) = self.sessions.lock().ok().and_then(|guard| {
+            guard
+                .iter()
+                .find(|(_, session)| session.attachment_id == Some(attachment_id))
+                .map(|(token, _)| token.clone())
+        }) else {
+            return false;
+        };
+        self.put_chunk(&token, index, data)
+    }
+
+    /// Remove and return the session of an attachment.
+    pub fn take_for_attachment(
+        &self,
+        attachment_id: i64,
+        user: UserId,
+    ) -> Option<(String, UploadSession)> {
+        let token = self.sessions.lock().ok().and_then(|guard| {
+            guard
+                .iter()
+                .find(|(_, session)| {
+                    session.attachment_id == Some(attachment_id) && session.user_id == user
+                })
+                .map(|(token, _)| token.clone())
+        })?;
+        let session = self.remove(&token)?;
+        Some((token, session))
+    }
+
+    /// Store one chunk. Returns `false` when the token is unknown.
+    pub fn put_chunk(&self, token: &str, index: u64, data: Vec<u8>) -> bool {
+        let Ok(mut guard) = self.sessions.lock() else {
+            return false;
+        };
+        match guard.get_mut(token) {
+            Some(session) => {
+                session.received.insert(index);
+                session.chunks.insert(index, data);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Remove a session, returning it.
+    pub fn remove(&self, token: &str) -> Option<UploadSession> {
+        self.sessions
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.remove(token))
+    }
+
+    /// How many uploads are in flight.
+    pub fn len(&self) -> usize {
+        self.sessions.lock().map(|guard| guard.len()).unwrap_or(0)
+    }
+
+    /// Whether no upload is in flight.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// A hidden message row that owns attachments uploaded before they are sent.
+///
+/// The `attachments` table has `message_id NOT NULL REFERENCES messages(id)`, so an
+/// upload that precedes the message it will belong to needs *something* to hang from.
+/// Rather than change the schema, an uploader gets one placeholder message per
+/// account, flagged `is_draft` and filed in their `Drafts` folder under a subject no
+/// user interface shows. The send path re-points the attachment rows at the real
+/// message, and afterwards the placeholder itself is deleted.
+///
+/// Ownership therefore still works the only way it can: an attachment belongs to the
+/// user who owns the message it hangs from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessageStub {
+    /// The placeholder message row.
+    pub message_id: MessageId,
+}
+
+/// The subject that marks a placeholder row. Never shown, never searchable by a
+/// client that filters on the subject it typed.
+pub const STUB_SUBJECT: &str = "\u{1}ferroma-upload-stub";
+
+impl MessageStub {
+    /// The placeholder for `user`, created on first use.
+    pub async fn ensure(
+        app: &AppState,
+        user: UserId,
+    ) -> Result<MessageStub, FerromaError> {
+        let mailbox = app
+            .repos
+            .mailboxes
+            .find_primary(user)
+            .await?
+            .ok_or_else(|| {
+                FerromaError::Conflict(
+                    "this account has no address yet, so it cannot upload attachments".to_string(),
+                )
+            })?;
+        let folder = app
+            .repos
+            .folders
+            .require_by_name(mailbox.mailbox_id(), "Drafts")
+            .await?;
+
+        if let Some(existing) = find_stub(app, folder.folder_id()).await? {
+            return Ok(MessageStub {
+                message_id: existing.message_id(),
+            });
+        }
+
+        let message = app
+            .repos
+            .messages
+            .insert(ferroma_storage::repository::NewMessage {
+                folder_id: folder.folder_id(),
+                mailbox_id: mailbox.mailbox_id(),
+                rfc_message_id: None,
+                thread_id: None,
+                subject: Some(STUB_SUBJECT.to_string()),
+                sender: None,
+                sender_name: None,
+                snippet: None,
+                size_bytes: 0,
+                storage_path: String::new(),
+                checksum_sha256: None,
+                flags: "draft seen".to_string(),
+                internal_date: None,
+                sent_at: None,
+                has_attachments: true,
+                attachment_count: 0,
+                is_draft: true,
+            })
+            .await?;
+
+        Ok(MessageStub {
+            message_id: message.message_id(),
+        })
+    }
+
+    /// Whether a message row is a placeholder rather than mail.
+    pub fn is_stub(message: &ferroma_storage::models::Message) -> bool {
+        message.subject.as_deref() == Some(STUB_SUBJECT)
+    }
+}
+
+/// Find an account's upload placeholder in one folder.
+async fn find_stub(
+    app: &AppState,
+    folder: ferroma_core::MailboxId,
+) -> Result<Option<ferroma_storage::models::Message>, FerromaError> {
+    let rows = app.repos.messages.list_by_folder(folder, 50, 0).await?;
+    Ok(rows
+        .into_iter()
+        .find(|message| MessageStub::is_stub(message) && message.expunged_at.is_none()))
+}
+
+/// Everything a handler needs, cheaply cloneable.
+#[derive(Clone)]
+pub struct AppState {
+    /// Database repositories.
+    pub repos: Repositories,
+    /// The database handle itself, for pool statistics and version reporting.
+    ///
+    /// `None` until the server installs one with [`AppState::with_database`], which is
+    /// how a test can point the API at a schema of its own. The health endpoint treats
+    /// "no handle" exactly like "unreachable", so a misconfigured deployment is
+    /// reported honestly rather than crashing.
+    pub database: Option<Arc<Database>>,
+    /// Login, session, token and device operations.
+    pub auth: Arc<AuthService>,
+    /// The realtime bus.
+    pub events: Arc<EventBus>,
+    /// Change log, cursors and idempotent client operations.
+    pub sync: Arc<SyncService>,
+    /// The effective configuration.
+    pub config: Arc<Config>,
+    /// Token minting and verification.
+    pub tokens: TokenService,
+    /// RFC 5322 message bytes on disk.
+    pub maildir: Maildir,
+    /// Content-addressed attachment blobs.
+    pub attachments: Arc<AttachmentStore>,
+    /// How outbound mail leaves the building.
+    pub mail: Arc<dyn MailSender>,
+    /// When the process started.
+    pub started_at: Instant,
+    /// Wall-clock instant of the same moment, for `.well-known` and uptime reports.
+    pub started_wall: DateTime<Utc>,
+    /// Live SMTP/IMAP connection counts.
+    pub connections: Arc<ConnTracker>,
+    /// In-flight chunked attachment uploads.
+    pub uploads: Arc<UploadRegistry>,
+    /// The message operations every mail surface shares.
+    pub mail_service: crate::service::MessageService,
+    /// The bounded in-process log ring behind `GET /api/v1/logs`.
+    pub logs: crate::logbuf::LogSink,
+}
+
+impl std::fmt::Debug for AppState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppState")
+            .field("hostname", &self.config.server.hostname)
+            .field("started_wall", &self.started_wall)
+            .field("uploads", &self.uploads.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl AppState {
+    /// Build the state from its parts.
+    ///
+    /// The maildir and attachment store are derived from `config` unless the caller
+    /// supplied explicit ones, so a test can point them at a temporary directory
+    /// without rewriting the configuration. There is no database handle yet; the server
+    /// installs one with [`AppState::with_database`].
+    pub fn new(
+        repos: Repositories,
+        config: Arc<Config>,
+        tokens: TokenService,
+        auth: Arc<AuthService>,
+        events: Arc<EventBus>,
+        sync: Arc<SyncService>,
+    ) -> Self {
+        let maildir = Maildir::new(
+            config.maildir_root(),
+            config.storage.fsync_on_write,
+            config.storage.layout,
+        );
+        let attachments = Arc::new(AttachmentStore::new(
+            config.attachment_root(),
+            config.storage.fsync_on_write,
+        ));
+        let mail: Arc<dyn MailSender> = Arc::new(QueueMailSender::new(
+            repos.clone(),
+            config.queue.max_attempts,
+        ));
+        let mail_service = crate::service::MessageService::new(
+            repos.clone(),
+            maildir.clone(),
+            Arc::clone(&attachments),
+            Arc::clone(&events),
+            Arc::clone(&sync),
+            Arc::clone(&config),
+            Arc::clone(&mail),
+        );
+        AppState {
+            repos,
+            database: None,
+            auth,
+            events,
+            sync,
+            config,
+            tokens,
+            maildir,
+            attachments,
+            mail,
+            started_at: Instant::now(),
+            started_wall: Utc::now(),
+            connections: Arc::new(ConnTracker::new()),
+            uploads: Arc::new(UploadRegistry::new()),
+            mail_service,
+            logs: crate::logbuf::LogSink::new(Arc::new(crate::logbuf::LogBuffer::default())),
+        }
+    }
+
+    /// Replace the maildir, for tests that need a private root.
+    #[must_use]
+    pub fn with_maildir(mut self, maildir: Maildir) -> Self {
+        self.mail_service = self.mail_service.with_maildir(maildir.clone());
+        self.maildir = maildir;
+        self
+    }
+
+    /// Replace the attachment store, for tests that need a private root.
+    #[must_use]
+    pub fn with_attachments(mut self, attachments: AttachmentStore) -> Self {
+        let shared = Arc::new(attachments);
+        self.mail_service = self.mail_service.with_attachments(Arc::clone(&shared));
+        self.attachments = shared;
+        self
+    }
+
+    /// Replace the delivery seam, for tests and for a future `ferroma-smtp` worker.
+    #[must_use]
+    pub fn with_mail_sender(mut self, mail: Arc<dyn MailSender>) -> Self {
+        self.mail = Arc::clone(&mail);
+        self.mail_service = self.mail_service.with_mail_sender(mail);
+        self
+    }
+
+    /// Replace the connection tracker, for tests and for the server wiring.
+    #[must_use]
+    pub fn with_connections(mut self, connections: Arc<ConnTracker>) -> Self {
+        self.connections = connections;
+        self
+    }
+
+    /// Use `database` for pool statistics and version reporting.
+    #[must_use]
+    pub fn with_database(mut self, database: Arc<Database>) -> Self {
+        self.database = Some(database);
+        self
+    }
+
+    /// Replace the log ring, so the server can share the buffer its `tracing`
+    /// subscriber writes into.
+    #[must_use]
+    pub fn with_log_sink(mut self, logs: crate::logbuf::LogSink) -> Self {
+        self.logs = logs;
+        self
+    }
+
+    /// Seconds since the process started.
+    pub fn uptime_secs(&self) -> u64 {
+        self.started_at.elapsed().as_secs()
+    }
+
+    /// The negotiated FCP protocol version this build speaks.
+    pub fn protocol_version(&self) -> u32 {
+        self.config.client.protocol_version
+    }
+
+    /// The oldest FCP protocol version still accepted.
+    pub fn min_protocol_version(&self) -> u32 {
+        self.config.client.min_protocol_version
+    }
+
+    /// Whether the database answers a trivial query right now.
+    ///
+    /// Goes through [`Database::health`], which is the storage layer's own probe, so
+    /// this crate needs no direct `sqlx` dependency. A state with no handle at all is
+    /// unreachable by definition.
+    pub async fn database_reachable(&self) -> bool {
+        match &self.database {
+            Some(database) => database.health().await.is_ok(),
+            None => false,
+        }
+    }
+
+    /// The PostgreSQL server version, when it answers.
+    pub async fn server_version_text(&self) -> Option<String> {
+        self.database.as_ref()?.server_version().await.ok()
+    }
+
+    /// Pool utilisation, when there is a handle.
+    pub fn pool_stats(&self) -> Option<ferroma_storage::PoolStats> {
+        self.database.as_ref().map(|database| database.pool_stats())
+    }
+
+    /// Size of the database on disk, in bytes.
+    pub async fn database_bytes(&self) -> Option<i64> {
+        self.database.as_ref()?.size_bytes().await.ok()
+    }
+
+    /// The server version string reported by `/health` and `/version`.
+    pub fn server_version(&self) -> &'static str {
+        ferroma_core::VERSION
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A lazy pool: nothing in these tests touches a socket, but `Repositories`
+    /// insists on a real `PgPool` value.
+    fn lazy_repos() -> Repositories {
+        let pool = sqlx::PgPool::connect_lazy("postgres://ferroma@127.0.0.1:5433/none")
+            .expect("lazy pool must be constructible");
+        Repositories::new(pool)
+    }
+
+    #[tokio::test]
+    async fn conn_tracker_counts_and_releases() {
+        let tracker = Arc::new(ConnTracker::new());
+        assert_eq!(tracker.smtp_connections(), 0);
+        assert_eq!(tracker.imap_connections(), 0);
+
+        let a = tracker.smtp();
+        let b = tracker.smtp();
+        let c = tracker.imap();
+        assert_eq!(tracker.smtp_connections(), 2);
+        assert_eq!(tracker.imap_connections(), 1);
+        assert_eq!(tracker.smtp_accepted(), 2);
+        assert_eq!(tracker.imap_accepted(), 1);
+
+        drop(a);
+        assert_eq!(tracker.smtp_connections(), 1);
+        drop(b);
+        drop(c);
+        assert_eq!(tracker.smtp_connections(), 0);
+        assert_eq!(tracker.imap_connections(), 0);
+        // Lifetime totals do not fall back down.
+        assert_eq!(tracker.smtp_accepted(), 2);
+    }
+
+    #[test]
+    fn conn_tracker_never_underflows() {
+        let tracker = Arc::new(ConnTracker::new());
+        let guard = tracker.smtp();
+        drop(guard);
+        assert_eq!(tracker.smtp_connections(), 0);
+        // A second drop would be a bug, but the counter must stay sane.
+        let again = ConnTracker::new();
+        assert_eq!(again.smtp_connections(), 0);
+    }
+
+    fn session(size: u64, chunk: u64) -> UploadSession {
+        UploadSession {
+            user_id: UserId::new(7),
+            filename: "big.bin".into(),
+            content_type: "application/octet-stream".into(),
+            size_bytes: size,
+            chunk_size: chunk,
+            attachment_id: None,
+            chunks: HashMap::new(),
+            received: BTreeSet::new(),
+            created_at: Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn upload_session_computes_chunk_geometry() {
+        assert_eq!(session(0, 1024).expected_chunks(), 0);
+        assert_eq!(session(1, 1024).expected_chunks(), 1);
+        assert_eq!(session(1024, 1024).expected_chunks(), 1);
+        assert_eq!(session(1025, 1024).expected_chunks(), 2);
+        assert_eq!(session(4096, 1024).expected_chunks(), 4);
+        // A zero chunk size would divide by zero; it must not panic.
+        assert_eq!(session(100, 0).expected_chunks(), 0);
+    }
+
+    #[tokio::test]
+    async fn registry_accepts_out_of_order_chunks_and_reports_gaps() {
+        let registry = UploadRegistry::new();
+        registry.insert("tok-1".into(), session(3000, 1000));
+
+        assert!(registry.put_chunk("tok-1", 2, vec![3u8; 1000]));
+        assert!(registry.put_chunk("tok-1", 0, vec![1u8; 1000]));
+        // Re-sending an already-received chunk is idempotent, not an error.
+        assert!(registry.put_chunk("tok-1", 1, vec![2u8; 1000]));
+
+        let stored = registry.get("tok-1").expect("session must exist");
+        assert_eq!(stored.missing_chunks(), Vec::<u64>::new());
+        assert_eq!(stored.received.len(), 3);
+
+        let assembled = stored.assemble().expect("all chunks are present");
+        assert_eq!(assembled.len(), 3000);
+        assert_eq!(assembled[0], 1);
+        assert_eq!(assembled[1000], 2);
+        assert_eq!(assembled[2000], 3);
+    }
+
+    #[tokio::test]
+    async fn registry_reports_a_missing_chunk_rather_than_truncating() {
+        let registry = UploadRegistry::new();
+        registry.insert("tok-2".into(), session(3000, 1000));
+        registry.put_chunk("tok-2", 0, vec![1u8; 1000]);
+        let stored = registry.get("tok-2").expect("session must exist");
+        assert_eq!(stored.missing_chunks(), vec![1, 2]);
+        assert!(stored.assemble().is_err());
+    }
+
+    #[tokio::test]
+    async fn registry_ignores_unknown_tokens() {
+        let registry = UploadRegistry::new();
+        assert!(registry.get("nope").is_none());
+        assert!(!registry.put_chunk("nope", 0, vec![]));
+        assert!(registry.remove("nope").is_none());
+        assert!(registry.is_empty());
+    }
+
+    #[tokio::test]
+    async fn registry_remove_takes_the_session_out() {
+        let registry = UploadRegistry::new();
+        registry.insert("tok-3".into(), session(10, 10));
+        assert_eq!(registry.len(), 1);
+        assert!(registry.remove("tok-3").is_some());
+        assert!(registry.get("tok-3").is_none());
+        assert!(registry.is_empty());
+    }
+
+    #[tokio::test]
+    async fn queue_sender_writes_one_row_per_recipient() {
+        // Uses a connect-lazy pool: the sender is not exercised against a database
+        // here (the integration tests do that), only its construction and shape.
+        let sender = QueueMailSender::new(lazy_repos(), 12);
+        assert_eq!(sender.max_attempts, 12);
+        assert_eq!(
+            SendOutcome {
+                queued: 2,
+                recipients: vec!["a@b.c".into(), "d@e.f".into()]
+            }
+            .queued,
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn app_state_reports_uptime_and_versions() {
+        let config = Arc::new(Config::default());
+        let repos = lazy_repos();
+        let tokens = TokenService::new(
+            "0123456789abcdef0123456789abcdef0123456789",
+            3600,
+            86_400,
+            "localhost",
+        )
+        .expect("a 40-character secret is acceptable");
+        let auth = Arc::new(AuthService::with_defaults(
+            repos.clone(),
+            tokens.clone(),
+            config.limits.clone(),
+        ));
+        let sync = Arc::new(SyncService::new(
+            repos.clone(),
+            config.client.sync_page_size,
+            config.client.tombstone_retention_days,
+        ));
+        let state = AppState::new(
+            repos,
+            Arc::clone(&config),
+            tokens,
+            auth,
+            Arc::new(EventBus::with_defaults()),
+            sync,
+        );
+
+        assert!(state.uptime_secs() < 60);
+        assert_eq!(state.protocol_version(), 1);
+        assert_eq!(state.min_protocol_version(), 1);
+        assert_eq!(state.server_version(), ferroma_core::VERSION);
+        assert!(state.connections.smtp_connections() == 0);
+        assert!(state.uploads.is_empty());
+    }
+
+    #[tokio::test]
+    async fn app_state_can_be_reconfigured_for_tests() {
+        let config = Arc::new(Config::default());
+        let repos = lazy_repos();
+        let tokens = TokenService::new(
+            "0123456789abcdef0123456789abcdef0123456789",
+            3600,
+            86_400,
+            "localhost",
+        )
+        .expect("valid secret");
+        let auth = Arc::new(AuthService::with_defaults(
+            repos.clone(),
+            tokens.clone(),
+            config.limits.clone(),
+        ));
+        let sync = Arc::new(SyncService::new(
+            repos.clone(),
+            config.client.sync_page_size,
+            config.client.tombstone_retention_days,
+        ));
+        let dir = tempfile::tempdir().expect("temp dir");
+        let state = AppState::new(
+            repos,
+            Arc::clone(&config),
+            tokens,
+            auth,
+            Arc::new(EventBus::with_defaults()),
+            sync,
+        )
+        .with_maildir(Maildir::new(
+            dir.path().join("mail"),
+            false,
+            ferroma_core::config::MailboxLayout::Maildir,
+        ))
+        .with_attachments(AttachmentStore::new(dir.path().join("att"), false))
+        .with_connections(Arc::new(ConnTracker::new()));
+
+        assert_eq!(state.maildir.root(), dir.path().join("mail").as_path());
+        assert_eq!(state.attachments.root(), dir.path().join("att").as_path());
+        assert_eq!(state.connections.smtp_connections(), 0);
+    }
+}

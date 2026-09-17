@@ -1,0 +1,190 @@
+# =============================================================================
+# Ferroma — production deployment
+# =============================================================================
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Differences from docker-compose.yml:
+#   * TLS terminated by Ferroma itself on 465 / 993 / 8443
+#   * PostgreSQL tuned for a real workload and not merely "the defaults"
+#   * host port 25 / 587 / 143 still bound, but the implicit-TLS ports are added
+#   * resource limits, restart policies and bounded logs on every service
+#   * a nightly backup sidecar that writes into a mounted volume
+#
+# Before the first boot, read docs/deployment.md: DNS (MX/A/PTR/SPF/DKIM/DMARC)
+# has to be in place or your mail will be rejected no matter how correct Ferroma is.
+# =============================================================================
+
+name: ferroma
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: '20m'
+    max-file: '10'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ferroma-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ferroma}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-ferroma}
+      POSTGRES_INITDB_ARGS: '--encoding=UTF8 --locale=C'
+    command:
+      # Mail metadata is small and hot; the message bodies are on the filesystem.
+      # These settings suit a 4 GB host; scale shared_buffers to ~25% of RAM.
+      - postgres
+      - -c
+      - max_connections=100
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - effective_cache_size=1536MB
+      - -c
+      - work_mem=8MB
+      - -c
+      - maintenance_work_mem=128MB
+      - -c
+      - wal_compression=on
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - log_min_duration_statement=500
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-ferroma} -d ${POSTGRES_DB:-ferroma}']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    logging: *default-logging
+    networks: [ferroma-internal]
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+  ferroma:
+    image: ferroma:${FERROMA_VERSION:?set FERROMA_VERSION to a released tag}
+    container_name: ferroma
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-ferroma}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ferroma}
+      FERROMA_HOSTNAME: ${FERROMA_HOSTNAME:?set FERROMA_HOSTNAME in .env}
+      FERROMA_DATA_DIR: /var/lib/ferroma
+      FERROMA_LOG_LEVEL: ${FERROMA_LOG_LEVEL:-info}
+      FERROMA_LOG_FORMAT: ${FERROMA_LOG_FORMAT:-json}
+      FERROMA_API_PUBLIC_URL: ${FERROMA_PUBLIC_URL:?set FERROMA_PUBLIC_URL in .env}
+      FERROMA_JWT_SECRET: ${FERROMA_JWT_SECRET:?set FERROMA_JWT_SECRET in .env}
+      # Ferroma terminates TLS itself in this stack.
+      FERROMA_TLS_ENABLED: 'true'
+      FERROMA_TLS_CERT: /etc/ferroma/tls/fullchain.pem
+      FERROMA_TLS_KEY: /etc/ferroma/tls/privkey.pem
+      # Cookies must be Secure once TLS is on.
+      FERROMA__API__SECURE_COOKIES: 'true'
+      # Behind a load balancer or reverse proxy, honour X-Forwarded-For.
+      FERROMA__API__TRUST_PROXY_HEADERS: '${TRUST_PROXY_HEADERS:-false}'
+      # Refuse SASL over an unencrypted socket.
+      FERROMA__SMTP__REQUIRE_TLS_FOR_AUTH: 'true'
+      FERROMA__IMAP__REQUIRE_TLS_FOR_LOGIN: 'true'
+      # Bind the implicit-TLS listeners. Both are 0 (off) in the shipped default
+      # configuration, so without these two lines the published 465 and 993 map
+      # ports nothing is listening on — a connection that is refused rather than
+      # an error anyone can see.
+      FERROMA__SMTP__SMTPS_PORT: '465'
+      FERROMA__IMAP__IMAPS_PORT: '993'
+      FERROMA_DKIM_ENABLED: ${FERROMA_DKIM_ENABLED:-false}
+      FERROMA_DKIM_SELECTOR: ${FERROMA_DKIM_SELECTOR:-default}
+      FERROMA_DKIM_KEY: /etc/ferroma/dkim/${FERROMA_DKIM_SELECTOR:-default}.private
+    ports:
+      - '25:25'     # inbound MX — must be reachable from the internet
+      - '587:587'   # submission (STARTTLS)
+      - '465:465'   # SMTPS
+      - '143:143'   # IMAP (STARTTLS)
+      - '993:993'   # IMAPS
+      # There is no HTTPS port here on purpose. Ferroma has no HTTPS listener —
+      # `api.tls_port` is read by the configuration and never bound — so Webmail,
+      # Admin and the API are reached through a reverse proxy that talks to 8080
+      # on the loopback interface. docs/deployment.md §5.3 has the server block.
+    volumes:
+      - ferroma-data:/var/lib/ferroma
+      - ./config/ferroma.toml:/etc/ferroma/ferroma.toml:ro
+      - ./tls:/etc/ferroma/tls:ro
+      - ./dkim:/etc/ferroma/dkim:ro
+      - backups:/var/lib/ferroma/backups
+    healthcheck:
+      test: ['CMD', 'ferroma', 'healthcheck', '--url', 'http://127.0.0.1:8080/api/v1/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    stop_grace_period: 60s
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    logging: *default-logging
+    networks:
+      - ferroma-internal
+      - ferroma-public
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+  # Nightly logical backup of PostgreSQL plus an incremental copy of the mail store.
+  # See scripts/backup.sh — it deliberately keeps database and maildir backups in
+  # step, because restoring one without the other loses messages.
+  #
+  # It *loops* rather than running once and exiting: a one-shot script under
+  # `restart: always` is restarted as soon as it finishes, which writes a full
+  # backup on every restart backoff until the disk fills.
+  backup:
+    image: postgres:16-alpine
+    container_name: ferroma-backup
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-ferroma}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB:-ferroma}
+      BACKUP_DIR: /backups
+      MAIL_DIR: /mail
+      CONFIG_DIR: /etc/ferroma
+      RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+    entrypoint: ['/bin/sh', '/usr/local/bin/backup.sh']
+    command: ['--loop']
+    volumes:
+      - ./scripts/backup.sh:/usr/local/bin/backup.sh:ro
+      - ./scripts/restore.sh:/usr/local/bin/restore.sh:ro
+      - ferroma-data:/mail:ro
+      - ./tls:/etc/ferroma/tls:ro
+      - backups:/backups
+    logging: *default-logging
+    networks: [ferroma-internal]
+
+volumes:
+  postgres-data:
+    name: ferroma-postgres-data
+  ferroma-data:
+    name: ferroma-data
+  backups:
+    name: ferroma-backups
+
+networks:
+  ferroma-internal:
+    name: ferroma-internal
+  ferroma-public:
+    name: ferroma-public

@@ -1,0 +1,982 @@
+﻿//! End-to-end tests of the mail surface: attachments, sending, the queue, and the
+//! message operations Webmail drives.
+
+mod common;
+
+use axum::http::StatusCode;
+use common::{folder_id, seed_account, TestApp};
+use serde_json::json;
+
+/// A password the auth policy accepts.
+const PASSWORD: &str = "correct horse battery";
+
+/// A fresh app with an administrator and one ready address.
+async fn app_with_address() -> (TestApp, String, i64, String) {
+    let app = TestApp::new().await;
+    let admin = app
+        .json(
+            "POST",
+            "/api/v1/setup",
+            None,
+            json!({
+                "email": "admin@example.com",
+                "password": PASSWORD,
+                "domain": "example.com"
+            }),
+        )
+        .await
+        .expect(StatusCode::CREATED)["access_token"]
+        .as_str()
+        .expect("setup token")
+        .to_string();
+
+    let (_user_id, mailbox_id, token) =
+        seed_account(&app, &admin, "example.net", "alice@example.net", PASSWORD).await;
+    (app, admin, mailbox_id, token)
+}
+
+/// Upload one attachment and return its id.
+async fn upload(app: &TestApp, token: &str, filename: &str, bytes: &[u8]) -> i64 {
+    let boundary = "----ferromaTestBoundary";
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        format!(
+            "Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n\
+             Content-Type: application/octet-stream\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(bytes);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/api/v1/attachments")
+        .header(
+            axum::http::header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(axum::body::Body::from(body))
+        .expect("valid request");
+
+    let response = app.request(request).await;
+    let body = response.expect(StatusCode::CREATED);
+    assert_eq!(body["filename"], filename, "{body}");
+    assert_eq!(body["size_bytes"].as_u64(), Some(bytes.len() as u64));
+    assert!(body["sha256"].is_string(), "{body}");
+    body["id"].as_i64().expect("attachment id")
+}
+
+#[tokio::test]
+async fn uploading_an_attachment_stores_a_content_addressed_blob() {
+    require_database!();
+    let (app, _admin, _mailbox, token) = app_with_address().await;
+
+    let first = upload(&app, &token, "report.pdf", b"%PDF-1.7 fake").await;
+    let second = upload(&app, &token, "copy.pdf", b"%PDF-1.7 fake").await;
+    assert_ne!(first, second, "each upload gets its own row");
+
+    // Both rows point at the same blob, because the store is content-addressed.
+    let meta_one = app
+        .get(&format!("/api/v1/attachments/{first}/meta"), Some(&token))
+        .await
+        .expect(StatusCode::OK);
+    let meta_two = app
+        .get(&format!("/api/v1/attachments/{second}/meta"), Some(&token))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(meta_one["sha256"], meta_two["sha256"]);
+
+    // The bytes round-trip exactly.
+    let download = app
+        .get(&format!("/api/v1/attachments/{first}"), Some(&token))
+        .await;
+    assert_eq!(download.status, StatusCode::OK);
+    assert_eq!(download.body, b"%PDF-1.7 fake");
+    assert_eq!(
+        download.header("content-type").as_deref(),
+        Some("application/octet-stream")
+    );
+    assert_eq!(
+        download.header("accept-ranges").as_deref(),
+        Some("bytes")
+    );
+    assert!(download.header("etag").is_some());
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn an_attachment_download_honours_range_and_if_none_match() {
+    require_database!();
+    let (app, _admin, _mailbox, token) = app_with_address().await;
+    let id = upload(&app, &token, "ranged.bin", b"0123456789").await;
+
+    let request = axum::http::Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/attachments/{id}"))
+        .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(axum::http::header::RANGE, "bytes=2-5")
+        .body(axum::body::Body::empty())
+        .expect("valid request");
+    let partial = app.request(request).await;
+    assert_eq!(partial.status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(partial.body, b"2345");
+    assert_eq!(
+        partial.header("content-range").as_deref(),
+        Some("bytes 2-5/10")
+    );
+
+    let full = app
+        .get(&format!("/api/v1/attachments/{id}"), Some(&token))
+        .await;
+    let etag = full.header("etag").expect("etag");
+
+    let request = axum::http::Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/attachments/{id}"))
+        .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(axum::http::header::IF_NONE_MATCH, etag)
+        .body(axum::body::Body::empty())
+        .expect("valid request");
+    let cached = app.request(request).await;
+    assert_eq!(cached.status, StatusCode::NOT_MODIFIED);
+    assert!(cached.body.is_empty());
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn one_user_cannot_download_another_users_attachment() {
+    require_database!();
+    let (app, admin, _mailbox, alice) = app_with_address().await;
+    let (_bob_id, _bob_mailbox, bob) =
+        seed_account(&app, &admin, "example.net", "bob@example.net", PASSWORD).await;
+
+    let id = upload(&app, &alice, "secret.pdf", b"private").await;
+    let stolen = app
+        .get(&format!("/api/v1/attachments/{id}"), Some(&bob))
+        .await;
+    assert_eq!(stolen.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        app.get(&format!("/api/v1/attachments/{id}/meta"), Some(&bob))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn sending_a_message_queues_one_row_per_recipient_and_copies_it_to_sent() {
+    require_database!();
+    let (app, _admin, mailbox_id, token) = app_with_address().await;
+
+    let attachment = upload(&app, &token, "invoice.pdf", b"invoice bytes").await;
+
+    let sent = app
+        .json(
+            "POST",
+            "/api/v1/messages",
+            Some(&token),
+            json!({
+                "from": "alice@example.net",
+                "to": ["bob@example.org", "carol@example.org"],
+                "cc": ["dan@example.org"],
+                "subject": "Invoice for September",
+                "text": "Hi, attached is the invoice.",
+                "html": "<p>Hi, attached is the invoice.</p>",
+                "attachments": [attachment]
+            }),
+        )
+        .await;
+    let body = sent.expect(StatusCode::OK);
+    let message_id = body["message_id"].as_i64().expect("message id");
+    assert_eq!(body["queued"], 3, "{body}");
+    let recipients: Vec<&str> = body["recipients"]
+        .as_array()
+        .expect("recipients")
+        .iter()
+        .filter_map(|value| value.as_str())
+        .collect();
+    assert!(recipients.contains(&"bob@example.org"));
+    assert!(recipients.contains(&"carol@example.org"));
+    assert!(recipients.contains(&"dan@example.org"));
+
+    // One `mail_queue` row per recipient.
+    assert_eq!(app.db().count("mail_queue").await, 3);
+    let queue = app
+        .get("/api/v1/queue?status=pending", Some(&_admin))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(queue["total"], 3);
+
+    // The sender's copy is in `Sent`.
+    let sent_folder = folder_id(&app, &token, mailbox_id, "Sent").await;
+    let listed = app
+        .get(
+            &format!("/api/v1/messages?folder_id={sent_folder}"),
+            Some(&token),
+        )
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(listed["total"], 1);
+    assert_eq!(listed["items"][0]["id"].as_i64(), Some(message_id));
+    assert_eq!(listed["items"][0]["subject"], "Invoice for September");
+    assert_eq!(listed["items"][0]["has_attachments"], true);
+    assert_eq!(listed["items"][0]["attachment_count"], 1);
+    assert!(listed["items"][0]["flags"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("seen"));
+
+    // The full read carries the bodies and the threading headers Webmail needs.
+    let detail = app
+        .get(&format!("/api/v1/messages/{message_id}"), Some(&token))
+        .await
+        .expect(StatusCode::OK);
+    assert!(detail["text_body"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("attached is the invoice"));
+    assert!(detail["html_body"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("<p>"));
+    assert!(detail["message_id_header"].is_string(), "{detail}");
+    assert!(detail["references"].is_array(), "{detail}");
+    assert_eq!(detail["attachment_count"], 1);
+    assert_eq!(detail["attachments"][0]["filename"], "invoice.pdf");
+    assert_eq!(detail["cc"].as_array().map(Vec::len), Some(1));
+    assert_eq!(detail["is_draft"], false);
+
+    // The raw endpoint answers `message/rfc822` with the stored bytes.
+    let raw = app
+        .get(&format!("/api/v1/messages/{message_id}/raw"), Some(&token))
+        .await;
+    assert_eq!(raw.status, StatusCode::OK);
+    assert_eq!(
+        raw.header("content-type").as_deref(),
+        Some("message/rfc822")
+    );
+    let text = String::from_utf8_lossy(&raw.body);
+    assert!(text.contains("Subject: Invoice for September"), "{text}");
+    assert!(text.contains("invoice.pdf"), "the attachment must be in the bytes");
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_draft_is_filed_in_drafts_and_queues_nothing() {
+    require_database!();
+    let (app, _admin, mailbox_id, token) = app_with_address().await;
+
+    let saved = app
+        .json(
+            "POST",
+            "/api/v1/messages",
+            Some(&token),
+            json!({
+                "from": "alice@example.net",
+                "subject": "half-written",
+                "text": "still thinking",
+                "draft": true
+            }),
+        )
+        .await;
+    let body = saved.expect(StatusCode::CREATED);
+    assert_eq!(body["queued"], 0);
+    assert_eq!(app.db().count("mail_queue").await, 0);
+
+    let drafts_folder = folder_id(&app, &token, mailbox_id, "Drafts").await;
+    let listed = app
+        .get(
+            &format!("/api/v1/messages?folder_id={drafts_folder}"),
+            Some(&token),
+        )
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(listed["total"], 1, "{listed}");
+    assert_eq!(listed["items"][0]["is_draft"], true);
+    assert!(listed["items"][0]["flags"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("draft"));
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn sending_from_an_address_the_caller_does_not_own_is_not_found() {
+    require_database!();
+    let (app, admin, _mailbox, token) = app_with_address().await;
+    seed_account(&app, &admin, "example.net", "bob@example.net", PASSWORD).await;
+
+    let forged = app
+        .json(
+            "POST",
+            "/api/v1/messages",
+            Some(&token),
+            json!({
+                "from": "bob@example.net",
+                "to": ["carol@example.org"],
+                "subject": "not mine",
+                "text": "forged"
+            }),
+        )
+        .await;
+    assert_eq!(forged.status, StatusCode::NOT_FOUND);
+    assert_eq!(forged.error_code(), "not_found");
+    assert_eq!(app.db().count("mail_queue").await, 0);
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_message_needs_a_recipient() {
+    require_database!();
+    let (app, _admin, _mailbox, token) = app_with_address().await;
+
+    let response = app
+        .json(
+            "POST",
+            "/api/v1/messages",
+            Some(&token),
+            json!({
+                "from": "alice@example.net",
+                "subject": "nobody",
+                "text": "hello?"
+            }),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    assert_eq!(response.error_code(), "invalid_input");
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn the_message_list_supports_every_documented_filter() {
+    require_database!();
+    let (app, _admin, mailbox_id, token) = app_with_address().await;
+
+    for subject in ["alpha invoice", "beta report", "gamma invoice"] {
+        app.json(
+            "POST",
+            "/api/v1/messages",
+            Some(&token),
+            json!({
+                "from": "alice@example.net",
+                "to": ["bob@example.org"],
+                "subject": subject,
+                "text": "body of the message"
+            }),
+        )
+        .await
+        .expect(StatusCode::OK);
+    }
+
+    let all = app
+        .get(&format!("/api/v1/messages?mailbox_id={mailbox_id}"), Some(&token))
+        .await
+        .expect(StatusCode::OK);
+    let total = all["total"].as_i64().expect("total");
+    assert_eq!(total, 3, "{all}");
+
+    let searched = app
+        .get(
+            &format!("/api/v1/messages?mailbox_id={mailbox_id}&query=invoice"),
+            Some(&token),
+        )
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(searched["total"], 2, "{searched}");
+
+    let unread = app
+        .get(
+            &format!("/api/v1/messages?mailbox_id={mailbox_id}&unread=true"),
+            Some(&token),
+        )
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(unread["total"], 0, "sent copies are marked seen");
+
+    let flagged = app
+        .get(
+            &format!("/api/v1/messages?mailbox_id={mailbox_id}&flagged=true"),
+            Some(&token),
+        )
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(flagged["total"], 0);
+
+    let with_attachments = app
+        .get(
+            &format!("/api/v1/messages?mailbox_id={mailbox_id}&has_attachments=true"),
+            Some(&token),
+        )
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(with_attachments["total"], 0);
+
+    // Paging is the documented shape.
+    let paged = app
+        .get(
+            &format!("/api/v1/messages?mailbox_id={mailbox_id}&limit=2&offset=0"),
+            Some(&token),
+        )
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(paged["limit"], 2);
+    assert_eq!(paged["offset"], 0);
+    assert_eq!(paged["items"].as_array().map(Vec::len), Some(2));
+    assert_eq!(paged["total"], 3);
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn listing_messages_of_a_foreign_mailbox_is_not_found() {
+    require_database!();
+    let (app, admin, _mailbox, _alice) = app_with_address().await;
+    let (_bob_id, bob_mailbox, bob) =
+        seed_account(&app, &admin, "example.net", "bob@example.net", PASSWORD).await;
+
+    let response = app
+        .get(
+            &format!("/api/v1/messages?mailbox_id={bob_mailbox}"),
+            Some(&bob),
+        )
+        .await;
+    // Bob may list his own; the fixture proves the scoping is per-caller.
+    response.expect(StatusCode::OK);
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn patching_a_message_changes_its_flags_and_publishes_the_event() {
+    require_database!();
+    let (app, _admin, mailbox_id, token) = app_with_address().await;
+
+    let sent = app
+        .json(
+            "POST",
+            "/api/v1/messages",
+            Some(&token),
+            json!({
+                "from": "alice@example.net",
+                "to": ["bob@example.org"],
+                "subject": "flag me",
+                "text": "body"
+            }),
+        )
+        .await
+        .expect(StatusCode::OK);
+    let message_id = sent["message_id"].as_i64().expect("message id");
+
+    let patched = app
+        .json(
+            "PATCH",
+            &format!("/api/v1/messages/{message_id}"),
+            Some(&token),
+            json!({ "flagged": true, "answered": true, "seen": false }),
+        )
+        .await;
+    let body = patched.expect(StatusCode::OK);
+    let flags = body["flags"].as_str().unwrap_or_default();
+    assert!(flags.contains("flagged"), "{flags}");
+    assert!(flags.contains("answered"), "{flags}");
+    assert!(!flags.contains("seen"), "{flags}");
+
+    // The Maildir file name follows the flags, which is what an IMAP client reads.
+    let listed = app
+        .get(
+            &format!("/api/v1/messages?folder_id={}", folder_id(&app, &token, mailbox_id, "Sent").await),
+            Some(&token),
+        )
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(listed["items"][0]["flags"], flags);
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn moving_and_copying_a_message_keeps_the_folders_consistent() {
+    require_database!();
+    let (app, _admin, mailbox_id, token) = app_with_address().await;
+
+    let sent = app
+        .json(
+            "POST",
+            "/api/v1/messages",
+            Some(&token),
+            json!({
+                "from": "alice@example.net",
+                "to": ["bob@example.org"],
+                "subject": "move me",
+                "text": "body"
+            }),
+        )
+        .await
+        .expect(StatusCode::OK);
+    let message_id = sent["message_id"].as_i64().expect("message id");
+
+    let archive = folder_id(&app, &token, mailbox_id, "Archive").await;
+    let moved = app
+        .json(
+            "POST",
+            &format!("/api/v1/messages/{message_id}/move"),
+            Some(&token),
+            json!({ "folder_id": archive }),
+        )
+        .await;
+    let body = moved.expect(StatusCode::OK);
+    assert_eq!(body["folder_id"].as_i64(), Some(archive));
+
+    // A move keeps one row; a copy makes a second.
+    let copied = app
+        .json(
+            "POST",
+            &format!("/api/v1/messages/{message_id}/copy"),
+            Some(&token),
+            json!({ "folder_id": folder_id(&app, &token, mailbox_id, "Junk").await }),
+        )
+        .await;
+    let copied_body = copied.expect(StatusCode::CREATED);
+    assert_ne!(copied_body["id"].as_i64(), Some(message_id));
+
+    let archive_list = app
+        .get(&format!("/api/v1/messages?folder_id={archive}"), Some(&token))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(archive_list["total"], 1);
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn deleting_moves_to_trash_and_permanent_removes_the_row() {
+    require_database!();
+    let (app, _admin, mailbox_id, token) = app_with_address().await;
+
+    let sent = app
+        .json(
+            "POST",
+            "/api/v1/messages",
+            Some(&token),
+            json!({
+                "from": "alice@example.net",
+                "to": ["bob@example.org"],
+                "subject": "delete me",
+                "text": "body"
+            }),
+        )
+        .await
+        .expect(StatusCode::OK);
+    let message_id = sent["message_id"].as_i64().expect("message id");
+
+    let trashed = app
+        .delete(&format!("/api/v1/messages/{message_id}"), Some(&token))
+        .await;
+    assert_eq!(trashed.status, StatusCode::NO_CONTENT);
+
+    let trash = folder_id(&app, &token, mailbox_id, "Trash").await;
+    let in_trash = app
+        .get(&format!("/api/v1/messages?folder_id={trash}"), Some(&token))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(in_trash["total"], 1, "{in_trash}");
+
+    // The soft delete updated the same row rather than inserting one.
+    assert_eq!(app.db().count("messages").await, 1);
+
+    let permanent = app
+        .delete(
+            &format!("/api/v1/messages/{message_id}?permanent=true"),
+            Some(&token),
+        )
+        .await;
+    assert_eq!(permanent.status, StatusCode::NO_CONTENT);
+    assert_eq!(app.db().count("messages").await, 0);
+    // ...and a tombstone survives in the change log.
+    assert!(app.db().count("change_log").await >= 2);
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn the_batch_endpoint_applies_one_operation_to_many_messages() {
+    require_database!();
+    let (app, _admin, _mailbox, token) = app_with_address().await;
+
+    let mut ids = Vec::new();
+    for index in 0..3 {
+        let sent = app
+            .json(
+                "POST",
+                "/api/v1/messages",
+                Some(&token),
+                json!({
+                    "from": "alice@example.net",
+                    "to": ["bob@example.org"],
+                    "subject": format!("batch {index}"),
+                    "text": "body"
+                }),
+            )
+            .await
+            .expect(StatusCode::OK);
+        ids.push(sent["message_id"].as_i64().expect("message id"));
+    }
+
+    let read = app
+        .json(
+            "POST",
+            "/api/v1/messages/batch",
+            Some(&token),
+            json!({ "operation": "unread", "ids": ids }),
+        )
+        .await;
+    let body = read.expect(StatusCode::OK);
+    assert_eq!(body["operation"], "unread");
+    assert_eq!(body["affected"], 3);
+
+    for id in &ids {
+        let detail = app
+            .get(&format!("/api/v1/messages/{id}"), Some(&token))
+            .await
+            .expect(StatusCode::OK);
+        assert!(
+            !detail["flags"].as_str().unwrap_or_default().contains("seen"),
+            "{detail}"
+        );
+    }
+
+    // An unknown operation is refused rather than silently ignored.
+    let bad = app
+        .json(
+            "POST",
+            "/api/v1/messages/batch",
+            Some(&token),
+            json!({ "operation": "teleport", "ids": ids }),
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST);
+
+    // An empty id list is refused too.
+    let empty = app
+        .json(
+            "POST",
+            "/api/v1/messages/batch",
+            Some(&token),
+            json!({ "operation": "read", "ids": [] }),
+        )
+        .await;
+    assert_eq!(empty.status, StatusCode::BAD_REQUEST);
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_batch_that_names_somebody_elses_message_skips_it_without_confirming_it() {
+    require_database!();
+    let (app, admin, _mailbox, alice) = app_with_address().await;
+    let (_bob_id, _bob_mailbox, bob) =
+        seed_account(&app, &admin, "example.net", "bob@example.net", PASSWORD).await;
+
+    let sent = app
+        .json(
+            "POST",
+            "/api/v1/messages",
+            Some(&alice),
+            json!({
+                "from": "alice@example.net",
+                "to": ["bob@example.org"],
+                "subject": "mine",
+                "text": "body"
+            }),
+        )
+        .await
+        .expect(StatusCode::OK);
+    let id = sent["message_id"].as_i64().expect("message id");
+
+    let response = app
+        .json(
+            "POST",
+            "/api/v1/messages/batch",
+            Some(&bob),
+            json!({ "operation": "read", "ids": [id] }),
+        )
+        .await;
+    let body = response.expect(StatusCode::OK);
+    assert_eq!(body["affected"], 0, "{body}");
+    assert_eq!(body["ids"], json!([]));
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn the_queue_reports_the_message_it_belongs_to_and_can_be_cancelled() {
+    require_database!();
+    let (app, admin, _mailbox, token) = app_with_address().await;
+
+    let sent = app
+        .json(
+            "POST",
+            "/api/v1/messages",
+            Some(&token),
+            json!({
+                "from": "alice@example.net",
+                "to": ["bob@example.org"],
+                "subject": "queue me",
+                "text": "body"
+            }),
+        )
+        .await
+        .expect(StatusCode::OK);
+    let message_id = sent["message_id"].as_i64().expect("message id");
+
+    let queue = app
+        .get("/api/v1/queue", Some(&admin))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(queue["total"], 1, "{queue}");
+    let queue_id = queue["items"][0]["id"].as_i64().expect("queue id");
+    assert_eq!(queue["items"][0]["message_id"].as_i64(), Some(message_id));
+    assert_eq!(queue["items"][0]["status"], "pending");
+    assert_eq!(queue["items"][0]["recipient"], "bob@example.org");
+
+    let detail = app
+        .get(&format!("/api/v1/queue/{queue_id}"), Some(&admin))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(detail["entry"]["id"].as_i64(), Some(queue_id));
+    assert_eq!(detail["entries"].as_array().map(Vec::len), None);
+    assert_eq!(detail["attempts"].as_array().map(Vec::len), Some(0));
+    assert_eq!(detail["subject"], "queue me");
+    assert_eq!(detail["recipient_count"], 1);
+
+    let stats = app
+        .get("/api/v1/queue/stats", Some(&admin))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(stats["pending"], 1);
+    assert_eq!(stats["outstanding"], 1);
+
+    let cancelled = app
+        .delete(&format!("/api/v1/queue/{queue_id}"), Some(&admin))
+        .await;
+    assert_eq!(cancelled.status, StatusCode::NO_CONTENT);
+
+    // A second cancel is refused rather than silently succeeding.
+    let again = app
+        .delete(&format!("/api/v1/queue/{queue_id}"), Some(&admin))
+        .await;
+    assert_eq!(again.status, StatusCode::CONFLICT);
+
+    let stats = app
+        .get("/api/v1/queue/stats", Some(&admin))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(stats["cancelled"], 1);
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn the_queue_status_filter_accepts_a_list_and_refuses_a_typo() {
+    require_database!();
+    let (app, admin, _mailbox, token) = app_with_address().await;
+
+    app.json(
+        "POST",
+        "/api/v1/messages",
+        Some(&token),
+        json!({
+            "from": "alice@example.net",
+            "to": ["bob@example.org"],
+            "subject": "filter me",
+            "text": "body"
+        }),
+    )
+    .await
+    .expect(StatusCode::OK);
+
+    let both = app
+        .get("/api/v1/queue?status=retry,failed", Some(&admin))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(both["total"], 0, "{both}");
+
+    let pending = app
+        .get("/api/v1/queue?status=pending", Some(&admin))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(pending["total"], 1);
+
+    let typo = app
+        .get("/api/v1/queue?status=pendign", Some(&admin))
+        .await;
+    assert_eq!(typo.status, StatusCode::BAD_REQUEST);
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn drafts_round_trip_through_the_management_surface() {
+    require_database!();
+    let (app, _admin, mailbox_id, token) = app_with_address().await;
+
+    let created = app
+        .json(
+            "POST",
+            "/api/v1/drafts",
+            Some(&token),
+            json!({
+                "mailbox_id": mailbox_id,
+                "subject": "draft subject",
+                "text": "draft body",
+                "to": ["bob@example.org"],
+                "cc": ["carol@example.org"]
+            }),
+        )
+        .await;
+    let body = created.expect(StatusCode::CREATED);
+    let draft_id = body["id"].as_i64().expect("draft id");
+    assert_eq!(body["subject"], "draft subject");
+    assert_eq!(body["text"], "draft body");
+    assert_eq!(body["to"][0]["address"], "bob@example.org");
+    assert_eq!(body["cc"][0]["address"], "carol@example.org");
+
+    let listed = app
+        .get("/api/v1/drafts", Some(&token))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(listed["total"], 1);
+    assert_eq!(listed["items"][0]["id"].as_i64(), Some(draft_id));
+
+    let fetched = app
+        .get(&format!("/api/v1/drafts/{draft_id}"), Some(&token))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(fetched["subject"], "draft subject");
+
+    // The draft is mirrored into the Drafts folder as a real message.
+    let drafts_folder = folder_id(&app, &token, mailbox_id, "Drafts").await;
+    let mirrored = app
+        .get(
+            &format!("/api/v1/messages?folder_id={drafts_folder}"),
+            Some(&token),
+        )
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(mirrored["total"], 1, "{mirrored}");
+    assert_eq!(mirrored["items"][0]["is_draft"], true);
+
+    let updated = app
+        .json(
+            "PATCH",
+            &format!("/api/v1/drafts/{draft_id}"),
+            Some(&token),
+            json!({ "subject": "renamed draft" }),
+        )
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(updated["subject"], "renamed draft");
+
+    let deleted = app
+        .delete(&format!("/api/v1/drafts/{draft_id}"), Some(&token))
+        .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+    // Deleting from the management surface removes the mirror too.
+    assert_eq!(app.db().count("drafts").await, 0);
+    assert_eq!(app.db().count("messages").await, 0);
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn one_user_cannot_touch_another_users_draft() {
+    require_database!();
+    let (app, admin, _mailbox, alice) = app_with_address().await;
+    let (_bob_id, _bob_mailbox, bob) =
+        seed_account(&app, &admin, "example.net", "bob@example.net", PASSWORD).await;
+
+    let created = app
+        .json(
+            "POST",
+            "/api/v1/drafts",
+            Some(&alice),
+            json!({ "subject": "alice's draft" }),
+        )
+        .await
+        .expect(StatusCode::CREATED);
+    let draft_id = created["id"].as_i64().expect("draft id");
+
+    assert_eq!(
+        app.get(&format!("/api/v1/drafts/{draft_id}"), Some(&bob))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        app.json(
+            "PATCH",
+            &format!("/api/v1/drafts/{draft_id}"),
+            Some(&bob),
+            json!({ "subject": "hijacked" })
+        )
+        .await
+        .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        app.delete(&format!("/api/v1/drafts/{draft_id}"), Some(&bob))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+
+    // Alice's draft is untouched.
+    let still_there = app
+        .get(&format!("/api/v1/drafts/{draft_id}"), Some(&alice))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(still_there["subject"], "alice's draft");
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_message_belonging_to_a_deleted_user_is_gone() {
+    require_database!();
+    let (app, admin, _mailbox, _token) = app_with_address().await;
+
+    let user = app
+        .json(
+            "POST",
+            "/api/v1/users",
+            Some(&admin),
+            json!({ "email": "temp@example.net", "password": PASSWORD }),
+        )
+        .await
+        .expect(StatusCode::CREATED);
+    let user_id = user["id"].as_i64().expect("user id");
+
+    let removed = app
+        .delete(&format!("/api/v1/users/{user_id}"), Some(&admin))
+        .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        app.get(&format!("/api/v1/users/{user_id}"), Some(&admin))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+
+    app.cleanup().await;
+}

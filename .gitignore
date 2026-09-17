@@ -1,0 +1,44 @@
+# Rust
+/target
+# Per-agent private target directories (AGENTS.md §1.2): `target-<name>` for
+# parallel builds, each one several gigabytes of build output.
+/target-*/
+**/*.rs.bk
+*.pdb
+
+# Ferroma build environment (see scripts/env.ps1)
+/.cargo-home
+/.probe
+/.cache
+# Machine-local cargo config: it points crates.io at tools/crates-proxy.mjs on
+# 127.0.0.1, which only exists on this development host (`.dockerignore` excludes
+# it from the image for the same reason). Committing it would break `cargo build`
+# everywhere else.
+/.cargo/
+
+# Runtime data
+/data
+/var
+*.log
+
+# Secrets — never commit
+.env
+.env.local
+*.pem
+*.key
+!tests/fixtures/**/*.pem
+
+# Deployment material: certificates, DKIM keys, transient rewrites of .env
+/tls/
+/dkim/
+.env.tmp.*
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+# Local assistant/IDE indexes — machine-local, regenerated on demand
+/.codeartsdoer/
+/.merkle-snapshot.json
