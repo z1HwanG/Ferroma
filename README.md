@@ -48,7 +48,7 @@ The supported deployment is Docker Compose. You need a host with a public IP, a 
 whose `MX` record points at it, and port 25 open.
 
 ```bash
-git clone https://github.com/ferroma/ferroma && cd ferroma
+git clone https://github.com/z1HwanG/Ferroma && cd Ferroma
 cp .env.example .env          # set POSTGRES_PASSWORD, FERROMA_HOSTNAME, FERROMA_JWT_SECRET
 docker compose up -d
 docker compose logs -f ferroma
@@ -58,6 +58,29 @@ Then open `http://localhost:8080` and walk through the first-run wizard. For a r
 — TLS, DKIM, deliverability — use `docker-compose.prod.yml` and follow
 [`docs/deployment.md`](docs/deployment.md); the DNS section is not optional.
 
+### Prefer a published image over a local build?
+
+Every release is published to Docker Hub as `wesukilaye/ferroma`, for `linux/amd64` and
+`linux/arm64`. The first `docker compose up -d` above compiles the whole Rust workspace
+inside the container — 10–30 minutes, and several gigabytes of build cache — so pulling
+is the faster path onto a server:
+
+```bash
+docker pull wesukilaye/ferroma:0.1.0
+```
+
+`docker-compose.prod.yml` and `docker-compose.external-db.yml` already default to that
+repository; pin the release you want in `.env`:
+
+```bash
+FERROMA_VERSION=0.1.0                      # docker-compose.prod.yml: the tag to pull
+# FERROMA_IMAGE=wesukilaye/ferroma:0.1.0   # docker-compose.external-db.yml: the whole reference
+```
+
+Available tags are `0.1.0` (exact release), `0.1` (latest patch of that minor) and
+`latest` (newest release). For reproducible deployments pin the exact release, never
+`latest`.
+
 ### Already have PostgreSQL and a reverse proxy?
 
 Then there is nothing to assemble by hand. One script does the whole first run, and it
@@ -66,7 +89,7 @@ namespace, so the PostgreSQL you already run is reachable as `127.0.0.1:5432` an
 proxy reaches the API on `127.0.0.1:18080`.
 
 ```bash
-git clone https://github.com/ferroma/ferroma && cd ferroma
+git clone https://github.com/z1HwanG/Ferroma && cd Ferroma
 ./scripts/deploy.sh
 ```
 

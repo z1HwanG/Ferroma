@@ -33,6 +33,10 @@
 /dkim/
 .env.tmp.*
 
+# Generated documentation site — `node tools/build-site.mjs` writes it from docs/,
+# and it is a build artifact, not source. `tools/site-src/` holds the real assets.
+/.site/
+
 # Editors / OS
 .DS_Store
 Thumbs.db
@@ -42,3 +46,5 @@ Thumbs.db
 # Local assistant/IDE indexes — machine-local, regenerated on demand
 /.codeartsdoer/
 /.merkle-snapshot.json
+# Editor-assistant mode flag — one line of local state, never shared
+/.arts/

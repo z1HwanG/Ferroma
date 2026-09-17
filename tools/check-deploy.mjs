@@ -18,7 +18,14 @@
  *   * a `COPY --from=builder` path that the build stage never produced, which fails
  *     at the very end of a long build;
  *   * a compose file with a tab (fatal in YAML) or a `${VAR}` with no default and no
- *     `:?` guard, which is how a deployment ends up with an empty secret.
+ *     `:?` guard, which is how a deployment ends up with an empty secret;
+ *   * one `${…}` nested inside another, which Compose does *not* interpolate — the
+ *     inner variable silently expands to empty, so `${A:-x:${B}}` becomes `x:`;
+ *   * an image published to Docker Hub under a repository the compose files, the
+ *     publish script and the workflow disagree about, so an operator pulls a tag
+ *     that does not exist;
+ *   * a build argument the publish path passes but the Dockerfile never declares,
+ *     which BuildKit ignores without a word.
  *
  *   node tools/check-deploy.mjs
  */
@@ -238,6 +245,38 @@ for (const file of composeFiles) {
     problems.push(`${file} contains a tab; YAML forbids tabs for indentation`);
   }
 
+  // Compose does *not* interpolate one `${…}` nested inside another: measured on
+  // Compose v5, `${A:-registry/name:${B}}` interpolates to `registry/name:` — the
+  // inner variable expands to empty, the `:?` guard inside it never fires, and the
+  // resulting reference fails at pull time with "invalid reference format".
+  //
+  // Comments are stripped first: the compose files explain this trap by quoting the
+  // broken form, and a checker that fired on its own documentation would be turned
+  // off rather than fixed.
+  const code = text
+    .split('\n')
+    .filter((line) => !/^\s*#/.test(line))
+    .join('\n');
+  if (/\$\{[^}]*\$\{/.test(code)) {
+    problems.push(
+      `${file} nests one \${…} inside another. Compose does not substitute the inner ` +
+        `one — it expands to empty, guard and all — so write two variables side by ` +
+        `side instead: "\${FERROMA_REPO:-registry/name}:\${FERROMA_VERSION}"`,
+    );
+  }
+
+  // An image reference with no `/` names a purely local tag: `docker compose pull`
+  // cannot resolve it. Every reference to the application image must carry the
+  // registry namespace the release is published under.
+  for (const match of text.matchAll(/^\s*image:\s*(.+)$/gm)) {
+    const value = match[1].trim();
+    if (!/ferroma/i.test(value) || value.includes('/')) continue;
+    problems.push(
+      `${file} refers to the image "${value}", which has no registry namespace — ` +
+        `pulling it would look for a local tag that only exists after a local build`,
+    );
+  }
+
   // `${VAR}`, `${VAR:-default}` and `${VAR:?message}` are all fine. A bare `${VAR}`
   // silently expands to empty — *unless* the same variable is guarded with `:?` or
   // given a default with `:-` somewhere else in the file, because Compose interpolates
@@ -343,6 +382,130 @@ for (const name of documented) {
   }
 }
 notes.push(`documented subcommands checked: ${[...documented].sort().join(' ')}`);
+
+// -----------------------------------------------------------------------------
+// F. The publish path: one repository, one platform list, declared build args
+// -----------------------------------------------------------------------------
+// Releasing is three files cooperating — `scripts/docker-publish.sh` (a
+// maintainer's machine), `.github/workflows/docker-publish.yml` (a tag) and the
+// compose files (the operator). They only work if they agree, and nothing about
+// editing one of them reminds you to edit the others, so the agreement is checked
+// here instead of being rediscovered when a `docker pull` 404s.
+const publishScript = 'scripts/docker-publish.sh';
+const workflowFile = '.github/workflows/docker-publish.yml';
+
+const scriptText = exists(publishScript) ? read(publishScript) : null;
+const workflowText = exists(workflowFile) ? read(workflowFile) : null;
+
+if (scriptText === null) {
+  problems.push(`${publishScript} is missing — there is no local way to cut a release`);
+} else {
+  const declared = scriptText.match(/^DEFAULT_REPO="([^"]+)"/m);
+  if (!declared) {
+    problems.push(`${publishScript} has no DEFAULT_REPO="…" line to check against`);
+  } else {
+    const repo = declared[1];
+
+    // Every place that names the published repository has to name the same one.
+    const named = [];
+    for (const file of composeFiles) {
+      for (const m of read(file).matchAll(/FERROMA_REPO:-([^}\s]+)/g)) {
+        named.push({ file, repo: m[1] });
+      }
+    }
+    if (workflowText !== null) {
+      const m = workflowText.match(/DOCKERHUB_REPO \|\| '([^']+)'/);
+      if (!m) {
+        problems.push(`${workflowFile} does not default DOCKERHUB_REPO to the published repository`);
+      } else {
+        named.push({ file: workflowFile, repo: m[1] });
+      }
+    }
+    for (const entry of named) {
+      if (entry.repo !== repo) {
+        problems.push(
+          `${entry.file} publishes from '${entry.repo}' but ${publishScript} pushes to ` +
+            `'${repo}' — one of them is stale, and the operator pulls a tag that does not exist`,
+        );
+      }
+    }
+    notes.push(`published repository: ${repo} (${named.length + 1} references agree)`);
+
+    // A rolling `latest` is only meaningful if both paths move it under the same
+    // conditions; a pre-release moving it is the mistake worth naming.
+    if (!/\*-\*\)/.test(scriptText)) {
+      problems.push(`${publishScript} does not skip the rolling tags for a pre-release version`);
+    }
+
+    // The platform list is duplicated by necessity (shell vs. an action input), so
+    // at least the default may not drift.
+    const scriptPlatforms = scriptText.match(/^DEFAULT_PLATFORMS="([^"]+)"/m);
+    if (scriptPlatforms && workflowText !== null) {
+      const workflowPlatforms = workflowText.match(/default: (linux\/\S+)/);
+      if (!workflowPlatforms) {
+        problems.push(`${workflowFile} has no default platform list to compare with ${publishScript}`);
+      } else if (workflowPlatforms[1] !== scriptPlatforms[1]) {
+        problems.push(
+          `${workflowFile} defaults to ${workflowPlatforms[1]} but ${publishScript} builds ` +
+            `${scriptPlatforms[1]} — one release would be missing an architecture`,
+        );
+      }
+    }
+  }
+}
+
+// Build arguments: the release is labelled from these, and BuildKit reports
+// nothing when a `--build-arg` matches no `ARG` — the label is simply absent.
+const declaredArgs = new Set(
+  [...dockerfile.matchAll(/^ARG ([A-Z_][A-Z0-9_]*)/gm)].map((m) => m[1]),
+);
+const passedArgs = new Set();
+if (scriptText !== null) {
+  for (const m of scriptText.matchAll(/--build-arg "([A-Z_][A-Z0-9_]*)=/g)) passedArgs.add(m[1]);
+}
+if (workflowText !== null) {
+  for (const m of workflowText.matchAll(/^\s+([A-Z_][A-Z0-9_]*)=\$\{\{/gm)) passedArgs.add(m[1]);
+}
+for (const name of passedArgs) {
+  if (!declaredArgs.has(name)) {
+    problems.push(
+      `the publish path passes --build-arg ${name}, but the Dockerfile declares no ` +
+        `"ARG ${name}" — BuildKit drops it silently and the label is left empty`,
+    );
+  }
+}
+if (passedArgs.size > 0) notes.push(`published build args: ${[...passedArgs].sort().join(' ')}`);
+
+// The Windows entry point has to be a *wrapper*. Windows has no association for
+// `.sh`, so `./scripts/docker-publish.sh` from PowerShell is silently a no-op — the
+// wrapper is what makes the release runnable on a maintainer's machine at all. It
+// must delegate, though: a second implementation would drift from the one CI runs
+// and from the compose files this check compares it against.
+const wrapper = 'scripts/docker-publish.ps1';
+if (scriptText !== null && !exists(wrapper)) {
+  problems.push(
+    `${wrapper} is missing — on Windows ./${publishScript} prints nothing and ` +
+      `publishes nothing, because no file association exists for .sh`,
+  );
+} else if (exists(wrapper)) {
+  // Comments are stripped first, so a note explaining the rule cannot break it.
+  const wrapperCode = read(wrapper)
+    .split('\n')
+    .filter((line) => !/^\s*#/.test(line))
+    .join('\n');
+  if (!wrapperCode.includes('docker-publish.sh')) {
+    problems.push(
+      `${wrapper} does not name ${publishScript} — it must delegate to the POSIX ` +
+        `script rather than reimplement the release`,
+    );
+  }
+  if (/docker\s+buildx\s+build/.test(wrapperCode)) {
+    problems.push(
+      `${wrapper} runs its own \`docker buildx build\`; the publish logic belongs in ` +
+        `${publishScript} alone`,
+    );
+  }
+}
 
 // -----------------------------------------------------------------------------
 // Report

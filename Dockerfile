@@ -72,9 +72,24 @@ RUN set -eux; \
 # -----------------------------------------------------------------------------
 FROM debian:bookworm-slim AS runtime
 
+# Provenance. `scripts/docker-publish.sh` and the release workflow pass these as
+# build arguments, so every published image says which release, commit and date
+# produced it — and `org.opencontainers.image.source` is what links the Docker Hub
+# repository back to the source tree. The defaults keep a plain `docker build .`
+# self-describing instead of labelling the image with empty strings.
+ARG FERROMA_VERSION=dev
+ARG FERROMA_REVISION=unknown
+ARG FERROMA_CREATED=unknown
+
 LABEL org.opencontainers.image.title="Ferroma" \
       org.opencontainers.image.description="A Rust-native self-hosted mail platform" \
-      org.opencontainers.image.licenses="MIT OR Apache-2.0"
+      org.opencontainers.image.licenses="MIT OR Apache-2.0" \
+      org.opencontainers.image.url="https://github.com/z1HwanG/Ferroma" \
+      org.opencontainers.image.source="https://github.com/z1HwanG/Ferroma" \
+      org.opencontainers.image.documentation="https://github.com/z1HwanG/Ferroma/blob/main/docs/deployment.md" \
+      org.opencontainers.image.version="${FERROMA_VERSION}" \
+      org.opencontainers.image.revision="${FERROMA_REVISION}" \
+      org.opencontainers.image.created="${FERROMA_CREATED}"
 
 # ca-certificates: outbound TLS to remote MX hosts and webhooks.
 # tzdata: correct `Received:` timestamps and log localisation.

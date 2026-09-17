@@ -282,9 +282,17 @@ The Admin panel's DNS Health screen (`GET /api/v1/domains/:id/dns`,
 
 | File | Use it for | TLS | Postgres | Images | Extra |
 |---|---|---|---|---|---|
-| `docker-compose.external-db.yml` | **a host that already runs PostgreSQL and a reverse proxy** (recommended, see §3.1) | the reverse proxy terminates HTTPS; Ferroma terminates 465/993 | **none** — it uses the host's Postgres | `ferroma:${FERROMA_IMAGE}`, built here or `docker pull`ed | nightly backup sidecar, `network_mode: host`, `.env` is the whole configuration |
-| `docker-compose.yml` | development, a single host, a first look | off; ports 25/587/143/8080 plaintext | `postgres:16-alpine`, defaults | built locally from `Dockerfile`, tagged `ferroma:dev` | — |
-| `docker-compose.prod.yml` | a real MX | terminated by Ferroma on 465/993 (HTTPS goes to the reverse proxy) | tuned (`shared_buffers=512MB`, `wal_compression=on`, …) | `ferroma:${FERROMA_VERSION}` — a released tag, never built | nightly backup sidecar, resource limits, `restart: always`, bounded logs, `ulimit nofile 65536` |
+| `docker-compose.external-db.yml` | **a host that already runs PostgreSQL and a reverse proxy** (recommended, see §3.1) | the reverse proxy terminates HTTPS; Ferroma terminates 465/993 | **none** — it uses the host's Postgres | `wesukilaye/ferroma:<tag>`, `docker pull`ed or built here — the whole reference is `FERROMA_IMAGE` | nightly backup sidecar, `network_mode: host`, `.env` is the whole configuration |
+| `docker-compose.yml` | development, a single host, a first look | off; ports 25/587/143/8080 plaintext | `postgres:16-alpine`, defaults | built locally from `Dockerfile`, tagged `wesukilaye/ferroma:dev` | — |
+| `docker-compose.prod.yml` | a real MX | terminated by Ferroma on 465/993 (HTTPS goes to the reverse proxy) | tuned (`shared_buffers=512MB`, `wal_compression=on`, …) | `wesukilaye/ferroma:${FERROMA_VERSION}` — a released tag, never built | nightly backup sidecar, resource limits, `restart: always`, bounded logs, `ulimit nofile 65536` |
+
+Both reference the published repository through `FERROMA_REPO`, which defaults to
+`wesukilaye/ferroma` and can point at a mirror or a private registry instead. The
+repository and the tag are two separate variables on purpose: Compose does **not**
+interpolate a `${…}` nested inside another, so a nested default such as
+`${FERROMA_IMAGE:-${FERROMA_REPO}:${FERROMA_VERSION}}` interpolates to a bare
+`:`-terminated string rather than to an image reference. `tools/check-deploy.mjs`
+fails the build if one reappears.
 
 Do not use `docker-compose.yml` in production. It serves IMAP and the API in
 plaintext, has no backup sidecar and no resource limits, and it binds port 143 to
@@ -298,7 +306,7 @@ If this Linux host **already runs PostgreSQL** and **already has a reverse proxy
 with the fewest steps and the smallest change to the environment you already have.
 
 ```bash
-git clone … && cd ferroma
+git clone … && cd Ferroma
 ./scripts/deploy.sh
 ```
 
@@ -311,7 +319,7 @@ fixes it rather than leaving you to guess:
 | 2. Collect configuration | asks interactively: mail domain, MX hostname, admin address, database address, API port (default `127.0.0.1:18080`) |
 | 3. Write `.env` | generates a random database password and `FERROMA_JWT_SECRET`, mode 600; **it is the only configuration file** |
 | 4. Create the role and the database | tries, in order: `sudo -u postgres` (peer auth), the `psql` **inside a PostgreSQL container on this host** (how 1Panel and similar panels run it, through `docker exec`), and the superuser named by `--pg-password`; if none works it prints SQL you can paste — in the `docker exec` form when the database is a container |
-| 5. Build the image | a local `docker build` (10–30 minutes the first time); `docker pull` instead when `FERROMA_IMAGE` names a registry |
+| 5. Build the image | a local `docker build` (10–30 minutes the first time). Pass `--image wesukilaye/ferroma:0.1.0` to pull the release instead — the same command skips the build entirely |
 | 6. Create the schema | runs `ferroma database init` in the container (which also creates the database when it is missing) |
 | 7. Install the certificate | installs the certificate into `./tls` as uid 10001 for 465/993, and checks that the SAN covers the MX hostname |
 | 8. Start | `docker compose up -d`, waiting up to 3 minutes for the health check and printing the log on timeout |
@@ -483,6 +491,8 @@ refuse to start without the required ones.
 |---|---|---|
 | `POSTGRES_USER` | `ferroma` | the database role |
 | `POSTGRES_DB` | `ferroma` | the database name |
+| `FERROMA_REPO` | `wesukilaye/ferroma` | the repository releases are pulled from — another Docker Hub namespace, a mirror, or a private registry |
+| `FERROMA_IMAGE` | `wesukilaye/ferroma:latest` (external-db only) | the whole image reference. A value containing `/` is pulled; one without is built on this host |
 | `FERROMA_LOG_LEVEL` | `info` | `server.log_level` |
 | `FERROMA_LOG_FORMAT` | `text` (dev) / `json` (prod) | `server.log_format` |
 | `FERROMA_TLS_ENABLED` | `false` | `tls.enabled` |
@@ -1305,6 +1315,101 @@ finish, then the process exits. `stop_grace_period: 60s` in
 `docker-compose.prod.yml` gives it room. Inbound mail during the gap is retried by
 the sending MTA, because SMTP is store-and-forward by design.
 
+### 9.4 Publishing a release to Docker Hub
+
+The image is published to `wesukilaye/ferroma` for `linux/amd64` and `linux/arm64`,
+so an operator never has to spend 10–30 minutes compiling Rust on a mail server. Two
+paths produce the *same* build; both are tag-driven and both refuse to publish an
+image whose labels would lie about their source.
+
+**By tag (the normal path).** Merging a version bump into `main` and tagging it is
+the whole release:
+
+```bash
+# Cargo.toml [workspace.package] version = "0.2.0"
+git commit -am 'release 0.2.0'
+git tag v0.2.0
+git push origin main v0.2.0
+```
+
+`.github/workflows/docker-publish.yml` then checks that the tag and `Cargo.toml`
+agree — a `v0.2.0` tag on a tree that says `0.1.0` fails before anything is built —
+runs `node tools/check-deploy.mjs`, builds both architectures with a GitHub Actions
+layer cache, and pushes `0.2.0`, `0.2` and `latest`. A pre-release (`0.2.0-rc.1`)
+pushes only its exact tag: a rolling `latest` pointing at an rc is exactly the
+surprise the rolling tag exists to prevent.
+
+It needs two repository secrets, set once:
+
+| Secret | Value |
+|---|---|
+| `DOCKERHUB_USERNAME` | the Docker Hub account that owns the repository |
+| `DOCKERHUB_TOKEN` | a Docker Hub **access token** with Read & Write scope — not the account password, so it can be revoked and is scoped to pushing |
+
+`DOCKERHUB_REPO` (a repository *variable*, not a secret) overrides the target
+repository for a fork.
+
+**Locally.** The same build without CI, for a maintainer who wants it now:
+
+```bash
+docker login
+./scripts/docker-publish.sh --dry-run       # the exact buildx command, nothing pushed
+./scripts/docker-publish.sh                 # publish 0.2.0, 0.2 and latest
+./scripts/docker-publish.sh --load          # this machine's architecture only, no push
+```
+
+On Windows the reliable form is `sh`, which Git for Windows puts on `PATH`:
+
+```powershell
+sh scripts/docker-publish.sh --dry-run
+```
+
+Plain PowerShell does not execute a `.sh` file at all: Windows has no association for
+the extension, so the path is treated as a *document* to open. Standalone it prints
+nothing and runs nothing; inside a pipeline it fails with "Cannot run a document in the
+middle of a pipeline". The failure mode is a no-op that looks like it worked.
+
+`scripts/docker-publish.ps1` is the entry point for a machine that allows script
+execution. It is a wrapper, not a second implementation: it locates Git for Windows
+(never `bash` from `PATH`, which on a machine carrying the WSL launcher is a different
+distribution entirely), converts the script path to POSIX form, and forwards every
+argument verbatim. `tools/check-deploy.mjs` fails the build if it ever stops delegating.
+Where script execution is disabled — the Windows default, which `Get-ExecutionPolicy
+-List` reports as `Undefined` at every scope — it has to be named explicitly:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/docker-publish.ps1 --dry-run
+```
+
+It takes the version from `Cargo.toml`, refuses to publish from a dirty working tree
+(the revision label would name a commit that does not contain the source —
+`--allow-dirty` overrides it and says so), warns when the active buildx builder cannot
+push a multi-platform manifest, and keeps a registry-backed layer cache in a
+`buildcache` tag so the second release is not another cold Rust build.
+
+Two things about the build itself are worth knowing before starting one, because
+neither is visible until it fails:
+
+* **It pulls its base images first.** `rust:1.88-bookworm` and `debian:bookworm-slim`
+  are ~1.5 GB, and they are fetched inside the build — where a flaky route to Docker
+  Hub costs you the whole run. Pull them ahead of time so the download is a step of
+  its own and can be retried:
+  ```bash
+  docker pull rust:1.88-bookworm && docker pull debian:bookworm-slim
+  ```
+* **arm64 is emulated on an amd64 machine.** QEMU runs the whole Rust release build
+  for the second architecture, which turns a 10–30 minute native build into a much
+  longer one. For a first publish, `--platforms linux/amd64` gets an image out in the
+  native time; a tag pushed through CI (`§9.4` above) produces both architectures.
+
+For a **single-host private registry** instead of Docker Hub, point
+`FERROMA_REPO` at it and use `--repo`:
+
+```bash
+./scripts/docker-publish.sh --repo registry.example.com/ferroma
+# then, in .env:  FERROMA_REPO=registry.example.com/ferroma
+```
+
 ---
 
 ## 10. Monitoring and health checks
@@ -1706,4 +1811,5 @@ is expected — identical attachments share a blob — so compare *sizes*, not c
 | Sync model and the client's failure matrix | [sync.md](sync.md) |
 | The official desktop client | [client.md](client.md) |
 | Crate graph and request lifecycle | [architecture.md](architecture.md) |
+| The text of the published Docker Hub repository page | [dockerhub.md](dockerhub.md) |
 | Build quirks on this machine (proxy, `CARGO_HOME`, PostgreSQL) | [../AGENTS.md](../AGENTS.md) |

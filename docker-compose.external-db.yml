@@ -25,7 +25,9 @@
 # Doing it by hand, without scripts/deploy.sh:
 #
 #   cp .env.example .env      # then edit it: DATABASE_URL, FERROMA_HOSTNAME, …
-#   docker build -t ferroma:latest .
+#   # Either pull the release — FERROMA_IMAGE in .env names it — or build here:
+#   docker compose -f docker-compose.external-db.yml pull
+#   # docker build -t ferroma:latest .   # then FERROMA_IMAGE=ferroma:latest
 #   docker compose -f docker-compose.external-db.yml run --rm ferroma database init
 #   docker compose -f docker-compose.external-db.yml up -d
 # =============================================================================
@@ -40,9 +42,10 @@ x-logging: &default-logging
 
 services:
   ferroma:
-    # Built on this host (`docker build -t ferroma:latest .`) or pulled from a
-    # registry — either way, the tag lives in .env so upgrades are one line.
-    image: ${FERROMA_IMAGE:-ferroma:latest}
+    # Pulled from Docker Hub (`wesukilaye/ferroma:<tag>`) or built on this host —
+    # either way the whole reference lives in `.env` as `FERROMA_IMAGE`, so an
+    # upgrade is one line. `scripts/deploy.sh` also accepts `--image`.
+    image: ${FERROMA_IMAGE:-wesukilaye/ferroma:latest}
     container_name: ferroma
     restart: always
     # Shares the host's network namespace: no NAT, no port mappings, and the

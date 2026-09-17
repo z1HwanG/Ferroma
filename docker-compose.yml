@@ -40,7 +40,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ferroma:${FERROMA_VERSION:-dev}
+    # This stack builds the image itself; the name is fully qualified so that the
+    # result of `docker compose build` can be pushed without re-tagging.
+    image: ${FERROMA_REPO:-wesukilaye/ferroma}:${FERROMA_VERSION:-dev}
     container_name: ferroma
     restart: unless-stopped
     depends_on:

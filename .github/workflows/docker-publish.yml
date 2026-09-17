@@ -1,0 +1,183 @@
+name: Docker Hub
+
+# =============================================================================
+# Publish the release image
+# =============================================================================
+# Tag-driven: publishing a release is
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# and the tag is checked against Cargo.toml before anything is built, so a tag
+# that disagrees with the source cannot publish an image mislabelled as it.
+#
+# Secrets (Settings → Secrets and variables → Actions):
+#   DOCKERHUB_USERNAME   the Docker Hub account that owns the repository
+#   DOCKERHUB_TOKEN      a Docker Hub *access token* with Read & Write scope.
+#                        Never the account password: an access token is scoped to
+#                        pushing and can be revoked on its own.
+# Repository variable (optional):
+#   DOCKERHUB_REPO       the image to publish to; defaults to wesukilaye/ferroma
+#
+# The same build runs locally through `scripts/docker-publish.sh` — that path
+# exists so a maintainer can cut a release without CI, and so this workflow is
+# never the only thing that has ever exercised the publish steps.
+# =============================================================================
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish, e.g. 0.2.0 (default: the tag, else Cargo.toml)'
+        required: false
+        type: string
+      platforms:
+        description: Target platforms
+        required: false
+        default: linux/amd64,linux/arm64
+        type: string
+      latest:
+        description: Also move the `latest` tag
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+# One publish at a time per ref. Cancelling a half-pushed multi-platform manifest
+# would leave the repository with a tag whose platforms disagree, which is worse
+# than waiting, so an in-flight publish is never cancelled.
+concurrency:
+  group: dockerhub-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_REPO: ${{ vars.DOCKERHUB_REPO || 'wesukilaye/ferroma' }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Guard: cheap checks that run before a 20-minute multi-platform build
+  # ---------------------------------------------------------------------------
+  guard:
+    name: Check the tag against the tree
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The tag and Cargo.toml agree
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          manifest=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          if [ -z "$manifest" ]; then
+            echo "::error::no version found in Cargo.toml"
+            exit 1
+          fi
+          if [ "$tag" != "$manifest" ]; then
+            echo "::error::tag v$tag does not match the Cargo.toml version $manifest — bump one of them"
+            exit 1
+          fi
+          echo "publishing $manifest"
+
+      - name: Deployment artefacts are consistent
+        run: node tools/check-deploy.mjs
+
+  # ---------------------------------------------------------------------------
+  # Publish
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Build and push
+    needs: guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve the version, revision and tags
+        id: meta
+        run: |
+          set -euo pipefail
+
+          # Resolution order: an explicit dispatch input, then the tag, then the
+          # manifest. The tag is the normal path; the manifest keeps a manual run
+          # from publishing something the source does not claim to be.
+          if [ -n "${{ inputs.version }}" ]; then
+            version="${{ inputs.version }}"
+          elif [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          fi
+
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "::error::'$version' is not a x.y.z version"
+            exit 1
+          fi
+
+          minor=$(printf '%s' "$version" | sed 's/^\([0-9]*\.[0-9]*\)\..*/\1/')
+
+          {
+            echo "version=$version"
+            echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
+
+          # A pre-release never moves a rolling tag: `latest` pointing at
+          # 0.2.0-rc.1 is exactly the surprise the tag is meant to prevent.
+          #
+          # The comma-joined list is what docker/build-push-action wants; it is
+          # built with printf rather than a YAML flow list because the tags
+          # depend on runtime values.
+          tags="$IMAGE_REPO:$version"
+          case "$version" in
+            *-*) ;;
+            *)
+              tags="$tags,$IMAGE_REPO:$minor"
+              if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.latest }}" = "true" ]; then
+                tags="$tags,$IMAGE_REPO:latest"
+              fi
+              ;;
+          esac
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+          echo "resolved $version → $tags"
+
+      # Both release architectures. Ferroma is a self-hosted server: amd64 covers
+      # the usual VPS, arm64 the growing share of ARM hosts. QEMU is what makes
+      # the cross-architecture build possible on an amd64 runner.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ inputs.platforms || 'linux/amd64,linux/arm64' }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            FERROMA_VERSION=${{ steps.meta.outputs.version }}
+            FERROMA_REVISION=${{ github.sha }}
+            FERROMA_CREATED=${{ steps.meta.outputs.created }}
+          # GitHub's own cache: a cold Rust release build is 10–30 minutes, and
+          # the dependency layer only changes when a manifest does.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+
+      - name: Summary
+        run: |
+          set -euo pipefail
+          {
+            echo "### Published \`${{ steps.meta.outputs.version }}\`"
+            echo
+            echo '```'
+            printf '%s\n' '${{ steps.meta.outputs.tags }}' | tr ',' '\n'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -269,9 +269,15 @@ Admin 管理后台的 DNS Health 界面（`GET /api/v1/domains/:id/dns`，[api.m
 
 | 文件 | 用途 | TLS | Postgres | 镜像 | 额外内容 |
 |---|---|---|---|---|---|
-| `docker-compose.external-db.yml` | **服务器已有 PostgreSQL 与反向代理**（推荐，见 §3.1） | 由反向代理终结 HTTPS；Ferroma 自己终结 465/993 | **不要**：连本机 Postgres | `ferroma:${FERROMA_IMAGE}`，本机构建或 `docker pull` | 每夜备份边车、`network_mode: host`、`.env` 即全部配置 |
-| `docker-compose.yml` | 开发、单机、先看一眼 | 关闭；端口 25/587/143/8080 明文 | `postgres:16-alpine`，默认值 | 从 `Dockerfile` 本地构建，标记为 `ferroma:dev` | — |
-| `docker-compose.prod.yml` | 真正的 MX，自带数据库 | 由 Ferroma 在 465/993 终结（HTTPS 交给反向代理） | 已调优（`shared_buffers=512MB`、`wal_compression=on` 等） | `ferroma:${FERROMA_VERSION}`，发布标签，从不构建 | 每夜备份边车、资源限制、`restart: always`、日志上限、`ulimit nofile 65536` |
+| `docker-compose.external-db.yml` | **服务器已有 PostgreSQL 与反向代理**（推荐，见 §3.1） | 由反向代理终结 HTTPS；Ferroma 自己终结 465/993 | **不要**：连本机 Postgres | `wesukilaye/ferroma:<tag>`，`docker pull` 或本机构建——整串引用就是 `FERROMA_IMAGE` | 每夜备份边车、`network_mode: host`、`.env` 即全部配置 |
+| `docker-compose.yml` | 开发、单机、先看一眼 | 关闭；端口 25/587/143/8080 明文 | `postgres:16-alpine`，默认值 | 从 `Dockerfile` 本地构建，标记为 `wesukilaye/ferroma:dev` | — |
+| `docker-compose.prod.yml` | 真正的 MX，自带数据库 | 由 Ferroma 在 465/993 终结（HTTPS 交给反向代理） | 已调优（`shared_buffers=512MB`、`wal_compression=on` 等） | `wesukilaye/ferroma:${FERROMA_VERSION}`，发布标签，从不构建 | 每夜备份边车、资源限制、`restart: always`、日志上限、`ulimit nofile 65536` |
+
+两者都通过 `FERROMA_REPO` 指向已发布的仓库，默认值是 `wesukilaye/ferroma`，也可以改成
+镜像站或私有 registry。仓库与标签刻意写成两个独立变量：Compose **不会**插值嵌套在另一个
+`${…}` 里的 `${…}`，所以 `${FERROMA_IMAGE:-${FERROMA_REPO}:${FERROMA_VERSION}}` 这种嵌套
+默认值会插值成一个只剩冒号的字符串，而不是镜像引用。一旦它重新出现，
+`tools/check-deploy.mjs` 会直接让构建失败。
 
 不要在生产环境使用 `docker-compose.yml`。它以明文提供 IMAP 与 API，没有备份边车、没有
 资源限制，并且把端口 143 未加密地绑定到宿主机。
@@ -283,7 +289,7 @@ Admin 管理后台的 DNS Health 界面（`GET /api/v1/domains/:id/dns`，[api.m
 `scripts/deploy.sh` 驱动。这是步骤最少、对你现有环境改动最小的一条路。
 
 ```bash
-git clone … && cd ferroma
+git clone … && cd Ferroma
 ./scripts/deploy.sh
 ```
 
@@ -295,7 +301,7 @@ git clone … && cd ferroma
 | 2. 收集配置 | 交互式问：邮件域、MX 主机名、管理员邮箱、数据库地址、API 端口（默认 `127.0.0.1:18080`） |
 | 3. 写 `.env` | 生成随机数据库密码与 `FERROMA_JWT_SECRET`，权限 600；**它是唯一的配置文件** |
 | 4. 建角色与库 | 依次尝试：`sudo -u postgres`（peer 认证）、本机 PostgreSQL **容器**里的 `psql`（1Panel 这类面板的常见形态，用 `docker exec`）、`--pg-password` 给出的超级用户；都做不到就打印可直接粘贴的 SQL（容器场景给 `docker exec` 形式）并停下 |
-| 5. 构建镜像 | 本机 `docker build`（首次 10–30 分钟）；`FERROMA_IMAGE` 指向仓库地址时改为 `docker pull` |
+| 5. 构建镜像 | 本机 `docker build`（首次 10–30 分钟）。加上 `--image wesukilaye/ferroma:0.1.0` 改为拉取已发布版本——同一条命令会完全跳过构建 |
 | 6. 建表 | 在容器里跑 `ferroma database init`（库不存在时也会建） |
 | 7. 装证书 | 把证书以 uid 10001 装进 `./tls` 供 465/993 使用，并检查 SAN 是否覆盖 MX 主机名 |
 | 8. 启动 | `docker compose up -d`，最多等 3 分钟健康检查，超时自动打印日志 |
@@ -457,6 +463,8 @@ docker compose -f docker-compose.prod.yml down
 |---|---|---|
 | `POSTGRES_USER` | `ferroma` | 数据库角色 |
 | `POSTGRES_DB` | `ferroma` | 数据库名 |
+| `FERROMA_REPO` | `wesukilaye/ferroma` | 拉取发布镜像的仓库——可换成别的 Docker Hub 命名空间、镜像站或私有 registry |
+| `FERROMA_IMAGE` | `wesukilaye/ferroma:latest`（仅 external-db） | 整串镜像引用。含 `/` 则拉取，不含 `/` 则在本机构建 |
 | `FERROMA_LOG_LEVEL` | `info` | `server.log_level` |
 | `FERROMA_LOG_FORMAT` | `text`（dev）/ `json`（prod） | `server.log_format` |
 | `FERROMA_TLS_ENABLED` | `false` | `tls.enabled` |
@@ -1212,6 +1220,90 @@ docker compose -f docker-compose.external-db.yml up -d ferroma
 `stop_grace_period: 60s` 给了它余量。这期间收到的邮件会由发信 MTA 重试，因为 SMTP 按设计
 就是存储转发。
 
+### 9.4 把版本发布到 Docker Hub
+
+镜像以 `wesukilaye/ferroma` 发布，覆盖 `linux/amd64` 与 `linux/arm64`，所以运维不必在邮件
+服务器上花 10–30 分钟编译 Rust。两条路径产出**同一个**构建；两者都由标签驱动，也都拒绝
+发布一个「标签与源码不符」的镜像。
+
+**打标签发布（常规路径）。** 把版本号推进 `main` 并打标签，就是一次完整发布：
+
+```bash
+# Cargo.toml [workspace.package] version = "0.2.0"
+git commit -am 'release 0.2.0'
+git tag v0.2.0
+git push origin main v0.2.0
+```
+
+`.github/workflows/docker-publish.yml` 会先核对标签与 `Cargo.toml` 是否一致——在写着
+`0.1.0` 的树上打 `v0.2.0` 标签会在构建任何东西之前失败——再跑
+`node tools/check-deploy.mjs`，然后用 GitHub Actions 层缓存构建两个架构，推送 `0.2.0`、
+`0.2` 与 `latest`。预发布版本（`0.2.0-rc.1`）只推它自己的精确标签：让滚动标签 `latest`
+指向一个 rc，正是滚动标签本身要避免的意外。
+
+它需要两个仓库 secret，设置一次即可：
+
+| Secret | 值 |
+|---|---|
+| `DOCKERHUB_USERNAME` | 拥有该仓库的 Docker Hub 账号 |
+| `DOCKERHUB_TOKEN` | 具备 Read & Write 权限的 Docker Hub **访问令牌**——不是账号密码，这样可以单独吊销，且权限限于推送 |
+
+`DOCKERHUB_REPO`（是仓库**变量**，不是 secret）用于 fork 时改发布目标仓库。
+
+**本机发布。** 不想等 CI 时，用同一条构建：
+
+```bash
+docker login
+./scripts/docker-publish.sh --dry-run       # 只打印确切的 buildx 命令，不推送
+./scripts/docker-publish.sh                 # 发布 0.2.0、0.2 与 latest
+./scripts/docker-publish.sh --load          # 只构建本机架构，不推送
+```
+
+在 Windows 上可靠的形式是 `sh`——Git for Windows 会把它放进 `PATH`：
+
+```powershell
+sh scripts/docker-publish.sh --dry-run
+```
+
+PowerShell 根本不会执行 `.sh` 文件：Windows 没有该扩展名的文件关联，于是路径被当成**文档**
+去打开。单独执行时它什么都不打印、什么都不做；放进管道则报 "Cannot run a document in the
+middle of a pipeline"。这种失败模式是一次看起来像成功的空转。
+
+`scripts/docker-publish.ps1` 是给「允许执行脚本」的机器准备的入口，它是包装器而不是第二份
+实现：定位 Git for Windows（绝不用 `PATH` 里的 `bash`，装了 WSL 启动器的机器上那是完全另一个
+发行版），把脚本路径转成 POSIX 形式，然后原样转发所有参数；一旦它不再委派，
+`tools/check-deploy.mjs` 会让构建失败。若脚本执行被禁用——Windows 的默认状态，
+`Get-ExecutionPolicy -List` 在各个作用域都显示 `Undefined`——就必须显式点名：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/docker-publish.ps1 --dry-run
+```
+
+版本取自 `Cargo.toml`；工作区有未提交改动时它拒绝发布（否则 revision 标签会指向一个并不
+包含这份源码的提交，`--allow-dirty` 可覆盖，且会明确告知）；当前 buildx builder 无法推送多
+平台 manifest 时它会警告；层缓存放在 registry 的 `buildcache` 标签里，所以第二次发布不再是
+又一次冷编译。
+
+开始构建之前有两件事值得知道，因为它们在失败之前都看不见：
+
+* **它会先拉基础镜像。** `rust:1.88-bookworm` 与 `debian:bookworm-slim` 约 1.5 GB，而且是
+  在构建过程里拉的——去 Docker Hub 的路由一抖，整轮就白跑。提前单独拉好，让下载成为可以重试
+  的独立步骤：
+  ```bash
+  docker pull rust:1.88-bookworm && docker pull debian:bookworm-slim
+  ```
+* **在 amd64 机器上 arm64 是模拟的。** QEMU 要为第二个架构把整个 Rust release 构建再跑一遍，
+  本机 10–30 分钟的构建会显著拉长。首次发布用 `--platforms linux/amd64` 就能在本机时间内先出
+  一个镜像；由 CI 打标签发布（见上方 §9.4）则一次产出两个架构。
+
+如果要发到**单机私有 registry** 而不是 Docker Hub，把 `FERROMA_REPO` 指向它，并用
+`--repo`：
+
+```bash
+./scripts/docker-publish.sh --repo registry.example.com/ferroma
+# 然后在 .env 里：FERROMA_REPO=registry.example.com/ferroma
+```
+
 ---
 
 ## 10. 监控与健康检查
@@ -1603,4 +1695,5 @@ docker compose -f docker-compose.prod.yml exec postgres \
 | 同步模型与客户端的失败矩阵 | [sync.md](sync.md) |
 | 官方桌面客户端 | [client.md](client.md) |
 | crate 图与请求生命周期 | [architecture.md](architecture.md) |
+| 已发布的 Docker Hub 仓库页文案（英文，仅一份） | [../dockerhub.md](../dockerhub.md) |
 | 这台机器上的构建怪癖（代理、`CARGO_HOME`、PostgreSQL） | [../AGENTS.md](../../AGENTS.md) |

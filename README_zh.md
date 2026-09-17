@@ -43,7 +43,7 @@ Ferroma 是一套从协议层开始自建的完整邮件系统：自己的 SMTP 
 官方支持的部署方式是 Docker Compose。你需要一台有公网 IP 的主机、一个 `MX` 记录指向它的域名，以及放行 25 端口。
 
 ```bash
-git clone https://github.com/ferroma/ferroma && cd ferroma
+git clone https://github.com/z1HwanG/Ferroma && cd Ferroma
 cp .env.example .env          # 填写 POSTGRES_PASSWORD、FERROMA_HOSTNAME、FERROMA_JWT_SECRET
 docker compose up -d
 docker compose logs -f ferroma
@@ -51,12 +51,29 @@ docker compose logs -f ferroma
 
 然后打开 `http://localhost:8080`，跟着首次运行向导走一遍即可。要作为真正的 MX 使用——TLS、DKIM、投递率——请改 `docker-compose.prod.yml`，并按 [`docs/zh/deployment.md`](docs/zh/deployment.md) 操作；其中 DNS 那一节不是可选项。
 
+### 想直接拉镜像，不在本机构建？
+
+每个发布版本都以 `wesukilaye/ferroma` 发布到 Docker Hub，覆盖 `linux/amd64` 与 `linux/arm64`。上面首次 `docker compose up -d` 会在容器里把整个 Rust 工作区编译一遍——10–30 分钟，外加数 GB 构建缓存——所以在服务器上直接拉取要快得多：
+
+```bash
+docker pull wesukilaye/ferroma:0.1.0
+```
+
+`docker-compose.prod.yml` 与 `docker-compose.external-db.yml` 的默认仓库已经是它，在 `.env` 里锁定版本即可：
+
+```bash
+FERROMA_VERSION=0.1.0                      # docker-compose.prod.yml：要拉取的标签
+# FERROMA_IMAGE=wesukilaye/ferroma:0.1.0   # docker-compose.external-db.yml：整串引用
+```
+
+可用标签：`0.1.0`（精确版本）、`0.1`（该 minor 的最新补丁）、`latest`（最新发布）。要可复现的部署请锁定精确版本，不要用 `latest`。
+
 ### 服务器上已经有 PostgreSQL 和反向代理？
 
 那就不需要手工拼装了，一条命令跑完整条首次部署，而且**完全不碰你数据库服务的配置**：容器与宿主机共享网络命名空间，所以你已有的 PostgreSQL 就是 `127.0.0.1:5432`，反向代理则访问 `127.0.0.1:18080` 上的 API。
 
 ```bash
-git clone https://github.com/ferroma/ferroma && cd ferroma
+git clone https://github.com/z1HwanG/Ferroma && cd Ferroma
 ./scripts/deploy.sh
 ```
 

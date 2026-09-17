@@ -70,7 +70,13 @@ services:
           memory: 2g
 
   ferroma:
-    image: ferroma:${FERROMA_VERSION:?set FERROMA_VERSION to a released tag}
+    # A released image, pulled — prod never builds. `FERROMA_REPO` and
+    # `FERROMA_VERSION` are interpolated as two separate variables on purpose:
+    # compose does not substitute a `${…}` nested inside another `${…:-…}`, so
+    # `${FERROMA_IMAGE:-${FERROMA_REPO}:${FERROMA_VERSION}}` would silently
+    # collapse to an empty tag. Override the repository for a mirror or a private
+    # registry; the version stays required.
+    image: ${FERROMA_REPO:-wesukilaye/ferroma}:${FERROMA_VERSION:?set FERROMA_VERSION to a released tag}
     container_name: ferroma
     restart: always
     depends_on:
