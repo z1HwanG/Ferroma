@@ -319,9 +319,14 @@ impl Database {
     /// The same URL pointed at a database that always exists, so a missing target
     /// database can be created.
     pub fn maintenance_url(url: &str) -> Result<String> {
+        Self::url_for_database(url, MAINTENANCE_DATABASES[0])
+    }
+
+    /// The same URL with its database name replaced.
+    pub fn url_for_database(url: &str, database: &str) -> Result<String> {
         let (prefix, _, suffix) = split_url(url)
             .ok_or_else(|| StorageError::Invalid(format!("not a PostgreSQL URL: {}", redact(url))))?;
-        Ok(format!("{prefix}postgres{suffix}"))
+        Ok(format!("{prefix}{database}{suffix}"))
     }
 
     /// Create the database this URL points at, if it does not exist.
@@ -330,47 +335,88 @@ impl Database {
     /// first-run failure — `database "ferroma" does not exist` — into something the
     /// operator can fix with one command instead of reaching for `psql`.
     ///
-    /// Connects to the `postgres` maintenance database, because you cannot create the
-    /// database you are connected to.
+    /// The target database is tried **first**, and that is not an optimisation: a
+    /// database that already exists needs nothing done to it, and asking for it
+    /// directly means a cluster with no maintenance database at all — a managed or
+    /// panel-provisioned one, which is common — never has to be reached through
+    /// one. Only a database that really is missing is created, and only then is a
+    /// connection to one of `MAINTENANCE_DATABASES` needed, because you cannot
+    /// create the database you are connected to.
     pub async fn ensure_database_exists(url: &str) -> Result<bool> {
         let name = Self::database_name(url)?;
         if name == "postgres" {
             return Ok(false);
         }
-        let maintenance = Self::maintenance_url(url)?;
 
+        let target_error = match Self::connect_once(url).await {
+            Ok(pool) => {
+                pool.close().await;
+                return Ok(false);
+            }
+            Err(err) => err.to_string(),
+        };
+
+        let mut attempts: Vec<String> = Vec::new();
+        for maintenance in MAINTENANCE_DATABASES {
+            let candidate = Self::url_for_database(url, maintenance)?;
+            let pool = match Self::connect_once(&candidate).await {
+                Ok(pool) => pool,
+                Err(err) => {
+                    attempts.push(format!("{} ({err})", redact(&candidate)));
+                    continue;
+                }
+            };
+
+            let existing: Option<(i32,)> =
+                sqlx::query_as("SELECT 1 FROM pg_database WHERE datname = $1")
+                    .bind(&name)
+                    .fetch_optional(&pool)
+                    .await?;
+
+            let created = if existing.is_some() {
+                false
+            } else {
+                // No `WITH (FORCE)` anywhere: dropping or forcing is not what this
+                // does, and forcing requires signalling other backends.
+                sqlx::query(&format!("CREATE DATABASE \"{name}\""))
+                    .execute(&pool)
+                    .await?;
+                true
+            };
+
+            pool.close().await;
+            return Ok(created);
+        }
+
+        Err(StorageError::Invalid(format!(
+            "cannot reach the PostgreSQL server to check or create database {name}: {} \
+             (the database itself answered: {target_error})",
+            attempts.join(", ")
+        )))
+    }
+
+    /// One connection, closed as soon as it is proven.
+    async fn connect_once(url: &str) -> std::result::Result<PgPool, sqlx::Error> {
         let pool = PgPoolOptions::new()
             .max_connections(1)
             .acquire_timeout(Duration::from_secs(10))
-            .connect(&maintenance)
-            .await
-            .map_err(|e| {
-                StorageError::Invalid(format!(
-                    "cannot reach the PostgreSQL server at {} to create database {name}: {e}",
-                    redact(&maintenance)
-                ))
-            })?;
-
-        let existing: Option<(i32,)> = sqlx::query_as("SELECT 1 FROM pg_database WHERE datname = $1")
-            .bind(&name)
-            .fetch_optional(&pool)
+            .connect(url)
             .await?;
-
-        let created = if existing.is_some() {
-            false
-        } else {
-            // No `WITH (FORCE)` anywhere: dropping or forcing is not what this does,
-            // and forcing requires signalling other backends.
-            sqlx::query(&format!("CREATE DATABASE \"{name}\""))
-                .execute(&pool)
-                .await?;
-            true
-        };
-
-        pool.close().await;
-        Ok(created)
+        // `acquire_timeout` covers the handshake; `SELECT 1` proves the session is
+        // usable rather than merely open, which is what the caller assumes.
+        sqlx::query("SELECT 1").execute(&pool).await?;
+        Ok(pool)
     }
 }
+
+/// Databases that always exist in a cluster, used to reach the server when the
+/// database this deployment wants does not exist yet.
+///
+/// `postgres` is the conventional one. `template1` is present even in the clusters
+/// that were initialised without it — managed and panel-provisioned ones
+/// especially — which is the case that used to fail with
+/// `database "postgres" does not exist` before the target was tried first.
+const MAINTENANCE_DATABASES: [&str; 2] = ["postgres", "template1"];
 
 #[cfg(test)]
 mod tests {
@@ -428,6 +474,25 @@ mod tests {
             Database::maintenance_url("postgres://ferroma@db/ferroma?sslmode=require").unwrap(),
             "postgres://ferroma@db/postgres?sslmode=require"
         );
+    }
+
+    #[test]
+    fn template1_is_the_last_resort_because_it_always_exists() {
+        // `postgres` is conventional but not guaranteed — a managed or
+        // panel-provisioned cluster may not have it, and creating a database used
+        // to fail there with `database "postgres" does not exist`.
+        assert_eq!(MAINTENANCE_DATABASES, ["postgres", "template1"]);
+        assert_eq!(
+            Database::url_for_database("postgres://u:p@db:5432/ferroma", "template1").unwrap(),
+            "postgres://u:p@db:5432/template1"
+        );
+        assert_eq!(
+            Database::url_for_database("postgres://u@db/ferroma?sslmode=require", "template1")
+                .unwrap(),
+            "postgres://u@db/template1?sslmode=require"
+        );
+        // A URL that is not one is refused rather than mangled.
+        assert!(Database::url_for_database("mysql://nope", "template1").is_err());
     }
 
     #[test]
