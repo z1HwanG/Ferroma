@@ -27,8 +27,10 @@
 
 use std::sync::Arc;
 
-use axum::extract::DefaultBodyLimit;
+use axum::extract::{DefaultBodyLimit, Request};
 use axum::http::{header, HeaderName, HeaderValue, Method};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use ferroma_core::config::Config;
@@ -458,7 +460,7 @@ pub fn apply_negotiation_headers(
     }
 }
 
-/// Serve `web/` at `/` and `admin/` at `/admin`, each with an SPA fallback.
+/// Serve `web/` at `/` and `admin/` at `/admin/`, each with an SPA fallback.
 ///
 /// The two directories come from `api.webmail_dir` / `api.admin_dir`, or from the
 /// conventional `web/dist` and `admin/dist` under the working directory — the layout
@@ -475,11 +477,34 @@ pub fn with_frontends(router: Router<AppState>, config: &Config) -> Router<AppSt
 
     if let Some(admin) = resolve_dir(config.api.admin_dir.as_ref(), &["admin/dist", "admin"]) {
         let service = ServeDir::new(&admin).fallback(ServeFile::new(admin.join("index.html")));
-        // A nested service on `/admin`; the outer SPA fallback stays for `/`.
-        router = router.nest_service("/admin", service);
+        // A nested service on `/admin`, and the directory redirect that has to sit in
+        // front of it. The outer SPA fallback stays for `/`.
+        router = router
+            .nest_service("/admin", service)
+            .layer(middleware::from_fn(redirect_admin_to_slash));
     }
 
     router
+}
+
+/// Send `/admin` to `/admin/`.
+///
+/// Both front-ends reference their assets relatively — `./main.js`, `./styles.css` —
+/// because each app's own check (`web/tools/check.mjs`, `admin/tools/check.mjs`)
+/// forbids absolute `/…` paths, so an app works from wherever it is mounted. A browser
+/// resolves those against the *document URL*, and at `/admin` with no trailing slash the
+/// base is `/`. The admin page would therefore load the webmail's `main.js` and
+/// `styles.css`: two apps driving one DOM, the sign-in panel and the admin shell both
+/// left on screen, and neither one working.
+///
+/// Serving `/admin/` is what makes the relative URLs resolve inside the admin
+/// directory, so the bare path redirects to it — the same directory redirect a static
+/// file server performs, and the reason the webmail at `/` never had this problem.
+async fn redirect_admin_to_slash(request: Request, next: Next) -> Response {
+    if request.uri().path() == "/admin" {
+        return Redirect::permanent("/admin/").into_response();
+    }
+    next.run(request).await
 }
 
 /// Resolve a frontend directory: the configured one, or the first conventional
@@ -674,6 +699,46 @@ mod tests {
         // repositories need a Tokio context to register their lazy pool.
         let router = build(test_state());
         let _ = router;
+    }
+
+    #[tokio::test]
+    async fn the_bare_admin_path_redirects_into_the_directory() {
+        use axum::body::Body;
+        use axum::http::{Request as HttpRequest, StatusCode};
+        use tower::ServiceExt;
+
+        // Mounting the front-ends is the part that was never tested, which is why the
+        // admin page shipped loading the webmail's bundle: it references `./main.js`,
+        // and at `/admin` with no trailing slash a browser resolves that against `/`.
+        // Point `admin_dir` at the real directory so this runs the mounting itself.
+        let mut config = Config::default();
+        config.api.admin_dir = Some(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../admin")
+                .canonicalize()
+                .expect("the admin directory is in the repository"),
+        );
+
+        let app = with_frontends(Router::new(), &config).with_state(test_state());
+
+        let response = app
+            .clone()
+            .oneshot(HttpRequest::builder().uri("/admin").body(Body::empty()).unwrap())
+            .await
+            .expect("the router answers");
+        assert_eq!(
+            response.status(),
+            StatusCode::PERMANENT_REDIRECT,
+            "/admin must be sent to /admin/, or the app's relative assets resolve to the webmail's"
+        );
+        assert_eq!(response.headers()[header::LOCATION], "/admin/");
+
+        // `/admin/` itself still serves the app, so the redirect cannot loop.
+        let response = app
+            .oneshot(HttpRequest::builder().uri("/admin/").body(Body::empty()).unwrap())
+            .await
+            .expect("the router answers");
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[test]

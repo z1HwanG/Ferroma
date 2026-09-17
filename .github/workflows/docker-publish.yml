@@ -82,15 +82,27 @@ jobs:
           fi
           echo "publishing $manifest"
 
-      # Both run before anything is built. The frontend check earns its place here:
-      # `web/` and `admin/` have no build step and no test, so a call to a name a
-      # module never imported is invisible to every other gate and fails only in a
-      # browser — which is how one reached a published image once already.
-      - name: Deployment artefacts and frontends are consistent
+      # Everything static runs before anything is built.
+      #
+      # `web/tools/check.mjs` and `admin/tools/check.mjs` are the front-ends' whole
+      # test suite — 584 and 601 assertions covering element ids, module imports and
+      # exports, asset paths and HTML rules. They existed but nothing ran them: they
+      # live inside each app directory for historical reasons, and until this workflow
+      # there was no CI at all, so a front-end error could only be found by opening a
+      # browser. Each must run from its own directory; it reads the app profile from
+      # the `<html data-app="…">` attribute.
+      #
+      # `tools/check-web.mjs` adds the rule those two do not have: a *call* to a name a
+      # module neither declares nor imports. That is the one that shipped a webmail
+      # which never initialised, and it is invisible to the import/export checks
+      # because the broken call imports nothing at all.
+      - name: Every static check
         run: |
           set -euo pipefail
           node tools/check-deploy.mjs
           node tools/check-web.mjs
+          (cd web && node tools/check.mjs)
+          (cd admin && node tools/check.mjs)
 
   # ---------------------------------------------------------------------------
   # Publish

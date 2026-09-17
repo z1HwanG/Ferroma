@@ -1,16 +1,20 @@
 #!/usr/bin/env node
 /**
- * Static validation of the frontends, which have no build step and no test.
+ * The one link error the front-ends' own checks cannot see.
  *
- * `web/` and `admin/` ship as plain ES modules straight out of the repository. Nothing
- * compiles them, nothing lints them, and the Rust suite never loads them — so a module
- * that calls a name it never imported fails **only in a browser**, and only at the
- * moment a user opens the page. That is exactly how `renderChrome`, defined but not
- * exported in `reader.js` and called six times in `main.js`, reached a published
- * image: `start()` threw a ReferenceError on its first line of real work and the
- * webmail never initialised, while every server-side check stayed green.
+ * `web/tools/check.mjs` and `admin/tools/check.mjs` are the suites — 584 and 601
+ * assertions per app, over element ids, asset paths, module imports and exports. Run
+ * those first; this script exists only for the rule they do not have.
  *
- * Two link errors are caught here, both fatal and both invisible until runtime:
+ * They validate imports that *exist*. Neither notices a **call** to a name the module
+ * never introduced, because such a call imports nothing to check. That is exactly how
+ * `renderChrome` — defined but not exported in `web/reader.js`, called six times in
+ * `web/main.js` with no import — reached a published image: in an ES module it is a
+ * ReferenceError on the first call, and the first call sits inside `start()`, so the
+ * webmail never initialised while every other check stayed green. Measured on that
+ * revision, the per-app check reported "PASS — no violations".
+ *
+ * Two fatal, invisible-until-runtime link errors are reported here:
  *
  *   * a call to a name the file neither declares nor imports — `ReferenceError` at
  *     the first call, which in a module with a top-level start() kills the whole app;
