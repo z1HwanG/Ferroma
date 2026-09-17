@@ -109,6 +109,35 @@ pub fn run(config: &Config, args: &ServeArgs) -> Result<ExitCode> {
     runtime.block_on(serve(config, args))
 }
 
+/// The IMAP server's view of the configuration.
+///
+/// The TLS fields have to be carried across here rather than only attached
+/// afterwards: `ImapServer::new` validates the configuration, and `with_tls` —
+/// which supplies the acceptor — runs after that. Leaving them at their defaults
+/// is what made `imaps_port = 993` fail at boot with
+/// `imap: imaps_port is set but TLS is disabled`, on a server whose certificate
+/// had just been loaded successfully.
+fn imap_server_config(config: &Config) -> ImapServerConfig {
+    ImapServerConfig {
+        host: config.imap.host.clone(),
+        port: config.imap.port,
+        imaps_port: config.imap.imaps_port,
+        banner: config.imap.banner.clone(),
+        require_tls_for_login: config.imap.require_tls_for_login,
+        idle_timeout_secs: config.imap.idle_timeout_secs,
+        max_idle_secs: config.imap.max_idle_secs,
+        enable_idle: config.imap.enable_idle,
+        enable_move: config.imap.enable_move,
+        max_append_size: config.imap.max_append_size,
+        max_fetch_messages: config.limits.max_fetch_messages,
+        tls_enabled: config.tls.enabled,
+        tls_cert_path: config.tls.cert_path.clone(),
+        tls_key_path: config.tls.key_path.clone(),
+        maildir_root: config.maildir_root(),
+        fsync_on_write: config.storage.fsync_on_write,
+    }
+}
+
 async fn serve(config: &Config, args: &ServeArgs) -> Result<ExitCode> {
     let selection = Selection::resolve(config, &args.only);
     if selection.names().is_empty() {
@@ -268,20 +297,7 @@ async fn serve(config: &Config, args: &ServeArgs) -> Result<ExitCode> {
 
     // --- IMAP ---------------------------------------------------------------
     if selection.imap {
-        let imap_config = ImapServerConfig {
-            host: config.imap.host.clone(),
-            port: config.imap.port,
-            imaps_port: config.imap.imaps_port,
-            banner: config.imap.banner.clone(),
-            require_tls_for_login: config.imap.require_tls_for_login,
-            idle_timeout_secs: config.imap.idle_timeout_secs,
-            max_idle_secs: config.imap.max_idle_secs,
-            enable_idle: config.imap.enable_idle,
-            enable_move: config.imap.enable_move,
-            max_append_size: config.imap.max_append_size,
-            max_fetch_messages: config.limits.max_fetch_messages,
-            ..ImapServerConfig::default()
-        };
+        let imap_config = imap_server_config(config);
 
         let mut server = ImapServer::new(
             imap_config,
@@ -432,6 +448,36 @@ async fn wait_for_shutdown() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_enabled_imaps_port_reaches_the_imap_configuration() {
+        // Regression: the TLS fields used to keep their defaults, so a server that
+        // had just loaded its certificate still refused to start with
+        // "imap: imaps_port is set but TLS is disabled" the moment `imaps_port` was
+        // configured — which is exactly what a production deployment does.
+        let mut config = Config::default();
+        config.imap.imaps_port = 993;
+        config.tls.enabled = true;
+        config.tls.cert_path = Some(std::path::PathBuf::from("/etc/ferroma/tls/fullchain.pem"));
+        config.tls.key_path = Some(std::path::PathBuf::from("/etc/ferroma/tls/privkey.pem"));
+
+        let imap = imap_server_config(&config);
+        assert_eq!(imap.imaps_port, 993);
+        assert!(imap.tls_enabled, "tls.enabled must not be dropped");
+        assert_eq!(
+            imap.tls_cert_path.as_deref(),
+            Some(std::path::Path::new("/etc/ferroma/tls/fullchain.pem"))
+        );
+
+        // `validate` also insists the PEM files exist, which they do not in a test;
+        // the rule this guards is the one above it.
+        if let Err(err) = imap.validate() {
+            assert!(
+                !err.contains("imaps_port is set but TLS is disabled"),
+                "the TLS flag was dropped again: {err}"
+            );
+        }
+    }
 
     #[test]
     fn an_empty_only_list_follows_the_configuration() {
