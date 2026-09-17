@@ -275,17 +275,27 @@ async fn serve(config: &Config, args: &ServeArgs) -> Result<ExitCode> {
             .clone()
             .expect("the resolver is built whenever the queue is selected");
         let client = SmtpClient::new(SmtpClientConfig::from_config(config));
+        let queue_view = QueueConfigView::from_config(config);
+        // Named in the startup banner: an operator who configured a relay has to be
+        // able to see that it is carrying the mail, rather than the MX path.
+        let relay_host = queue_view.relay.as_ref().map(|relay| relay.host.clone());
         let worker = QueueWorker::new(
             client,
             resolver,
             repos.clone(),
             maildir.clone(),
             Arc::clone(&delivery),
-            QueueConfigView::from_config(config),
+            queue_view,
         )
         .with_event_bus((*events).clone());
 
-        println!("queue     {} worker(s)", config.queue.workers);
+        match relay_host {
+            Some(host) => println!(
+                "queue     {} worker(s), outbound via relay {host}",
+                config.queue.workers
+            ),
+            None => println!("queue     {} worker(s)", config.queue.workers),
+        }
         // Clone *before* the spawn: an `async move` block takes ownership, and the
         // API listener further down still needs the receiver.
         let queue_shutdown = shutdown_rx.clone();

@@ -507,6 +507,39 @@ _(计划中)_ `ferroma-smtp::mx::MxResolver` 使用 `hickory-resolver`（由 `[d
 
 调度器以 `queue.poll_interval_secs`（10）轮询，并发运行 `queue.workers`（4）条投递。
 
+### 11.4 出站中继（smarthost）
+
+有些主机没法直接投递：公网 IP 没有 PTR 记录，或者服务商拒绝设置它（工单都提了也不行）。
+这类 IP 发出的邮件会被 Gmail 判进垃圾箱、被微软系直接拒收 —— 而**收信完全不受影响**，
+只有出站需要绕道。
+
+```toml
+[queue]
+# 服务商的提交服务、事务邮件 API，或另一台有正确 PTR 的主机
+relay_host = "smtp.example-relay.com"
+relay_port = 587
+# starttls(587) | implicit(465) | none（内网中继，绝不与凭据同时使用）
+relay_tls = "starttls"
+relay_username = "…"
+relay_password = "…"
+# 留空 = 所有出站邮件都走中继；列出域则只有这些域的邮件走中继
+relay_from_domains = ["example.com"]
+```
+
+行为要点：
+
+* 队列 worker **跳过 MX 解析**，把信封直接交给中继的连接；`relay_from_domains` 之外的域
+  仍按 §11.2 正常解析 MX 直投。中继主机名自身用 `A`/`AAAA` 解析（`MxResolver::addresses`）。
+* **本地域投递本来就不经过队列**，所以站内邮件不受影响。
+* **DKIM 签名在把邮件交给中继之前完成**，签名带你自己的域，DMARC 对齐不受影响；SPF 需要
+  把中继的发送域 `include:` 进你的记录（[security.md](security.md) §8）。
+* 需要 `AUTH` 时，凭据**只在加密信道上发送**：`relay_tls = "none"` 与凭据同时配置会在
+  启动校验时被拒绝。优先 `AUTH PLAIN`（带初始响应），服务端只支持 `LOGIN` 时回退
+  `AUTH LOGIN`。
+* **认证失败算临时性失败，不会退信**：密码写错是配置问题，不该把已经入队的邮件全退掉。
+* 退信（空信封发件人）同样走中继 —— 反向解析缺失的主机，最容易被拒的就是这类邮件。
+* 启动横幅会明说这件事：`queue     4 worker(s), outbound via relay smtp.example-relay.com`。
+
 ---
 
 ## 12. `4xx` 与 `5xx`，以及 `FerromaError::is_temporary()`

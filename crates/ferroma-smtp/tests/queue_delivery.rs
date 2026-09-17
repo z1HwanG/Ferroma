@@ -170,7 +170,25 @@ fn fast_config() -> QueueConfigView {
         poll_interval: std::time::Duration::from_millis(10),
         bounce_on_failure: true,
         mailer_daemon: "MAILER-DAEMON@mx.test".to_string(),
+        // These cases deliver straight to the recipient's MX. The relay path is
+        // covered by `relay_deliveries_go_to_the_relay` in
+        // `crates/ferroma-smtp/src/queue.rs`.
+        relay: None,
     }
+}
+
+/// A view that hands every outbound message to a relay listening on `address`.
+///
+/// The relay host is `127.0.0.1` because that is the one name the shared mock
+/// resolver publishes an address for; a real deployment names its provider's host.
+fn relayed_config(address: std::net::SocketAddr) -> QueueConfigView {
+    let mut config = ferroma_core::Config::default();
+    config.server.hostname = "mx.test".into();
+    config.queue.relay_host = Some(address.ip().to_string());
+    config.queue.relay_port = address.port();
+    config.queue.relay_tls = "none".into();
+
+    QueueConfigView::from_config(&config)
 }
 
 /// The number of messages in a mailbox's `INBOX`.
@@ -190,6 +208,73 @@ async fn inbox_count(repos: &Repositories, mailbox_id: MailboxId) -> i64 {
 // ---------------------------------------------------------------------------
 // Success
 // ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_relay_carries_a_recipient_whose_domain_has_no_mx() {
+    // The situation the relay exists for: this host cannot deliver directly, so a
+    // message to a domain with no exchangeable MX must still leave — through the
+    // relay — rather than sit in the queue.
+    crate::require_database!();
+    let harness = Harness::start().await;
+    let (user_id, mailbox_id) = seed_mailbox(&harness.repos, "mx.test", "alice", "unused").await;
+    let message_id = harness.store_outbound(mailbox_id, "alice").await;
+    // `nowhere.example` is unknown to the mock: no MX, no address.
+    let entry = harness
+        .queue(message_id, user_id, "bob@nowhere.example")
+        .await;
+
+    let relay = FakeMx::start(250).await;
+    let mut worker = harness.worker(&relay, relayed_config(relay.address));
+    assert_eq!(worker.dispatch_batch().await.expect("dispatch"), 1);
+
+    let row = harness
+        .repos
+        .queue
+        .find_by_id(entry.queue_id())
+        .await
+        .expect("lookup")
+        .expect("the row exists");
+    assert_eq!(row.status, "delivered", "last_error: {:?}", row.last_error);
+    assert_eq!(relay.received(), 1, "the relay is what carried it");
+
+    relay.stop();
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+async fn without_a_relay_the_same_recipient_cannot_be_delivered() {
+    // The control for the test above: the same recipient, the same mock, no relay —
+    // and the queue has nowhere to send it.
+    crate::require_database!();
+    let harness = Harness::start().await;
+    let (user_id, mailbox_id) = seed_mailbox(&harness.repos, "mx.test", "alice", "unused").await;
+    let message_id = harness.store_outbound(mailbox_id, "alice").await;
+    let entry = harness
+        .queue(message_id, user_id, "bob@nowhere.example")
+        .await;
+
+    let fake = FakeMx::start(250).await;
+    let mut worker = harness.worker(&fake, fast_config());
+    assert_eq!(worker.dispatch_batch().await.expect("dispatch"), 1);
+
+    let row = harness
+        .repos
+        .queue
+        .find_by_id(entry.queue_id())
+        .await
+        .expect("lookup")
+        .expect("the row exists");
+    assert_eq!(row.status, "retry", "last_error: {:?}", row.last_error);
+    assert!(
+        row.last_error.as_deref().unwrap_or_default().contains("no mail exchanger"),
+        "last_error: {:?}",
+        row.last_error
+    );
+    assert_eq!(fake.received(), 0, "nothing should have been sent");
+
+    fake.stop();
+    harness.cleanup().await;
+}
 
 #[tokio::test]
 async fn a_successful_attempt_marks_the_row_delivered() {

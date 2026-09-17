@@ -111,6 +111,28 @@ max_connections_per_host = 4
 bounce_on_failure = true
 retention_days = 30
 
+# -----------------------------------------------------------------------------
+# Outbound relay ("smarthost"). Off by default.
+# -----------------------------------------------------------------------------
+# Uncomment these when this host cannot deliver mail directly — the usual reason
+# being a public IP with no PTR record, or a provider that will not set one. Mail
+# from such an IP is junked by Gmail and refused outright by Microsoft's
+# properties, while *receiving* is unaffected: only outbound needs the relay.
+#
+# Everything not sent through a relay is resolved by MX as usual, so setting
+# relay_from_domains lets the domains you actually send as use the relay while
+# anything else keeps going direct.
+#
+# relay_host = "smtp.example-relay.com"
+# relay_port = 587
+# # "starttls" (587), "implicit" (465) or "none" (an internal relay on a trusted
+# # network — never combined with credentials).
+# relay_tls = "starttls"
+# relay_username = "…"
+# relay_password = "…"
+# # Empty means every outbound message goes through the relay.
+# relay_from_domains = ["example.com"]
+
 [tls]
 # Off by default so a bare `cargo run` boots without certificates. Production
 # sets this to true and points cert_path/key_path at a Let's Encrypt bundle.

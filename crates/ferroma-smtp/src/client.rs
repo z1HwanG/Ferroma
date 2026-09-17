@@ -64,6 +64,8 @@ pub enum TlsPolicy {
     /// Require an encrypted channel. A peer that does not offer `STARTTLS`, or whose
     /// handshake fails, produces a **temporary** failure — never a bounce.
     Required,
+    /// TLS from the first byte (SMTPS). What a relay on port 465 expects.
+    Implicit,
     /// Never use TLS. Only for an internal relay on a trusted network.
     Disabled,
 }
@@ -74,18 +76,60 @@ impl TlsPolicy {
         match self {
             TlsPolicy::Opportunistic => "opportunistic",
             TlsPolicy::Required => "required",
+            TlsPolicy::Implicit => "implicit",
             TlsPolicy::Disabled => "disabled",
         }
     }
 
-    /// Whether a missing `STARTTLS` must fail the delivery.
+    /// Whether an unencrypted channel is acceptable.
     pub fn is_required(self) -> bool {
-        matches!(self, TlsPolicy::Required)
+        matches!(self, TlsPolicy::Required | TlsPolicy::Implicit)
     }
 
     /// Whether TLS may be used at all.
     pub fn allows_tls(self) -> bool {
         !matches!(self, TlsPolicy::Disabled)
+    }
+
+    /// Whether the handshake happens before the greeting rather than through
+    /// `STARTTLS`.
+    pub fn is_implicit(self) -> bool {
+        matches!(self, TlsPolicy::Implicit)
+    }
+
+    /// From a configuration string: `starttls`, `implicit`, `none`.
+    ///
+    /// `None` for anything else, so a caller can reject a typo at boot rather than
+    /// silently downgrade to cleartext.
+    pub fn from_config_name(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "starttls" | "required" => Some(TlsPolicy::Required),
+            "implicit" | "smtps" => Some(TlsPolicy::Implicit),
+            "none" | "disabled" | "cleartext" => Some(TlsPolicy::Disabled),
+            "opportunistic" => Some(TlsPolicy::Opportunistic),
+            _ => None,
+        }
+    }
+}
+
+/// Credentials for `AUTH` at a relay.
+///
+/// Its `Debug` is hand-written: a configuration dump that prints a password is a
+/// leak, and this struct travels inside [`SmtpClientConfig`], which is `Debug`.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SmtpCredentials {
+    /// The account name the relay expects.
+    pub username: String,
+    /// Its password.
+    pub password: String,
+}
+
+impl std::fmt::Debug for SmtpCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SmtpCredentials")
+            .field("username", &self.username)
+            .field("password", &"***")
+            .finish()
     }
 }
 
@@ -103,6 +147,12 @@ pub struct SmtpClientConfig {
     /// Whether to verify the remote certificate. Turning this off is a security
     /// downgrade and is logged at `warn` on every connection.
     pub verify_certificates: bool,
+    /// Credentials for `AUTH`, when the peer is a relay that requires them.
+    pub auth: Option<SmtpCredentials>,
+    /// Send credentials even when the channel is not encrypted. Off by default:
+    /// `AUTH` before `STARTTLS` hands the password to anyone on the path, and no
+    /// hosting provider's submission service needs it.
+    pub allow_cleartext_auth: bool,
     /// Deadline for the TCP connect and the TLS handshake.
     pub connect_timeout: Duration,
     /// Deadline for each reply.
@@ -118,6 +168,8 @@ impl Default for SmtpClientConfig {
             port: 25,
             tls: TlsPolicy::Opportunistic,
             verify_certificates: true,
+            auth: None,
+            allow_cleartext_auth: false,
             connect_timeout: Duration::from_secs(30),
             read_timeout: Duration::from_secs(60),
             session_timeout: Duration::from_secs(300),
@@ -133,10 +185,37 @@ impl SmtpClientConfig {
             port: 25,
             tls: TlsPolicy::Opportunistic,
             verify_certificates: true,
+            auth: None,
+            allow_cleartext_auth: false,
             connect_timeout: Duration::from_secs(config.queue.connect_timeout_secs.max(1)),
             read_timeout: Duration::from_secs(config.queue.connect_timeout_secs.max(1) * 2),
             session_timeout: Duration::from_secs(config.queue.delivery_timeout_secs.max(1)),
         }
+    }
+
+    /// Build the client for the configured outbound relay, when there is one.
+    ///
+    /// `None` when `[queue] relay_host` is unset, which is the direct-to-MX case.
+    /// An unparseable `relay_tls` is rejected by `Config::validate`, so reaching
+    /// here with one is impossible — but the fallback is `starttls`, never `none`.
+    pub fn for_relay(config: &ferroma_core::config::Config) -> Option<(String, SmtpClientConfig)> {
+        if !config.queue.relay_configured() {
+            return None;
+        }
+        let host = config.queue.relay_host.clone().unwrap_or_default();
+        let tls = TlsPolicy::from_config_name(&config.queue.relay_tls).unwrap_or(TlsPolicy::Required);
+        let auth = match (&config.queue.relay_username, &config.queue.relay_password) {
+            (Some(username), Some(password)) => Some(SmtpCredentials {
+                username: username.clone(),
+                password: password.clone(),
+            }),
+            _ => None,
+        };
+        let mut client = SmtpClientConfig::from_config(config);
+        client.port = config.queue.relay_port;
+        client.tls = tls;
+        client.auth = auth;
+        Some((host, client))
     }
 
     /// Require TLS.
@@ -429,6 +508,9 @@ struct Session {
     host: String,
     /// The `EHLO` extension lines, upper-cased keywords only.
     extensions: Vec<String>,
+    /// Whether the channel is encrypted — set by the implicit handshake or by
+    /// `STARTTLS`, and consulted before any credential is sent.
+    encrypted: bool,
 }
 
 impl Session {
@@ -438,11 +520,22 @@ impl Session {
             config,
             host: host.to_string(),
             extensions: Vec::new(),
+            encrypted: false,
         }
     }
 
     /// Run the whole dialogue.
     async fn run(&mut self, sender: &str, recipient: &str, message: &[u8]) -> DeliveryOutcome {
+        // --- implicit TLS ---------------------------------------------
+        // `SMTPS`: the handshake happens before the server greets us, and there is
+        // no plaintext channel to fall back to.
+        if self.config.tls.is_implicit() {
+            if let Err(outcome) = self.handshake().await {
+                return outcome;
+            }
+            self.encrypted = true;
+        }
+
         // --- banner ---------------------------------------------------
         let banner = match self.read_reply().await {
             Ok(reply) => reply,
@@ -495,6 +588,24 @@ impl Session {
         }
 
         // --- envelope -------------------------------------------------
+        // A relay that requires credentials is the only peer this client ever
+        // authenticates to; an MX host never asks.
+        if let Some(credentials) = self.config.auth.clone() {
+            if !self.encrypted && !self.config.allow_cleartext_auth {
+                return DeliveryOutcome::transport_failure(
+                    format!(
+                        "{} wants credentials but the channel is not encrypted; \
+                         set queue.relay_tls to \"starttls\" or \"implicit\"",
+                        self.host
+                    ),
+                    Some(&self.host),
+                );
+            }
+            if let Err(outcome) = self.authenticate(&credentials).await {
+                return outcome;
+            }
+        }
+
         let mail = match self.command(&format!("MAIL FROM:<{sender}>")).await {
             Ok(reply) => reply,
             Err(outcome) => return outcome,
@@ -566,6 +677,25 @@ impl Session {
             ));
         }
 
+        self.handshake().await?;
+        self.encrypted = true;
+
+        // RFC 3207 §4.2: the session state is reset, so ask again.
+        let ehlo = self
+            .command(&format!("EHLO {}", self.config.hostname))
+            .await?;
+        if ehlo.0 != 250 {
+            return Err(classify_reply(ehlo.0, &ehlo.1, Some(&self.host)));
+        }
+        self.extensions = parse_extensions(&ehlo.1);
+        Ok(())
+    }
+
+    /// The TLS handshake itself, on whatever the current stream is.
+    ///
+    /// Shared by `STARTTLS` and by implicit TLS, which differ only in when it
+    /// happens and whether the dialogue restarts afterwards.
+    async fn handshake(&mut self) -> std::result::Result<(), DeliveryOutcome> {
         // Take the plaintext stream back so the connector can own it.
         let stream = std::mem::replace(&mut self.stream, Box::new(tokio::io::empty()));
         let connector = match self.connector() {
@@ -590,14 +720,6 @@ impl Session {
         match tokio::time::timeout(self.config.connect_timeout, connector.connect(server_name, stream)).await {
             Ok(Ok(tls)) => {
                 self.stream = Box::new(tls);
-                // RFC 3207 §4.2: the session state is reset, so ask again.
-                let ehlo = self
-                    .command(&format!("EHLO {}", self.config.hostname))
-                    .await?;
-                if ehlo.0 != 250 {
-                    return Err(classify_reply(ehlo.0, &ehlo.1, Some(&self.host)));
-                }
-                self.extensions = parse_extensions(&ehlo.1);
                 Ok(())
             }
             Ok(Err(e)) => Err(DeliveryOutcome::transport_failure(
@@ -609,6 +731,53 @@ impl Session {
                 Some(&self.host),
             )),
         }
+    }
+
+    /// Authenticate to a relay.
+    ///
+    /// `AUTH PLAIN` with an initial response, falling back to `AUTH LOGIN`. A
+    /// rejection is a **temporary** failure, deliberately: a wrong password is a
+    /// configuration mistake, and bouncing every queued message over it destroys
+    /// mail that a corrected password would have delivered.
+    async fn authenticate(
+        &mut self,
+        credentials: &SmtpCredentials,
+    ) -> std::result::Result<(), DeliveryOutcome> {
+        if !self.has_extension("AUTH") {
+            return Err(DeliveryOutcome::transport_failure(
+                format!(
+                    "{} does not advertise AUTH but credentials are configured",
+                    self.host
+                ),
+                Some(&self.host),
+            ));
+        }
+
+        use base64::Engine as _;
+        let engine = base64::engine::general_purpose::STANDARD;
+        // `AUTH` with no mechanism list is legal; PLAIN is what relays support.
+        let login = self.has_extension("LOGIN") && !self.has_extension("PLAIN");
+
+        let reply = if login {
+            let first = self
+                .command(&format!("AUTH LOGIN {}", engine.encode(&credentials.username)))
+                .await?;
+            if first.0 != 334 {
+                return Err(auth_failure(&self.host, first.0, &first.1));
+            }
+            self.command(&engine.encode(&credentials.password)).await?
+        } else {
+            let payload = engine.encode(format!(
+                "\0{}\0{}",
+                credentials.username, credentials.password
+            ));
+            self.command(&format!("AUTH PLAIN {payload}")).await?
+        };
+
+        if reply.0 != 235 {
+            return Err(auth_failure(&self.host, reply.0, &reply.1));
+        }
+        Ok(())
     }
 
     /// Build the TLS connector for this delivery.
@@ -775,6 +944,19 @@ fn parse_extensions(text: &str) -> Vec<String> {
         .filter(|token| token.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '='))
         .map(str::to_string)
         .collect()
+}
+
+/// A rejected `AUTH`, as a **temporary** failure.
+///
+/// Deliberately not `classify_reply`: a `535` there would be permanent, and a
+/// mistyped password would bounce the whole queue instead of waiting for the
+/// operator to fix it. The reply text never contains the password — it is the
+/// server's own words.
+fn auth_failure(host: &str, code: u16, text: &str) -> DeliveryOutcome {
+    DeliveryOutcome::transport_failure(
+        format!("{host} rejected AUTH: {code} {text}"),
+        Some(host),
+    )
 }
 
 /// Dot-stuff a message body and guarantee it ends with CRLF.
@@ -1009,6 +1191,7 @@ mod tests {
             config: SmtpClientConfig::default(),
             host: "mx.test".to_string(),
             extensions,
+            encrypted: false,
         };
         assert!(session(vec!["SIZE 100".into(), "STARTTLS".into()]).has_extension("STARTTLS"));
         assert!(session(vec!["starttls".into()]).has_extension("STARTTLS"));
@@ -1156,6 +1339,11 @@ mod tests {
         FakeStartTls,
         /// A server that does not know `EHLO`.
         HeloOnly,
+        /// Advertise `AUTH PLAIN LOGIN` and accept whatever is offered — a relay
+        /// that takes credentials.
+        AuthRequired,
+        /// Advertise `AUTH` and refuse the credentials with `535`.
+        AuthRejected,
     }
 
     /// A hand-written SMTP server for one connection.
@@ -1206,6 +1394,9 @@ mod tests {
                         Script::FakeStartTls => {
                             "250-mx.test greets you\r\n250-SIZE 10485760\r\n250 STARTTLS\r\n"
                         }
+                        Script::AuthRequired | Script::AuthRejected => {
+                            "250-mx.test greets you\r\n250-SIZE 10485760\r\n250 AUTH PLAIN LOGIN\r\n"
+                        }
                         _ => "250-mx.test greets you\r\n250-SIZE 10485760\r\n250 PIPELINING\r\n",
                     };
                     socket.write_all(reply.as_bytes()).await.expect("ehlo");
@@ -1224,6 +1415,17 @@ mod tests {
                             .await
                             .expect("garbage");
                         break;
+                    }
+                } else if trimmed.to_ascii_uppercase().starts_with("AUTH ") {
+                    match script {
+                        Script::AuthRejected => socket
+                            .write_all(b"535 5.7.8 Authentication credentials invalid\r\n")
+                            .await
+                            .expect("auth"),
+                        _ => socket
+                            .write_all(b"235 2.7.0 Authentication successful\r\n")
+                            .await
+                            .expect("auth"),
                     }
                 } else if trimmed.to_ascii_uppercase().starts_with("MAIL FROM") {
                     socket.write_all(b"250 2.1.0 Ok\r\n").await.expect("mail");
@@ -1302,9 +1504,136 @@ mod tests {
             .await
     }
 
+    /// Deliver with a credentialled client, and hand back what the server saw.
+    async fn deliver_with_auth(
+        script: Script,
+        config: SmtpClientConfig,
+    ) -> (DeliveryOutcome, Vec<String>) {
+        let (server, handle) = scripted_server(script).await;
+        let client = SmtpClient::new(config.with_port(server.port()));
+        let outcome = client
+            .deliver(
+                &host("relay.test"),
+                &[server.ip()],
+                "alice@example.com",
+                "bob@example.net",
+                b"Subject: hi\r\n\r\nbody\r\n",
+            )
+            .await;
+        (outcome, handle.await.expect("server task"))
+    }
+
+    fn relay_credentials() -> SmtpCredentials {
+        SmtpCredentials {
+            username: "apikey".into(),
+            password: "s3cret".into(),
+        }
+    }
+
+    /// A client for a relay, with the cleartext guard relaxed: the scripted server
+    /// speaks no TLS, and the guard has its own test below.
+    fn relay_config() -> SmtpClientConfig {
+        SmtpClientConfig {
+            auth: Some(relay_credentials()),
+            allow_cleartext_auth: true,
+            tls: TlsPolicy::Disabled,
+            ..SmtpClientConfig::default()
+        }
+    }
+
     #[tokio::test]
-    async fn a_clean_delivery_is_reported_as_delivered() {
-        let outcome = deliver_to(Script::Accept, SmtpClientConfig::default()).await;
+    async fn credentials_are_sent_with_auth_plain_before_the_envelope() {
+        let (outcome, transcript) = deliver_with_auth(Script::AuthRequired, relay_config()).await;
+        assert!(outcome.is_delivered(), "{outcome:?}");
+
+        use base64::Engine as _;
+        let expected = base64::engine::general_purpose::STANDARD.encode("\0apikey\0s3cret");
+        let position = transcript
+            .iter()
+            .position(|line| line.starts_with("AUTH "))
+            .expect("AUTH was sent");
+        assert_eq!(transcript[position], format!("AUTH PLAIN {expected}"));
+        // A relay expects it after `EHLO` and before `MAIL FROM`.
+        let mail = transcript
+            .iter()
+            .position(|line| line.starts_with("MAIL FROM"))
+            .expect("envelope");
+        assert!(position < mail, "{transcript:?}");
+    }
+
+    #[tokio::test]
+    async fn credentials_are_never_sent_over_an_unencrypted_channel() {
+        let config = SmtpClientConfig {
+            auth: Some(relay_credentials()),
+            tls: TlsPolicy::Disabled,
+            ..SmtpClientConfig::default()
+        };
+        let (outcome, transcript) = deliver_with_auth(Script::AuthRequired, config).await;
+        assert!(outcome.is_temporary(), "{outcome:?}");
+        assert!(outcome.text().contains("not encrypted"), "{outcome:?}");
+        assert!(
+            !transcript.iter().any(|line| line.starts_with("AUTH")),
+            "nothing may be sent before the channel is encrypted: {transcript:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rejected_auth_is_temporary_and_never_echoes_the_password() {
+        let (outcome, _) = deliver_with_auth(Script::AuthRejected, relay_config()).await;
+        assert!(
+            outcome.is_temporary(),
+            "a wrong password must not bounce the queue: {outcome:?}"
+        );
+        assert!(outcome.text().contains("rejected AUTH"), "{outcome:?}");
+        assert!(!outcome.text().contains("s3cret"), "{outcome:?}");
+    }
+
+    #[tokio::test]
+    async fn implicit_tls_starts_before_the_greeting() {
+        // `implicit` against a server that speaks plaintext: the handshake cannot
+        // succeed, and the failure must be temporary — never a bounce.
+        let config = SmtpClientConfig {
+            tls: TlsPolicy::Implicit,
+            ..SmtpClientConfig::default()
+        };
+        let outcome = deliver_to(Script::Accept, config).await;
+        assert!(outcome.is_temporary(), "{outcome:?}");
+        assert!(outcome.text().to_lowercase().contains("tls"), "{outcome:?}");
+    }
+
+    #[test]
+    fn tls_policy_names_round_trip_for_a_relay() {
+        assert_eq!(TlsPolicy::from_config_name("starttls"), Some(TlsPolicy::Required));
+        assert_eq!(TlsPolicy::from_config_name("implicit"), Some(TlsPolicy::Implicit));
+        assert_eq!(TlsPolicy::from_config_name("none"), Some(TlsPolicy::Disabled));
+        assert_eq!(TlsPolicy::from_config_name("IMPLICIT"), Some(TlsPolicy::Implicit));
+        assert_eq!(TlsPolicy::from_config_name("perhaps"), None);
+        assert!(TlsPolicy::Implicit.is_implicit() && TlsPolicy::Implicit.is_required());
+    }
+
+    #[test]
+    fn the_relay_client_is_built_from_the_queue_block() {
+        let mut config = ferroma_core::config::Config::default();
+        assert!(SmtpClientConfig::for_relay(&config).is_none());
+
+        config.queue.relay_host = Some("smtp.relay.example".into());
+        config.queue.relay_port = 465;
+        config.queue.relay_tls = "implicit".into();
+        config.queue.relay_username = Some("apikey".into());
+        config.queue.relay_password = Some("s3cret".into());
+
+        let (relay_host, client) = SmtpClientConfig::for_relay(&config).expect("a relay client");
+        assert_eq!(relay_host, "smtp.relay.example");
+        assert_eq!(client.port, 465);
+        assert_eq!(client.tls, TlsPolicy::Implicit);
+        assert_eq!(client.auth.as_ref().map(|c| c.username.as_str()), Some("apikey"));
+        // The password must not be printable, not here and not from the client.
+        let rendered = format!("{client:?}");
+        assert!(!rendered.contains("s3cret"), "{rendered}");
+    }
+
+    #[tokio::test]
+    async fn a_clean_delivery_is_reported_as_delivered() {        let outcome = deliver_to(Script::Accept, SmtpClientConfig::default()).await;
         assert!(outcome.is_delivered(), "{outcome:?}");
         assert_eq!(outcome.code(), Some(250));
         assert!(outcome.text().contains("Ok: queued as TEST"), "{outcome:?}");

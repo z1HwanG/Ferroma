@@ -548,6 +548,49 @@ the retry window.
 The dispatcher polls with `queue.poll_interval_secs` (10) and runs
 `queue.workers` (4) deliveries concurrently.
 
+### 11.4 Outbound relay (smarthost)
+
+Some hosts cannot deliver at all: their public IP has no PTR record, or the provider
+will not set one — a ticket may come back saying it is unsupported. Mail from such
+an IP is junked by Gmail and refused outright by Microsoft's properties, while
+**receiving is unaffected**; only outbound needs the detour.
+
+```toml
+[queue]
+# A hosting provider's submission service, a transactional mail API, or another
+# host with a proper reverse record.
+relay_host = "smtp.example-relay.com"
+relay_port = 587
+# starttls (587) | implicit (465) | none (an internal relay; never with credentials)
+relay_tls = "starttls"
+relay_username = "…"
+relay_password = "…"
+# Empty means everything goes through the relay; a list limits it to those domains.
+relay_from_domains = ["example.com"]
+```
+
+What it does and does not change:
+
+* The queue worker **skips MX resolution** and hands the envelope to the relay
+  instead; domains outside `relay_from_domains` still resolve MX as in §11.2. The
+  relay's own name is resolved with `A`/`AAAA` (`MxResolver::addresses`).
+* **Local delivery never went through the queue**, so mail between local users is
+  unaffected either way.
+* **DKIM signing happens before the hand-off**, so the signature still carries your
+  own domain and DMARC alignment is untouched; SPF needs the relay's sending domain
+  `include:`d in your record ([security.md](security.md) §8).
+* When the relay wants `AUTH`, credentials are sent **only over an encrypted
+  channel**: `relay_tls = "none"` together with credentials is rejected by the boot
+  check. `AUTH PLAIN` with an initial response is preferred, falling back to
+  `AUTH LOGIN` when that is all the relay offers.
+* **A rejected `AUTH` is a temporary failure, never a bounce**: a wrong password is a
+  configuration mistake, and bouncing the queue over it destroys mail a corrected
+  password would have delivered.
+* Bounces (a null return path) go through the relay too — they are the messages a
+  host with no reverse record gets refused for most readily.
+* The startup banner says so out loud:
+  `queue     4 worker(s), outbound via relay smtp.example-relay.com`.
+
 ---
 
 ## 12. `4xx` versus `5xx`, and `FerromaError::is_temporary()`

@@ -253,6 +253,29 @@ pub struct QueueConfig {
     pub bounce_on_failure: bool,
     /// Keep delivered queue rows for this many days before pruning.
     pub retention_days: u32,
+    /// Hand every outbound message to this relay instead of resolving the
+    /// recipient's MX.
+    ///
+    /// This exists for one situation, and it is a common one: a host whose public
+    /// IP has no PTR record, or whose provider will not set one. Outbound mail from
+    /// such an IP is junked by Gmail and refused outright by Microsoft's properties,
+    /// while inbound is unaffected. A relay — the provider's own submission
+    /// service, a transactional mail API, or another host with a proper reverse
+    /// record — carries the delivery instead. `None` (the default) resolves MX
+    /// records and delivers directly, which is what a host with a PTR should do.
+    pub relay_host: Option<String>,
+    /// The relay's SMTP port: `587` for `starttls`, `465` for `implicit`.
+    pub relay_port: u16,
+    /// How the connection to the relay is protected: `starttls`, `implicit` or
+    /// `none`. Credentials are never sent over `none`.
+    pub relay_tls: String,
+    /// Username for `AUTH` at the relay, when it requires one.
+    pub relay_username: Option<String>,
+    /// Password for `AUTH` at the relay.
+    pub relay_password: Option<String>,
+    /// Relay only messages whose envelope sender is in one of these domains.
+    /// Empty means every outbound message goes through the relay.
+    pub relay_from_domains: Vec<String>,
 }
 
 impl Default for QueueConfig {
@@ -268,7 +291,40 @@ impl Default for QueueConfig {
             max_connections_per_host: 4,
             bounce_on_failure: true,
             retention_days: 30,
+            relay_host: None,
+            relay_port: 587,
+            relay_tls: "starttls".into(),
+            relay_username: None,
+            relay_password: None,
+            relay_from_domains: Vec::new(),
         }
+    }
+}
+
+impl QueueConfig {
+    /// Whether outbound delivery goes through a relay.
+    pub fn relay_configured(&self) -> bool {
+        self.relay_host.as_deref().is_some_and(|host| !host.trim().is_empty())
+    }
+
+    /// Whether a message from `sender` should go through the relay.
+    ///
+    /// An empty sender — a bounce, or a `MAIL FROM:<>` — is relayed whenever a
+    /// relay is configured: it is the one message that must not be attempted
+    /// directly, because a null return path is exactly what receivers reject most
+    /// readily from an IP with no reverse record.
+    pub fn relays_sender(&self, sender: &str) -> bool {
+        if !self.relay_configured() {
+            return false;
+        }
+        if self.relay_from_domains.is_empty() || sender.trim().is_empty() {
+            return true;
+        }
+        let domain = sender.rsplit_once('@').map(|(_, domain)| domain).unwrap_or(sender);
+        let domain = domain.trim().trim_end_matches('.').to_ascii_lowercase();
+        self.relay_from_domains
+            .iter()
+            .any(|candidate| candidate.trim().trim_end_matches('.').eq_ignore_ascii_case(&domain))
     }
 }
 
@@ -641,6 +697,13 @@ const ENV_ALIASES: &[(&str, &[&str])] = &[
     ("FERROMA_DKIM_ENABLED", &["dkim", "enabled"]),
     ("FERROMA_DKIM_KEY", &["dkim", "private_key_path"]),
     ("FERROMA_DKIM_SELECTOR", &["dkim", "selector"]),
+    // Outbound relay ("smarthost"). Typed often enough, and long enough in the
+    // generic `FERROMA__QUEUE__RELAY_HOST` form, to earn a shorthand.
+    ("FERROMA_RELAY_HOST", &["queue", "relay_host"]),
+    ("FERROMA_RELAY_PORT", &["queue", "relay_port"]),
+    ("FERROMA_RELAY_TLS", &["queue", "relay_tls"]),
+    ("FERROMA_RELAY_USERNAME", &["queue", "relay_username"]),
+    ("FERROMA_RELAY_PASSWORD", &["queue", "relay_password"]),
 ];
 
 /// Prefix for generic overrides: `FERROMA__SMTP__PORT=2525`.
@@ -871,6 +934,31 @@ impl Config {
             }
             if self.queue.max_attempts == 0 {
                 problems.push("queue.max_attempts must be greater than zero".into());
+            }
+            if self.queue.relay_configured() {
+                if self.queue.relay_port == 0 {
+                    problems.push("queue.relay_port must not be zero".into());
+                }
+                if !matches!(self.queue.relay_tls.as_str(), "starttls" | "implicit" | "none") {
+                    problems.push(
+                        "queue.relay_tls must be \"starttls\", \"implicit\" or \"none\"".into(),
+                    );
+                }
+                // Half a credential is a mistake, and the server would only discover
+                // it on the first message it tried to send.
+                if self.queue.relay_username.is_some() != self.queue.relay_password.is_some() {
+                    problems.push(
+                        "queue.relay_username and queue.relay_password must be set together"
+                            .into(),
+                    );
+                }
+                if self.queue.relay_username.is_some() && self.queue.relay_tls == "none" {
+                    problems.push(
+                        "queue.relay_tls = \"none\" must not be combined with relay credentials: \
+                         the password would cross the network in the clear"
+                            .into(),
+                    );
+                }
             }
         }
 
@@ -1112,6 +1200,96 @@ mod tests {
     fn unknown_keys_are_rejected() {
         let err = Config::from_toml_str("[smtp]\nprot = 25\n").unwrap_err();
         assert!(format!("{err}").contains("schema"), "{err}");
+    }
+
+    #[test]
+    fn a_relay_is_off_until_it_is_named() {
+        let plain = Config::from_toml_str("").unwrap();
+        assert!(!plain.queue.relay_configured());
+        assert!(!plain.queue.relays_sender("alice@example.com"));
+        // An empty or blank host is the same as none at all.
+        let blank = Config::from_toml_str("[queue]\nrelay_host = \"  \"\n").unwrap();
+        assert!(!blank.queue.relay_configured());
+    }
+
+    #[test]
+    fn a_relay_can_be_limited_to_some_sender_domains() {
+        let config = Config::from_toml_str(
+            r#"
+            [queue]
+            relay_host = "smtp.relay.example"
+            relay_port = 465
+            relay_tls = "implicit"
+            relay_from_domains = ["z1hwang.cn"]
+            "#,
+        )
+        .unwrap();
+
+        assert!(config.queue.relay_configured());
+        assert!(config.queue.relays_sender("alice@z1hwang.cn"));
+        // Domains are case-insensitive, like every other domain comparison here.
+        assert!(config.queue.relays_sender("alice@Z1HWANG.CN"));
+        assert!(!config.queue.relays_sender("alice@elsewhere.example"));
+        // A null return path is a bounce: it must not be attempted directly, because
+        // that is the message a receiver rejects most readily from a PTR-less host.
+        assert!(config.queue.relays_sender(""));
+
+        // No list at all means everything goes through the relay.
+        let all = Config::from_toml_str("[queue]\nrelay_host = \"smtp.relay.example\"\n").unwrap();
+        assert!(all.queue.relays_sender("alice@anywhere.example"));
+    }
+
+    #[test]
+    fn a_malformed_relay_is_rejected_at_boot() {
+        let err = Config::from_toml_str(
+            r#"
+            [queue]
+            relay_host = "smtp.relay.example"
+            relay_tls = "perhaps"
+            relay_username = "apikey"
+            "#,
+        )
+        .unwrap_err();
+        let text = format!("{err}");
+        assert!(text.contains("queue.relay_tls must be"), "{text}");
+        assert!(
+            text.contains("queue.relay_username and queue.relay_password must be set together"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn relay_credentials_over_a_cleartext_channel_are_refused() {
+        let err = Config::from_toml_str(
+            r#"
+            [queue]
+            relay_host = "smtp.relay.example"
+            relay_tls = "none"
+            relay_username = "apikey"
+            relay_password = "secret"
+            "#,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("must not be combined with relay credentials"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn the_relay_keys_have_shorthand_environment_names() {
+        // The aliases are what the deployment writes into `.env`; a rename here
+        // would silently stop configuring the relay.
+        let names: Vec<&str> = ENV_ALIASES.iter().map(|(name, _)| *name).collect();
+        for expected in [
+            "FERROMA_RELAY_HOST",
+            "FERROMA_RELAY_PORT",
+            "FERROMA_RELAY_TLS",
+            "FERROMA_RELAY_USERNAME",
+            "FERROMA_RELAY_PASSWORD",
+        ] {
+            assert!(names.contains(&expected), "{expected} is not an alias");
+        }
     }
 
     #[test]

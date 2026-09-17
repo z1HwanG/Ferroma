@@ -49,9 +49,9 @@ use ferroma_storage::{Maildir, Repositories};
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::watch;
 
-use crate::client::{DeliveryOutcome, SmtpClient};
+use crate::client::{DeliveryOutcome, SmtpClient, SmtpClientConfig};
 use crate::delivery::{DeliveryService, INBOX};
-use crate::mx::MxResolver;
+use crate::mx::{MxHost, MxResolver};
 
 /// The queue settings the worker needs, as a plain view.
 ///
@@ -71,6 +71,43 @@ pub struct QueueConfigView {
     pub bounce_on_failure: bool,
     /// The envelope sender bounces come from.
     pub mailer_daemon: String,
+    /// Where outbound mail goes instead of straight to the recipient's MX.
+    pub relay: Option<RelayConfig>,
+}
+
+/// A relay every (or some) outbound message is handed to.
+///
+/// The reason this exists: a host whose public IP has no PTR record cannot deliver
+/// to Gmail or Microsoft at all. The relay — a hosting provider's submission
+/// service, a transactional API, or another host with a proper reverse record —
+/// carries the message instead, and this server never has to talk to the recipient.
+#[derive(Debug, Clone)]
+pub struct RelayConfig {
+    /// The relay's host name: what is resolved, put in `EHLO`, and used as the TLS
+    /// server name.
+    pub host: String,
+    /// The client to talk to it with: port, TLS mode and credentials.
+    pub client: SmtpClient,
+    /// The `[queue]` block the decision comes from, so the rule for "does this
+    /// message go through the relay" has exactly one implementation.
+    policy: ferroma_core::config::QueueConfig,
+}
+
+impl RelayConfig {
+    /// From the configuration, when one is set.
+    pub fn from_config(config: &Config) -> Option<RelayConfig> {
+        let (host, client) = SmtpClientConfig::for_relay(config)?;
+        Some(RelayConfig {
+            host,
+            client: SmtpClient::new(client),
+            policy: config.queue.clone(),
+        })
+    }
+
+    /// Whether a message with this envelope sender belongs on the relay.
+    pub fn applies_to(&self, sender: &str) -> bool {
+        self.policy.relays_sender(sender)
+    }
 }
 
 impl Default for QueueConfigView {
@@ -89,6 +126,7 @@ impl QueueConfigView {
             poll_interval: std::time::Duration::from_secs(config.queue.poll_interval_secs.max(1)),
             bounce_on_failure: config.queue.bounce_on_failure,
             mailer_daemon: format!("MAILER-DAEMON@{}", config.server.hostname),
+            relay: RelayConfig::from_config(config),
         }
     }
 
@@ -397,25 +435,61 @@ impl QueueWorker {
             };
         };
 
-        let targets = match self.resolver.delivery_targets(recipient.domain()).await {
-            Ok(targets) => targets,
-            Err(e) => {
-                return DeliveryOutcome::transport_failure(format!("MX lookup failed: {e}"), None)
+        // Where the message goes: the recipient's MX, or the relay when one is
+        // configured and this sender belongs on it. A relay skips MX resolution
+        // entirely — that is the whole point of it, since a host with no reverse
+        // record is the one that cannot deliver directly.
+        let (client, targets) = match self
+            .config
+            .relay
+            .as_ref()
+            .filter(|relay| relay.applies_to(&entry.sender))
+        {
+            Some(relay) => {
+                let addresses = match self.resolver.addresses(&relay.host).await {
+                    Ok(addresses) => addresses,
+                    Err(e) => {
+                        return DeliveryOutcome::transport_failure(
+                            format!("cannot resolve the relay {}: {e}", relay.host),
+                            Some(&relay.host),
+                        )
+                    }
+                };
+                if addresses.is_empty() {
+                    return DeliveryOutcome::transport_failure(
+                        format!("the relay {} has no address", relay.host),
+                        Some(&relay.host),
+                    );
+                }
+                (
+                    &relay.client,
+                    vec![(MxHost::new(0, relay.host.clone()), addresses)],
+                )            }
+            None => {
+                let targets = match self.resolver.delivery_targets(recipient.domain()).await {
+                    Ok(targets) => targets,
+                    Err(e) => {
+                        return DeliveryOutcome::transport_failure(
+                            format!("MX lookup failed: {e}"),
+                            None,
+                        )
+                    }
+                };
+                if targets.is_empty() {
+                    return DeliveryOutcome::transport_failure(
+                        format!("{} has no mail exchanger", recipient.domain()),
+                        None,
+                    );
+                }
+                (&self.client, targets)
             }
         };
-        if targets.is_empty() {
-            return DeliveryOutcome::transport_failure(
-                format!("{} has no mail exchanger", recipient.domain()),
-                None,
-            );
-        }
 
         // Preference order, first host that answers wins. A temporary reply from one
         // host moves on to the next; a permanent one is the answer.
         let mut last: Option<DeliveryOutcome> = None;
         for (host, addresses) in targets {
-            let outcome = self
-                .client
+            let outcome = client
                 .deliver(&host, &addresses, &entry.sender, &entry.recipient, &body)
                 .await;
             match outcome {
@@ -617,12 +691,36 @@ mod tests {
             poll_interval: std::time::Duration::from_millis(10),
             bounce_on_failure: true,
             mailer_daemon: "MAILER-DAEMON@mx.example.com".to_string(),
+            relay: None,
         }
     }
 
     // ------------------------------------------------------------------
     // Backoff
     // ------------------------------------------------------------------
+
+    #[test]
+    fn the_relay_travels_from_the_configuration_into_the_worker_view() {
+        let mut config = Config::default();
+        config.queue.workers = 3;
+        assert!(QueueConfigView::from_config(&config).relay.is_none());
+
+        config.queue.relay_host = Some("smtp.relay.example".into());
+        config.queue.relay_port = 2525;
+        config.queue.relay_tls = "starttls".into();
+        config.queue.relay_username = Some("apikey".into());
+        config.queue.relay_password = Some("s3cret".into());
+        config.queue.relay_from_domains = vec!["z1hwang.cn".into()];
+
+        let view = QueueConfigView::from_config(&config);
+        let relay = view.relay.as_ref().expect("a relay");
+        assert_eq!(relay.host, "smtp.relay.example");
+        assert_eq!(relay.client.config().port, 2525);
+        // The decision about *which* messages use it comes from the one
+        // implementation, in the core configuration.
+        assert!(relay.applies_to("alice@z1hwang.cn"));
+        assert!(!relay.applies_to("alice@elsewhere.example"));
+    }
 
     #[test]
     fn the_backoff_follows_the_schedule() {
