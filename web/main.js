@@ -31,7 +31,7 @@ import {
 import { initLogin, setSignedInHandler } from './login.js';
 import { isOpen as composeIsOpen, openCompose, setSentHandler } from './compose.js';
 import { confirmDialog, openModal } from './modal.js';
-import { closeReader, initReader, openMessage, renderReader } from './reader.js';
+import { closeReader, initReader, openMessage, renderChrome, renderReader } from './reader.js';
 import { folderBySlug, folderSlug, goFolder, goSearch, onRouteChange, parseHash } from './router.js';
 import { openSettings } from './settings.js';
 import { getPrefs, getState, mutate, subscribe } from './store.js';

@@ -287,7 +287,7 @@ function sizeIframe(frame) {
 }
 
 /** Header bits that depend on the selected message (star state, archive). */
-function renderChrome() {
+export function renderChrome() {
   const state = getState();
   const message = state.selected;
   const star = byId('action-star');

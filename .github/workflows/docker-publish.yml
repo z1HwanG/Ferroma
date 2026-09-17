@@ -82,8 +82,15 @@ jobs:
           fi
           echo "publishing $manifest"
 
-      - name: Deployment artefacts are consistent
-        run: node tools/check-deploy.mjs
+      # Both run before anything is built. The frontend check earns its place here:
+      # `web/` and `admin/` have no build step and no test, so a call to a name a
+      # module never imported is invisible to every other gate and fails only in a
+      # browser — which is how one reached a published image once already.
+      - name: Deployment artefacts and frontends are consistent
+        run: |
+          set -euo pipefail
+          node tools/check-deploy.mjs
+          node tools/check-web.mjs
 
   # ---------------------------------------------------------------------------
   # Publish

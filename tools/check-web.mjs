@@ -1,0 +1,252 @@
+#!/usr/bin/env node
+/**
+ * Static validation of the frontends, which have no build step and no test.
+ *
+ * `web/` and `admin/` ship as plain ES modules straight out of the repository. Nothing
+ * compiles them, nothing lints them, and the Rust suite never loads them — so a module
+ * that calls a name it never imported fails **only in a browser**, and only at the
+ * moment a user opens the page. That is exactly how `renderChrome`, defined but not
+ * exported in `reader.js` and called six times in `main.js`, reached a published
+ * image: `start()` threw a ReferenceError on its first line of real work and the
+ * webmail never initialised, while every server-side check stayed green.
+ *
+ * Two link errors are caught here, both fatal and both invisible until runtime:
+ *
+ *   * a call to a name the file neither declares nor imports — `ReferenceError` at
+ *     the first call, which in a module with a top-level start() kills the whole app;
+ *   * an `import { x } from './y.js'` where `y.js` does not export `x` — a
+ *     `SyntaxError` at link time, which stops the module graph from evaluating at all.
+ *
+ *   node tools/check-web.mjs
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+
+const ROOTS = ['web', 'admin'];
+
+/** Words that look like a call but are syntax, or are simply always available. */
+const KEYWORDS = new Set([
+  'if', 'for', 'while', 'switch', 'catch', 'return', 'typeof', 'function', 'new',
+  'do', 'else', 'case', 'delete', 'void', 'in', 'of', 'instanceof', 'await', 'yield',
+  'constructor', 'super', 'async', 'import', 'export', 'get', 'set',
+]);
+
+const GLOBALS = new Set([
+  'window', 'document', 'console', 'Math', 'JSON', 'Object', 'Array', 'String', 'Number',
+  'Boolean', 'Promise', 'Set', 'Map', 'WeakMap', 'WeakSet', 'Date', 'Error', 'TypeError',
+  'RangeError', 'SyntaxError', 'ReferenceError', 'EvalError', 'AggregateError',
+  'fetch', 'parseInt', 'parseFloat', 'isNaN', 'isFinite', 'setTimeout', 'clearTimeout',
+  'setInterval', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame',
+  'encodeURIComponent', 'decodeURIComponent', 'encodeURI', 'decodeURI', 'btoa', 'atob',
+  'structuredClone', 'queueMicrotask', 'URL', 'URLSearchParams', 'Intl', 'RegExp',
+  'Symbol', 'Proxy', 'Reflect', 'BigInt', 'FormData', 'Blob', 'File', 'FileReader',
+  'XMLHttpRequest', 'Headers', 'Request', 'Response', 'AbortController', 'AbortSignal',
+  'DOMParser', 'XMLSerializer', 'IntersectionObserver', 'ResizeObserver',
+  'MutationObserver', 'localStorage', 'sessionStorage', 'CustomEvent', 'Event', 'Image',
+  'Notification', 'crypto', 'performance', 'history', 'location', 'navigator',
+  'matchMedia', 'getComputedStyle', 'alert', 'confirm', 'prompt', 'TextEncoder',
+  'TextDecoder', 'atob', 'btoa', 'define', 'require',
+]);
+
+const problems = [];
+const notes = [];
+
+/** Blank out comments so prose can never look like code. Length is preserved. */
+function withoutComments(source) {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => ' '.repeat(m.length))
+    .replace(/(^|[^:'"`\\])\/\/[^\n]*/g, (m, p1) => p1 + ' '.repeat(m.length - p1.length));
+}
+
+/**
+ * Blank out string and template literals, keeping every offset and newline.
+ *
+ * Message text reaches this code a lot — `\`Request failed (HTTP ${status})\`` contains
+ * `failed (`, which looks exactly like a call to a function named `failed`. Nothing
+ * inside a literal can be a call, so it is removed rather than argued about. The one
+ * thing this gives up is a call written inside a `${…}` interpolation, which is rare
+ * enough to trade for a check that reports nothing but the truth.
+ */
+function withoutLiterals(source) {
+  let out = '';
+  let i = 0;
+  while (i < source.length) {
+    const ch = source[i];
+    if (ch === "'" || ch === '"' || ch === '`') {
+      const quote = ch;
+      out += ' ';
+      i++;
+      while (i < source.length) {
+        if (source[i] === '\\') {
+          out += '  ';
+          i += 2;
+          continue;
+        }
+        if (source[i] === '\n' && quote !== '`') break; // unterminated on this line
+        if (source[i] === quote) {
+          out += ' ';
+          i++;
+          break;
+        }
+        out += source[i] === '\n' ? '\n' : ' ';
+        i++;
+      }
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
+/** Names a module introduces: what it imports, and what it declares at any level. */
+function introducedNames(source) {
+  const names = new Set();
+
+  for (const m of source.matchAll(/import\s+([\s\S]*?)\s+from\s*['"]([^'"]+)['"]/g)) {
+    const clause = m[1];
+    const braced = clause.match(/\{([\s\S]*)\}/);
+    if (braced) {
+      for (const part of braced[1].split(',')) {
+        const name = part.trim().split(/\s+as\s+/).pop().trim();
+        if (/^[A-Za-z_$][\w$]*$/.test(name)) names.add(name);
+      }
+    }
+    const fallback = clause.replace(/\{[\s\S]*\}/, '').replace(/,/g, '').trim();
+    if (/^[A-Za-z_$][\w$]*$/.test(fallback)) names.add(fallback);
+  }
+
+  // Declarations are collected from the *raw* source on purpose: a name that only
+  // appears inside a template literal still means this file mentions it, and being
+  // over-generous here only makes the check quieter — never wrong in the direction
+  // that matters, which is reporting a name that really is missing.
+  for (const m of source.matchAll(/\bfunction\s+([A-Za-z_$][\w$]*)/g)) names.add(m[1]);
+  for (const m of source.matchAll(/\bclass\s+([A-Za-z_$][\w$]*)/g)) names.add(m[1]);
+  for (const m of source.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)/g)) names.add(m[1]);
+  for (const m of source.matchAll(/\b(?:const|let|var)\s*\{([^}]*)\}/g)) {
+    for (const part of m[1].split(',')) {
+      const name = part.split(':').pop().replace(/=.*/, '').trim();
+      if (/^[A-Za-z_$][\w$]*$/.test(name)) names.add(name);
+    }
+  }
+  // Parameters of arrow functions and of `function`/`catch` clauses.
+  for (const m of source.matchAll(/\(([^()]*)\)\s*(?:=>|\{)/g)) {
+    for (const part of m[1].split(',')) {
+      const name = part.trim().replace(/^\.\.\./, '').replace(/=.*/, '').trim();
+      if (/^[A-Za-z_$][\w$]*$/.test(name)) names.add(name);
+    }
+  }
+  for (const m of source.matchAll(/(?:^|[^\w$.])([A-Za-z_$][\w$]*)\s*=>/g)) names.add(m[1]);
+
+  return names;
+}
+
+/** Every name a module exports, for the import check. */
+function exportedNames(source) {
+  const names = new Set();
+  for (const m of source.matchAll(/export\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/g)) names.add(m[1]);
+  for (const m of source.matchAll(/export\s+class\s+([A-Za-z_$][\w$]*)/g)) names.add(m[1]);
+  for (const m of source.matchAll(/export\s+(?:const|let|var)\s+([A-Za-z_$][\w$]*)/g)) names.add(m[1]);
+  for (const m of source.matchAll(/export\s*\{([^}]*)\}/g)) {
+    for (const part of m[1].split(',')) {
+      const name = part.trim().split(/\s+as\s+/).shift().trim();
+      if (/^[A-Za-z_$][\w$]*$/.test(name)) names.add(name);
+    }
+  }
+  if (/export\s+default\b/.test(source)) names.add('default');
+  return names;
+}
+
+function analyse(file) {
+  const raw = fs.readFileSync(file, 'utf8');
+  // Literals first: a quote inside a comment or a `/*` inside a string would
+  // otherwise make the other pass eat real code.
+  const code = withoutComments(withoutLiterals(raw));
+  const introduced = introducedNames(raw);
+  const lineOf = (index) => raw.slice(0, index).split('\n').length;
+
+  const findings = [];
+
+  // 1. Calls to a name this file never introduces.
+  for (const m of code.matchAll(/(^|[^.\w$])([A-Za-z_$][\w$]*)\s*\(/g)) {
+    const name = m[2];
+    if (KEYWORDS.has(name) || GLOBALS.has(name) || introduced.has(name)) continue;
+    if (findings.some((f) => f.name === name)) continue;
+
+    // `{ report(x) { … } }` is a method *definition* in an object literal, not a
+    // call. The two are identical until you follow the parentheses to what comes
+    // after: a call continues with `;`/`,`/`)`, a definition opens its body.
+    const open = m.index + m[0].length - 1;
+    let depth = 0;
+    let i = open;
+    for (; i < code.length; i++) {
+      if (code[i] === '(') depth++;
+      else if (code[i] === ')') {
+        depth--;
+        if (depth === 0) break;
+      }
+    }
+    if ((code.slice(i + 1).match(/^\s*([^\s])/) || [])[1] === '{') continue;
+
+    findings.push({ name, line: lineOf(m.index), kind: 'call' });
+  }
+
+  // 2. Imports of a name the target module does not export — a link-time SyntaxError.
+  for (const m of raw.matchAll(/import\s+([\s\S]*?)\s+from\s*['"](\.[^'"]+)['"]/g)) {
+    const braced = m[1].match(/\{([\s\S]*)\}/);
+    if (!braced) continue;
+    const target = path.join(path.dirname(file), m[2]);
+    if (!fs.existsSync(target)) {
+      findings.push({ name: m[2], line: lineOf(m.index), kind: 'missing-module' });
+      continue;
+    }
+    const available = exportedNames(fs.readFileSync(target, 'utf8'));
+    for (const part of braced[1].split(',')) {
+      const name = part.trim().split(/\s+as\s+/).shift().trim();
+      if (!/^[A-Za-z_$][\w$]*$/.test(name)) continue;
+      if (!available.has(name)) {
+        findings.push({ name, line: lineOf(m.index), kind: 'import', target: m[2] });
+      }
+    }
+  }
+
+  return findings;
+}
+
+let modules = 0;
+for (const root of ROOTS) {
+  for (const entry of fs.readdirSync(root).filter((f) => f.endsWith('.js')).sort()) {
+    const file = path.join(root, entry);
+    modules++;
+    const findings = analyse(file);
+    if (findings.length === 0) {
+      notes.push(`${file}`);
+      continue;
+    }
+    for (const f of findings) {
+      if (f.kind === 'call') {
+        problems.push(
+          `${file}:${f.line} calls ${f.name}(), which this module neither declares nor ` +
+            `imports — a ReferenceError the moment that line runs`,
+        );
+      } else if (f.kind === 'import') {
+        problems.push(
+          `${file}:${f.line} imports ${f.name} from '${f.target}', which does not export it ` +
+            `— a SyntaxError before any of this runs`,
+        );
+      } else {
+        problems.push(`${file}:${f.line} imports from '${f.name}', which does not exist`);
+      }
+    }
+  }
+}
+
+console.log('frontend check');
+console.log(`  note   modules scanned: ${modules}`);
+if (problems.length === 0) {
+  console.log('  result PASS — no link errors');
+  process.exit(0);
+}
+for (const problem of problems) console.log(`  FAIL   ${problem}`);
+console.log(`  result FAIL — ${problems.length} problem(s)`);
+process.exit(1);
