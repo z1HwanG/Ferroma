@@ -145,12 +145,15 @@ export function cell(text, className = '') {
 /** Status pill. @param {string} status */
 export function badge(status) {
   const value = String(status || 'unknown').toLowerCase();
+  // The families cover every value a view passes: entity states (`enabled`), queue
+  // and delivery states (`pending`, `delivered`), and `tracing` levels (`error`),
+  // which the System Logs view badges with the same pill.
   const kind =
-    value === 'ok' || value === 'delivered' || value === 'enabled' || value === 'true' || value === 'active'
+    value === 'ok' || value === 'delivered' || value === 'enabled' || value === 'true' || value === 'active' || value === 'info'
       ? 'ok'
-      : value === 'warn' || value === 'retry' || value === 'pending' || value === 'delivering'
+      : value === 'warn' || value === 'warning' || value === 'retry' || value === 'pending' || value === 'delivering'
         ? 'warn'
-        : value === 'fail' || value === 'failed' || value === 'disabled' || value === 'cancelled'
+        : value === 'fail' || value === 'failed' || value === 'disabled' || value === 'cancelled' || value === 'error'
           ? 'fail'
           : 'muted';
   return el('span', { class: `badge badge-${kind}`, text: status === '' ? 'unknown' : String(status) });

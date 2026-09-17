@@ -370,10 +370,15 @@ The primary key *is* the `op_…` string the client generated. `begin()` is a si
 `seq BIGSERIAL PK`, `user_id`, `mailbox_id`, `folder_id`, `message_id BIGINT`,
 `kind`, `payload JSONB`, `created_at`.
 
-**`message_id` has no foreign key, deliberately.** The schema comment says why:
-*"tombstones must outlive rows"*. A `message_deleted` entry has to remain
-readable after the `messages` row is gone, or an offline client would never learn
-that the message disappeared. `seq` is the sync cursor — see [sync.md](sync.md).
+**`message_id` and `folder_id` have no foreign key, deliberately.** The schema
+comment says why: *"tombstones must outlive rows"*. A `message_deleted` entry has to
+remain readable after the `messages` row is gone, and a `folder_deleted` one after the
+`folders` row is gone, or an offline client would never learn that either
+disappeared. `folder_id` lost its constraint in
+`migrations/0003_change_log_folder_tombstones.sql`: while it had one, the insert that
+records a folder deletion violated it and `DELETE /api/v1/folders/:id` answered `500`.
+`mailbox_id` keeps its cascade — no `mailbox_deleted` kind exists.
+`seq` is the sync cursor — see [sync.md](sync.md).
 
 #### `audit_logs`
 

@@ -94,7 +94,11 @@ impl Selection {
 }
 
 /// Run the platform until a shutdown signal arrives.
-pub fn run(config: &Config, args: &ServeArgs) -> Result<ExitCode> {
+///
+/// `log_sink` is the same handle the `tracing` layer installed at boot fills, and it
+/// becomes the buffer `GET /api/v1/logs` reads. It is passed in rather than created
+/// here because the layer has to be composed into the subscriber before this point.
+pub fn run(config: &Config, args: &ServeArgs, log_sink: ferroma_api::LogSink) -> Result<ExitCode> {
     for warning in tls::insecure_warnings(&config.tls) {
         tracing::warn!("{warning}");
     }
@@ -106,7 +110,7 @@ pub fn run(config: &Config, args: &ServeArgs) -> Result<ExitCode> {
     }
     let runtime = builder.build().context("building the Tokio runtime")?;
 
-    runtime.block_on(serve(config, args))
+    runtime.block_on(serve(config, args, log_sink))
 }
 
 /// The IMAP server's view of the configuration.
@@ -138,7 +142,7 @@ fn imap_server_config(config: &Config) -> ImapServerConfig {
     }
 }
 
-async fn serve(config: &Config, args: &ServeArgs) -> Result<ExitCode> {
+async fn serve(config: &Config, args: &ServeArgs, log_sink: ferroma_api::LogSink) -> Result<ExitCode> {
     let selection = Selection::resolve(config, &args.only);
     if selection.names().is_empty() {
         anyhow::bail!(
@@ -352,7 +356,10 @@ async fn serve(config: &Config, args: &ServeArgs) -> Result<ExitCode> {
             Arc::clone(&events),
             sync,
         )
-        .with_database(Arc::clone(&database));
+        .with_database(Arc::clone(&database))
+        // The ring the `tracing` layer at boot is filling, so `GET /api/v1/logs`
+        // answers with what this process has actually logged.
+        .with_log_sink(log_sink);
 
         let router = ferroma_api::build(state);
         let address = format!("{}:{}", config.api.host, config.api.port);

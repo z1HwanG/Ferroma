@@ -932,16 +932,39 @@ async fn the_frontends_are_served() {
 
     let server = Server::start().await;
 
-    for (path, needle) in [("/", "<html"), ("/admin", "<html")] {
-        let body = http_get(&format!("http://127.0.0.1:{API_PORT}{path}"))
-            .await
-            .unwrap_or_else(|| panic!("{path} returned nothing"));
-        assert!(
-            body.to_lowercase().contains(needle),
-            "{path} should serve an HTML app, got: {}",
-            &body[..body.len().min(200)]
-        );
-    }
+    // The webmail is served at the root.
+    let (status, body) = http_request("GET", &format!("http://127.0.0.1:{API_PORT}/"), None, None)
+        .await
+        .unwrap_or_else(|| panic!("/ returned nothing"));
+    assert_eq!(status, 200, "the webmail must be served at /");
+    assert!(
+        body.to_lowercase().contains("<html"),
+        "/ should serve an HTML app, got: {}",
+        &body[..body.len().min(200)]
+    );
+
+    // `/admin` is a **directory redirect**, not a page. Both apps reference their
+    // assets relatively (`./main.js`), so a browser resolves them against the document
+    // URL: at `/admin` without the trailing slash that base is `/`, and the console
+    // would load the webmail's bundle. A browser follows the redirect, so this asserts
+    // both halves — the redirect exists, and the directory serves the console.
+    let (status, _) = http_request("GET", &format!("http://127.0.0.1:{API_PORT}/admin"), None, None)
+        .await
+        .unwrap_or_else(|| panic!("/admin returned nothing"));
+    assert!(
+        (300..400).contains(&status),
+        "/admin must redirect into the directory, got {status}"
+    );
+
+    let (status, body) = http_request("GET", &format!("http://127.0.0.1:{API_PORT}/admin/"), None, None)
+        .await
+        .unwrap_or_else(|| panic!("/admin/ returned nothing"));
+    assert_eq!(status, 200, "the console must be served at /admin/");
+    assert!(
+        body.to_lowercase().contains("<html"),
+        "/admin/ should serve an HTML app, got: {}",
+        &body[..body.len().min(200)]
+    );
 
     // Autodiscovery is what lets a client configure itself from just an address.
     let discovery = http_get(&format!(

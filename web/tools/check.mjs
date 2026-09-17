@@ -20,7 +20,10 @@
  *   7. every `import` binding is used somewhere else in its module;
  *   8. (Webmail only) the message HTML part is rendered through a sandboxed
  *      `srcdoc` frame;
- *   9. every import names a real export, and every export is used.
+ *   9. every import names a real export, and every export is used;
+ *  10. every payload envelope the server actually sends survives the app's own
+ *      normalisers — a collection key `listOf()` does not know turns a response
+ *      that has rows into an empty screen while every rule above stays green.
  *
  * The app profile is read from the `<html data-app="…">` attribute.
  */
@@ -434,6 +437,105 @@ for (const [file, names] of exportMap) {
       `"${name}" is exported but never used`,
     );
   }
+}
+
+/* ----------------------------------------------------------------- rule 10 */
+
+/* The payload envelopes the server really sends.
+ *
+ * Every list in this app funnels through `data.js`, and `listOf()` is the only thing
+ * standing between a response and the screen. The static rules above cannot see a
+ * mismatched key: they prove the modules link, not that the JSON matches. That gap
+ * shipped a webmail whose folder tree was empty for every account — the server sent
+ * `{mailbox_id, folders: […]}` and `listOf()` looked for `items`, so `foldersOf()`
+ * returned `[]`, the shell could not resolve a folder, and the message list never
+ * loaded.
+ *
+ * Each case below is the exact envelope a Rust handler serialises. It asserts the
+ * app's own normaliser turns it into rows, so renaming a collection on either side
+ * fails here instead of in a browser. */
+const data = await import('../data.js');
+
+const ENVELOPES = [
+  ['`{items, total}`, the paged lists', { items: [{ id: 1 }], total: 1 }, (payload) => data.listOf(payload)],
+  ['`{items, total}` domains', { items: [{ id: 1, name: 'example.test' }], total: 1 }, (payload) => data.domainsOf(payload)],
+  ['`{items, total}` users', { items: [{ id: 1, email: 'a@example.test' }], total: 1 }, (payload) => data.usersOf(payload)],
+  ['`{items, total}` aliases', { items: [{ id: 1, local_part: 'sales' }], total: 1 }, (payload) => data.aliasesOf(payload)],
+  ['`{items, total}` queue entries', { items: [{ id: 1, recipient: 'a@example.test' }], total: 1 }, (payload) => data.queueEntriesOf(payload)],
+  ['`{items, total}` messages', { items: [{ id: 1, subject: 'hi' }], total: 1 }, (payload) => data.messagesOf(payload)],
+  ['`{mailboxes}` from GET /mailboxes', { mailboxes: [{ id: 1, address: 'a@example.test' }] }, (payload) => data.mailboxesOf(payload)],
+  [
+    '`{mailbox_id, folders}` from GET /mailboxes/:id/folders',
+    { mailbox_id: 1, folders: [{ id: 2, name: 'INBOX' }] },
+    (payload) => data.foldersOf(payload),
+  ],
+  ['a bare array, for a handler that does not page', [{ id: 1 }], (payload) => data.listOf(payload)],
+];
+
+for (const [name, payload, parse] of ENVELOPES) {
+  check(
+    parse(payload).length === 1,
+    join(ROOT, 'data.js'),
+    'data:envelope',
+    `${name} normalises to no rows; the app would render an empty screen for a response that has rows`,
+  );
+}
+
+/* The dashboard stat grid. Three of its twelve cards read a *nested* key — today's
+   traffic under `health.queue`, the live session count under `health.clients` — and
+   reading any of them one level too high leaves the card stuck on “—”, which reads
+   as “this API does not report it”. These are the shapes the Rust handlers emit. */
+const DASHBOARD_HEALTH = {
+  status: 'ok',
+  uptime_secs: 3600,
+  database: { ok: true, server_version: '16.15', pool: { size: 3, idle: 2, max: 20 } },
+  clients: { active_sessions: 4, active_devices: 2 },
+  queue: { pending: 5, delivering: 1, retry: 2, failed: 3, received_today: 128, sent_today: 41 },
+};
+const DASHBOARD_QUEUE_STATS = {
+  pending: 5,
+  delivering: 1,
+  retry: 2,
+  delivered: 9,
+  failed: 3,
+  cancelled: 0,
+  outstanding: 8,
+  next_due_at: null,
+};
+const DASHBOARD_STORAGE = {
+  maildir_bytes: 1024,
+  attachment_bytes: 2048,
+  database_bytes: 4096,
+  mailboxes: 3,
+  messages: 12,
+  users: 7,
+  domains: 2,
+};
+
+const dashboard = data.dashboardStats(DASHBOARD_HEALTH, DASHBOARD_QUEUE_STATS, DASHBOARD_STORAGE);
+
+const DASHBOARD_CARDS = [
+  ['Users', dashboard.users, 7],
+  ['Domains', dashboard.domains, 2],
+  ['Received today', dashboard.receivedToday, 128],
+  ['Sent today', dashboard.sentToday, 41],
+  ['Queue pending', dashboard.queuePending, 5],
+  ['Queue retry', dashboard.queueRetry, 2],
+  ['Failed deliveries', dashboard.failedDeliveries, 3],
+  ['Mailbox storage', dashboard.maildirBytes, 1024],
+  ['Attachments', dashboard.attachmentBytes, 2048],
+  ['Database size', dashboard.databaseBytes, 4096],
+  ['Active client sessions', dashboard.activeClientSessions, 4],
+  ['Uptime', dashboard.uptimeSecs, 3600],
+];
+
+for (const [label, value, want] of DASHBOARD_CARDS) {
+  check(
+    value === want,
+    join(ROOT, 'data.js'),
+    'data:dashboard',
+    `the “${label}” card reads ${String(value)} where the API reports ${String(want)}`,
+  );
 }
 
 /* ------------------------------------------------------------------ report */

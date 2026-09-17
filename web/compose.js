@@ -4,8 +4,9 @@
  * part, attachment uploads with a progress bar, and reply / reply-all / forward
  * prefill including the quoted body and `references`.
  *
- * The API of record is `POST /api/v1/messages`; drafts go through the same
- * endpoint with `draft: true` — see `README.md`, "Endpoints wired".
+ * The API of record is `POST /api/v1/messages` for sending and `POST /api/v1/drafts`
+ * for a draft, which the server mirrors into the `Drafts` folder — see `README.md`,
+ * "Endpoints wired".
  */
 
 import { API_BASE, ApiError, request } from './api.js';
@@ -426,6 +427,31 @@ export function openCompose(seed) {
       extra,
     );
 
+  /**
+   * The `POST /api/v1/drafts` body.
+   *
+   * A draft is a *record*, not a message that happens to be unsent: it is what the
+   * desktop client reads through `GET /api/v1/drafts` and what the sync journal
+   * reports, and the server mirrors it into the `Drafts` folder so an IMAP client sees
+   * the same thing. Posting to `/messages` with `draft: true` filed a message in the
+   * folder and left the record behind, which is why a draft written here was invisible
+   * to every other client.
+   */
+  const buildDraftPayload = (values, extra) =>
+    Object.assign(
+      {
+        mailbox_id: Number.isFinite(values.mailboxId) && values.mailboxId > 0 ? values.mailboxId : undefined,
+        subject: values.subject,
+        text: values.text,
+        html: values.html === '' ? undefined : values.html,
+        to: values.to,
+        cc: values.cc,
+        bcc: values.bcc,
+        attachment_ids: uploadedAttachments.map((item) => item.id),
+      },
+      extra,
+    );
+
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     showStatus('');
@@ -498,9 +524,9 @@ export function openCompose(seed) {
     saveDraft.disabled = true;
     setText(saveDraft, 'Saving…');
     try {
-      await request(`${API_BASE}/messages`, {
+      await request(`${API_BASE}/drafts`, {
         method: 'POST',
-        body: buildPayload(values, { draft: true }),
+        body: buildDraftPayload(values, extra),
         toast: false,
       });
       toastSuccess('Draft saved to the Drafts folder.');

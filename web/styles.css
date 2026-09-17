@@ -833,6 +833,18 @@ select.input {
   overflow-wrap: anywhere;
 }
 
+/* The raw message inside the source dialog. Wrapping comes from `.reader-text`; the
+   bound is what keeps a long message scrolling inside the dialog instead of pushing
+   the footer buttons off the screen. */
+.source-view {
+  max-height: 55vh;
+  overflow: auto;
+  padding: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
 .reader-html {
   width: 100%;
   min-height: 240px;

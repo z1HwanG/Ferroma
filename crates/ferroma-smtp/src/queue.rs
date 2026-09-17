@@ -71,6 +71,12 @@ pub struct QueueConfigView {
     pub bounce_on_failure: bool,
     /// The envelope sender bounces come from.
     pub mailer_daemon: String,
+    /// This server's own hostname.
+    ///
+    /// Recorded as the "remote" host of a delivery that never left the box, so the
+    /// Admin queue view shows *where* a message went rather than leaving the field
+    /// blank.
+    pub hostname: String,
     /// Where outbound mail goes instead of straight to the recipient's MX.
     pub relay: Option<RelayConfig>,
 }
@@ -126,6 +132,7 @@ impl QueueConfigView {
             poll_interval: std::time::Duration::from_secs(config.queue.poll_interval_secs.max(1)),
             bounce_on_failure: config.queue.bounce_on_failure,
             mailer_daemon: format!("MAILER-DAEMON@{}", config.server.hostname),
+            hostname: config.server.hostname.clone(),
             relay: RelayConfig::from_config(config),
         }
     }
@@ -435,6 +442,22 @@ impl QueueWorker {
             };
         };
 
+        // A recipient this server hosts never leaves the box. Resolving its MX would
+        // point at this very host — or, on a domain with no MX record of its own, at
+        // nothing at all — so the message would sit in the queue, exhaust its retries
+        // and bounce, and a local user would never receive mail another local user
+        // sent them. Delivery goes through the same local path the inbound SMTP
+        // listener uses, so quota, the sync journal and `mail.received` all behave
+        // identically no matter how the message arrived.
+        if self
+            .delivery
+            .is_local_domain(recipient.domain())
+            .await
+            .unwrap_or(false)
+        {
+            return self.deliver_locally(entry, &recipient, &body).await;
+        }
+
         // Where the message goes: the recipient's MX, or the relay when one is
         // configured and this sender belongs on it. A relay skips MX resolution
         // entirely — that is the whole point of it, since a host with no reverse
@@ -500,6 +523,52 @@ impl QueueWorker {
         last.unwrap_or_else(|| {
             DeliveryOutcome::transport_failure("no mail exchanger answered", None)
         })
+    }
+
+    /// Deliver to a mailbox this server hosts.
+    ///
+    /// The failure split follows RFC 3463, and matches what the inbound SMTP path
+    /// tells a peer: an address that does not exist here is permanent, while a full
+    /// mailbox and a storage hiccup are temporary. Retrying a full mailbox is the
+    /// point — its owner may delete something — whereas bouncing mail that would have
+    /// been delivered tomorrow is how a queue loses messages.
+    async fn deliver_locally(
+        &self,
+        entry: &QueueEntry,
+        recipient: &EmailAddress,
+        body: &[u8],
+    ) -> DeliveryOutcome {
+        // A null sender (`<>`, a bounce) has no address to record as the sender, which
+        // `deliver_raw` already models as `None`.
+        let sender = EmailAddress::parse(entry.sender.trim()).ok();
+        match self
+            .delivery
+            .deliver_raw(sender.as_ref(), recipient, INBOX, body)
+            .await
+        {
+            Ok(_) => DeliveryOutcome::Delivered {
+                // No SMTP reply was involved: this never went over a wire.
+                code: None,
+                text: format!("delivered to the local mailbox {recipient}"),
+                host: self.config.hostname.clone(),
+            },
+            Err(FerromaError::NotFound(message)) => DeliveryOutcome::Permanent {
+                // The address does not resolve here, and no amount of retrying will
+                // change that — the same verdict the inbound listener gives a peer.
+                code: None,
+                text: message,
+                host: None,
+            },
+            Err(FerromaError::MailboxFull(message)) => DeliveryOutcome::Temporary {
+                code: None,
+                text: format!("mailbox full: {message}"),
+                host: None,
+            },
+            Err(e) => DeliveryOutcome::transport_failure(
+                format!("local delivery to {recipient} failed: {e}"),
+                None,
+            ),
+        }
     }
 
     /// Append the `delivery_attempts` row.
@@ -691,6 +760,7 @@ mod tests {
             poll_interval: std::time::Duration::from_millis(10),
             bounce_on_failure: true,
             mailer_daemon: "MAILER-DAEMON@mx.example.com".to_string(),
+            hostname: "mx.example.com".to_string(),
             relay: None,
         }
     }

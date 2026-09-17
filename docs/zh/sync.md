@@ -89,7 +89,7 @@ CREATE TABLE change_log (
     seq        BIGSERIAL   PRIMARY KEY,
     user_id    BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     mailbox_id BIGINT      REFERENCES mailboxes(id) ON DELETE CASCADE,
-    folder_id  BIGINT      REFERENCES folders(id)   ON DELETE CASCADE,
+    folder_id  BIGINT,
     message_id BIGINT,
     kind       TEXT        NOT NULL,
     payload    JSONB       NOT NULL DEFAULT '{}'::jsonb,
@@ -102,8 +102,12 @@ CREATE TABLE change_log (
 `change_log_folder_idx (folder_id, seq)`，用于按文件夹同步；
 `change_log_created_idx (created_at)`，用于保留期修剪。
 
-`message_id` **不是**外键。表结构在注释里说明了原因：
-*"tombstones must outlive rows"*，即墓碑必须比数据行活得更久。
+`message_id` 与 `folder_id` **都不是**外键。表结构在注释里说明了原因：
+*"tombstones must outlive rows"*，即墓碑必须比数据行活得更久。这两列正是
+`*_deleted` 变更所指的对象，任何一列上的约束都会在关键时刻打断日志——`folder_deleted`
+是在文件夹行已消失*之后*写入的，而在 `migrations/0003_change_log_folder_tombstones.sql`
+之前，那条插入会以 `change_log_folder_id_fkey` 报 `500`。`mailbox_id` 保留级联：
+并不存在 `mailbox_deleted` 这种 kind，因此不会有任何代码写入邮箱墓碑。
 这是同步设计中最重要的一个表结构决策，§5 会解释它。
 
 ### 3.2 为什么用 `seq` 作游标

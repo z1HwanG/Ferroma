@@ -44,40 +44,69 @@ pub fn build_filter(directive: &str) -> EnvFilter {
 /// Calling this more than once in a process is harmless: subsequent calls are
 /// ignored, which keeps `cargo test` (many test threads, one process) quiet.
 pub fn init(level: &str, format: LogFormat) -> Result<()> {
-    let filter = build_filter(level);
-
     match format {
-        LogFormat::Json => {
-            let layer = tracing_subscriber::fmt::layer()
-                .json()
-                .flatten_event(true)
-                .with_current_span(true)
-                .with_span_list(true)
-                .with_target(true)
-                .with_level(true)
-                .with_writer(std::io::stdout);
-            let _ = tracing_subscriber::registry()
-                .with(filter)
-                .with(layer)
-                .try_init();
-        }
-        LogFormat::Text => {
-            let ansi = std::io::stdout().is_terminal();
-            let layer = tracing_subscriber::fmt::layer()
-                .with_ansi(ansi)
-                .with_target(true)
-                .with_level(true)
-                .with_thread_ids(false)
-                .with_thread_names(false)
-                .with_writer(std::io::stdout);
-            let _ = tracing_subscriber::registry()
-                .with(filter)
-                .with(layer)
-                .try_init();
-        }
+        LogFormat::Json => install(
+            tracing_subscriber::registry()
+                .with(build_filter(level))
+                .with(json_layer()),
+        ),
+        LogFormat::Text => install(
+            tracing_subscriber::registry()
+                .with(build_filter(level))
+                .with(text_layer()),
+        ),
     }
+}
 
+/// Install an already-composed subscriber as the global one.
+///
+/// The same idempotence as [`init`]: a process that already has a subscriber keeps it.
+pub fn install<S>(subscriber: S) -> Result<()>
+where
+    S: tracing::Subscriber + Send + Sync + 'static,
+{
+    let _ = subscriber.try_init();
     Ok(())
+}
+
+/// The newline-delimited JSON stdout layer.
+///
+/// Generic over the subscriber it will be layered onto, and returned as an opaque
+/// **concrete** type rather than a trait object: `SubscriberExt::with` needs each layer
+/// to implement `Layer` for the subscriber accumulated so far, and a layer typed
+/// against [`Registry`](tracing_subscriber::registry::Registry) alone — boxed or not —
+/// cannot be appended to a chain that already carries the filter. The server composes
+/// `filter → this → the in-process log ring` (see `server/src/logring.rs`), which is
+/// what `GET /api/v1/logs` reads.
+pub fn json_layer<S>() -> impl tracing_subscriber::Layer<S> + Send + Sync
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    tracing_subscriber::fmt::layer()
+        .json()
+        .flatten_event(true)
+        .with_current_span(true)
+        .with_span_list(true)
+        .with_target(true)
+        .with_level(true)
+        .with_writer(std::io::stdout)
+}
+
+/// The human-readable text stdout layer, with colour when stdout is a terminal.
+///
+/// Concrete and generic for the same reasons as [`json_layer`].
+pub fn text_layer<S>() -> impl tracing_subscriber::Layer<S> + Send + Sync
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    let ansi = std::io::stdout().is_terminal();
+    tracing_subscriber::fmt::layer()
+        .with_ansi(ansi)
+        .with_target(true)
+        .with_level(true)
+        .with_thread_ids(false)
+        .with_thread_names(false)
+        .with_writer(std::io::stdout)
 }
 
 /// Install a subscriber suitable for tests: quiet by default, overridable with

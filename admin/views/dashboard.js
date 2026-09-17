@@ -7,7 +7,7 @@
  */
 
 import { API_BASE, ApiError, request } from '../api.js';
-import { num } from '../data.js';
+import { dashboardStats, num } from '../data.js';
 import { el, clear } from '../dom.js';
 import { formatBytes, formatLogStamp } from '../format.js';
 import { getState, setState } from '../store.js';
@@ -156,39 +156,34 @@ async function fetchStorage() {
 function renderStats(host, health, queueStats, storage) {
   clear(host);
   const h = health.ok ? health.data || {} : {};
-  const q = queueStats.ok ? queueStats.data || {} : {};
   const s = storage.ok ? storage.data || {} : {};
-  const counts = q.counts || q;
   const database = h.database || {};
   const pool = database.pool || {};
-
-  const receivedToday = pick(q, ['received_today', 'today_received'], pick(h, ['received_today'], undefined));
-  const sentToday = pick(q, ['sent_today', 'today_sent'], pick(h, ['sent_today'], undefined));
+  // Every lookup — including the nested `health.queue` and `health.clients` paths
+  // that the grid used to miss — lives in `data.js` so a test can prove it.
+  const stats = dashboardStats(health.ok ? health.data : {}, queueStats.ok ? queueStats.data : {}, s);
 
   host.append(
-    stat({ label: 'Users', value: pick(s, ['users', 'user_count'], undefined), note: 'from /storage' }),
-    stat({ label: 'Domains', value: pick(s, ['domains', 'domain_count'], undefined), note: 'from /storage' }),
-    stat({ label: 'Received today', value: receivedToday, note: 'from /queue/stats' }),
-    stat({ label: 'Sent today', value: sentToday, note: 'from /queue/stats' }),
-    stat({ label: 'Queue pending', value: pick(counts, ['pending'], pick(h.queue || {}, ['pending'], undefined)) }),
-    stat({
-      label: 'Queue retry',
-      value: pick(counts, ['retry'], pick(h.queue || {}, ['retry'], undefined)),
-    }),
+    stat({ label: 'Users', value: stats.users, note: 'from /storage' }),
+    stat({ label: 'Domains', value: stats.domains, note: 'from /storage' }),
+    stat({ label: 'Received today', value: stats.receivedToday, note: 'from /health queue.received_today' }),
+    stat({ label: 'Sent today', value: stats.sentToday, note: 'from /health queue.sent_today' }),
+    stat({ label: 'Queue pending', value: stats.queuePending }),
+    stat({ label: 'Queue retry', value: stats.queueRetry }),
     stat({
       label: 'Failed deliveries',
-      value: pick(counts, ['failed'], pick(h.queue || {}, ['failed'], undefined)),
+      value: stats.failedDeliveries,
       note: 'entries in the failed state',
     }),
-    stat({ label: 'Mailbox storage', value: pick(s, ['maildir_bytes'], undefined), format: (value) => formatBytes(num(value)) }),
+    stat({ label: 'Mailbox storage', value: stats.maildirBytes, format: (value) => formatBytes(num(value)) }),
     stat({
       label: 'Attachments',
-      value: pick(s, ['attachment_bytes'], undefined),
+      value: stats.attachmentBytes,
       format: (value) => formatBytes(num(value)),
     }),
     stat({
       label: 'Database size',
-      value: pick(s, ['database_bytes'], undefined),
+      value: stats.databaseBytes,
       format: (value) => formatBytes(num(value)),
     }),
     stat({
@@ -201,12 +196,12 @@ function renderStats(host, health, queueStats, storage) {
     }),
     stat({
       label: 'Active client sessions',
-      value: pick(h, ['client_sessions', 'active_client_sessions', 'sessions'], undefined),
-      note: 'not part of the documented /health payload',
+      value: stats.activeClientSessions,
+      note: 'from /health clients.active_sessions',
     }),
     stat({
       label: 'Uptime',
-      value: pick(h, ['uptime_secs'], undefined),
+      value: stats.uptimeSecs,
       format: (value) => formatUptime(num(value)),
     }),
   );

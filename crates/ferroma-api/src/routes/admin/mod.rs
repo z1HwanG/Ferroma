@@ -17,6 +17,8 @@
 //!   settings and the first-run wizard.
 //! * [`logs`] — the in-process log ring buffer and the server-wide device list,
 //!   including the two revoke verbs.
+//! * [`tls`] — the TLS posture of this deployment: the configured PEM files as the
+//!   host sees them, and every port that can speak TLS.
 //!
 //! # DNS diagnostics
 //!
@@ -33,4 +35,5 @@ pub mod domains;
 pub mod logs;
 pub mod queue;
 pub mod system;
+pub mod tls;
 pub mod users;

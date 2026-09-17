@@ -387,6 +387,48 @@ Admin 面板的「System Logs」与「Devices」界面（项目书 §36）需要
 客户端 API 中的对应端点完全一致：设备被标记为已吊销，它持有的每个会话都被
 吊销，并发布`device.revoked`。
 
+### 4.9 TLS
+
+`GET /api/v1/tls`支撑管理后台的“TLS”界面：配置了什么 TLS、进程能否真正读到
+PEM 文件，以及哪些端口提供 TLS。
+
+```json
+{
+  "enabled": true,
+  "min_version": "1.2",
+  "self_signed_fallback": false,
+  "use_platform_roots": true,
+  "allow_insecure_dev_mode": false,
+  "certificate": {
+    "path": "/etc/ferroma/tls/fullchain.pem",
+    "present": true, "readable": true, "size_bytes": 4312,
+    "modified_at": "2026-09-01T09:12:44Z",
+    "sha256": "9f2c…", "error": null
+  },
+  "private_key": {
+    "path": "/etc/ferroma/tls/privkey.pem",
+    "present": true, "readable": false, "size_bytes": 2412,
+    "modified_at": "2026-09-01T09:12:44Z",
+    "sha256": null, "error": "Permission denied (os error 13)"
+  },
+  "listeners": {
+    "smtps_port": 465, "imaps_port": 993, "https_port": 0,
+    "public_url": "https://mail.example.com", "public_url_is_tls": true
+  }
+}
+```
+
+两处刻意的省略：
+
+* **私钥永不做指纹**——对密钥求哈希仍然是对密钥的一条持久事实。存在性、大小、
+  修改时间与`readable`已足以捕捉该界面要防的故障：服务器自己的用户读不到密钥。
+* **不解析证书的`notBefore`/`notAfter`。** 本构建未链接任何 X.509 解析器，而由文件
+  修改时间推导出的到期时间比不回答更糟。请在主机上把`sha256`与
+  `openssl x509 -fingerprint -sha256 -noout`的输出对照，并在那里盯到期。
+
+`readable`是最有用的字段：`enabled: true`而`readable: false`，意味着配置看起来
+正确、而每一次 TLS 握手都会失败。
+
 ---
 
 ## 5. 邮箱、邮件与附件

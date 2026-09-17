@@ -62,7 +62,7 @@ pub use extract::{
     AdminUser, AuthUser, ClientAuth, ClientInfo, Page, Pagination, DEFAULT_LIMIT, MAX_LIMIT,
     SESSION_COOKIE,
 };
-pub use logbuf::{LogBuffer, LogEntry, LogFilter, LogSink};
+pub use logbuf::{floor_for, LogBuffer, LogEntry, LogFilter, LogSink, DEFAULT_CAPACITY};
 pub use router::{build, body_limit, client_api, cors_layer, management_api, route_table};
 pub use service::{MessageService, SendRequest, SendResult};
 pub use state::{

@@ -2,8 +2,11 @@
  * Admin routing. The hash names the section; each view may append its own
  * parameters, e.g. `#/queue?status=failed` or `#/users?query=alice&offset=50`.
  *
- *   #/dashboard   #/domains   #/users   #/aliases   #/queue
- *   #/audit       #/settings  #/setup
+ *   #/dashboard   #/domains   #/users   #/aliases    #/queue
+ *   #/logs        #/storage   #/devices #/audit      #/settings   #/setup
+ *
+ * The order is the order of the sidebar, and it follows specification §36: the
+ * System Logs, Storage and Devices sections sit with the other operator surfaces.
  */
 
 /** @type {Array<{id: string, label: string, title: string}>} */
@@ -13,6 +16,10 @@ export const SECTIONS = [
   { id: 'users', label: 'Users', title: 'Users' },
   { id: 'aliases', label: 'Aliases', title: 'Aliases' },
   { id: 'queue', label: 'Mail queue', title: 'Mail queue' },
+  { id: 'logs', label: 'System logs', title: 'System logs' },
+  { id: 'storage', label: 'Storage', title: 'Storage' },
+  { id: 'devices', label: 'Devices', title: 'Devices' },
+  { id: 'tls', label: 'TLS', title: 'TLS' },
   { id: 'audit', label: 'Audit log', title: 'Audit log' },
   { id: 'settings', label: 'Settings', title: 'Settings' },
   { id: 'setup', label: 'Setup', title: 'First-run setup' },

@@ -12,12 +12,14 @@
 
 mod cli;
 mod commands;
+mod logring;
 mod serve;
 mod tls;
 
 use std::process::ExitCode;
 
 use clap::Parser;
+use tracing_subscriber::layer::SubscriberExt;
 
 use cli::Cli;
 use ferroma_core::config::{Config, LogFormat};
@@ -64,7 +66,33 @@ fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
     } else {
         config.server.log_format
     };
-    ferroma_core::logging::init(&log_level, format)?;
+
+    // The in-process ring behind `GET /api/v1/logs` is filled by its own `tracing`
+    // layer, so the buffer has to exist *before* the subscriber is installed — and the
+    // same handle is what the HTTP state reads. It captures from the level the operator
+    // configured, because a ring that only holds `warn` leaves the Admin "System Logs"
+    // screen blank on exactly the healthy deployments that need no warnings.
+    let log_sink = ferroma_api::LogSink::new(std::sync::Arc::new(ferroma_api::LogBuffer::new(
+        ferroma_api::DEFAULT_CAPACITY,
+        ferroma_api::floor_for(&log_level),
+    )));
+    // Composed here rather than inside `logging::init` because `with` chains each layer
+    // over the subscriber accumulated so far: only the caller has the concrete types.
+    // The ring goes last, so it sees exactly the events the operator's filter admitted.
+    match format {
+        LogFormat::Json => ferroma_core::logging::install(
+            tracing_subscriber::registry()
+                .with(ferroma_core::logging::build_filter(&log_level))
+                .with(ferroma_core::logging::json_layer())
+                .with(logring::LogRingLayer::new(log_sink.clone())),
+        )?,
+        LogFormat::Text => ferroma_core::logging::install(
+            tracing_subscriber::registry()
+                .with(ferroma_core::logging::build_filter(&log_level))
+                .with(ferroma_core::logging::text_layer())
+                .with(logring::LogRingLayer::new(log_sink.clone())),
+        )?,
+    }
 
     tracing::debug!(config = ?cli.config, "configuration loaded");
 
@@ -76,7 +104,7 @@ fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
             commands::config_check(&config, dns_domain.as_deref())
         }
         cli::Command::Config(cli::ConfigCommand::Show) => commands::config_show(&config),
-        cli::Command::Serve(args) => serve::run(&config, args),
+        cli::Command::Serve(args) => serve::run(&config, args, log_sink),
         cli::Command::Migrate => commands::migrate(&config).map(|()| ExitCode::SUCCESS),
         cli::Command::Database(command) => commands::database(&config, command),
         cli::Command::User(command) => commands::user(&config, command),

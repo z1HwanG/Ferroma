@@ -351,10 +351,14 @@ DEFAULT '[]'`、`created_at`、`updated_at`。
 `seq BIGSERIAL PK`、`user_id`、`mailbox_id`、`folder_id`、`message_id BIGINT`、
 `kind`、`payload JSONB`、`created_at`。
 
-**`message_id` 没有外键，这是刻意的。** schema 注释说明了原因：
+**`message_id` 与 `folder_id` 都没有外键，这是刻意的。** schema 注释说明了原因：
 *「墓碑必须比行存活得更久」*。一条 `message_deleted` 记录必须在 `messages` 行消失之后
-仍然可读，否则离线客户端永远无法得知那封邮件已经不见。`seq` 就是同步游标，见
-[sync.md](sync.md)。
+仍然可读，`folder_deleted` 同理必须在 `folders` 行消失之后仍可读，否则离线客户端
+永远无法得知它们已经不见。`folder_id` 是在
+`migrations/0003_change_log_folder_tombstones.sql` 中去掉约束的：在有约束期间，记录
+文件夹删除的那条插入会违反它，`DELETE /api/v1/folders/:id` 因此报 `500`。
+`mailbox_id` 保留级联——并不存在 `mailbox_deleted` 这种 kind。
+`seq` 就是同步游标，见 [sync.md](sync.md)。
 
 #### `audit_logs`
 

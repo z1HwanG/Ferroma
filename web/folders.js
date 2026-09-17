@@ -7,7 +7,7 @@
 import { API_BASE, ApiError, request } from './api.js';
 import { foldersOf } from './data.js';
 import { byId, clear, el, labelWithTitle, setHidden, svgIcon } from './dom.js';
-import { promptDialog } from './modal.js';
+import { confirmDialog, promptDialog } from './modal.js';
 import { folderSlug } from './router.js';
 import { getState, mutate } from './store.js';
 import { toastError, toastSuccess } from './toast.js';
@@ -31,6 +31,8 @@ export function initFolders(options) {
   handlers = options;
   const select = byId('mailbox-select');
   const newFolder = byId('new-folder-button');
+  const renameFolder = byId('rename-folder-button');
+  const deleteFolder = byId('delete-folder-button');
 
   select.addEventListener('change', () => {
     const id = Number.parseInt(select.value, 10);
@@ -44,6 +46,27 @@ export function initFolders(options) {
       return;
     }
     createFolder(state.mailboxId);
+  });
+
+  // Rename and delete act on the folder that is on screen, which is the only one the
+  // operator has unambiguously pointed at. Both buttons keep their focus targets in
+  // the tree rather than opening a per-row menu no keyboard user could reach.
+  renameFolder.addEventListener('click', () => {
+    const folder = getState().folder;
+    if (!folder) {
+      toastError('Open a folder first.');
+      return;
+    }
+    renameFolderTo(folder);
+  });
+
+  deleteFolder.addEventListener('click', () => {
+    const folder = getState().folder;
+    if (!folder) {
+      toastError('Open a folder first.');
+      return;
+    }
+    deleteFolderFrom(folder);
   });
 }
 
@@ -144,6 +167,69 @@ async function createFolder(mailboxId) {
   } catch (error) {
     toastError(error instanceof ApiError ? error.message : 'The folder could not be created.');
   }
+}
+
+/** Rename the folder that is currently open. */
+async function renameFolderTo(folder) {
+  const name = await promptDialog({
+    title: 'Rename folder',
+    label: 'Folder name',
+    confirmLabel: 'Rename',
+    hint: 'Nested folders use “Parent/Child”. INBOX cannot be renamed.',
+  });
+  if (!name || name === folder.name) return;
+  const mailboxId = getState().mailboxId;
+  try {
+    await request(`${API_BASE}/folders/${folder.id}`, {
+      method: 'PATCH',
+      body: { name },
+      toast: false,
+    });
+    toastSuccess(`Folder renamed to “${name}”.`);
+    await reselectAfterChange(mailboxId, folder.id);
+  } catch (error) {
+    toastError(error instanceof ApiError ? error.message : 'The folder could not be renamed.');
+  }
+}
+
+/** Delete the folder that is currently open, after an explicit confirmation. */
+async function deleteFolderFrom(folder) {
+  const confirmed = await confirmDialog({
+    title: 'Delete this folder?',
+    message: `“${folder.name}” and everything filed in it are removed. This cannot be undone.`,
+    confirmLabel: 'Delete folder',
+  });
+  if (!confirmed) return;
+
+  const mailboxId = getState().mailboxId;
+  try {
+    await request(`${API_BASE}/folders/${folder.id}`, { method: 'DELETE', toast: false });
+    toastSuccess(`Folder “${folder.name}” deleted.`);
+    // The folder that was on screen is gone, so the tree falls back to INBOX.
+    await reselectAfterChange(mailboxId, 0);
+  } catch (error) {
+    toastError(error instanceof ApiError ? error.message : 'The folder could not be deleted.');
+  }
+}
+
+/**
+ * Reload the tree after a rename or a delete and put the selection back.
+ *
+ * `preferredId` is the folder that should stay selected; `0` (a folder that no
+ * longer exists) falls back to INBOX, so the panes never point at a dead id.
+ * @param {number} mailboxId
+ * @param {number} preferredId
+ */
+async function reselectAfterChange(mailboxId, preferredId) {
+  const folders = await loadFolders(mailboxId);
+  const current = getState().folder;
+  const wanted =
+    (preferredId && folders.find((candidate) => candidate.id === preferredId)) ||
+    (current && folders.find((candidate) => candidate.id === current.id)) ||
+    folders.find((candidate) => candidate.specialUse === 'inbox') ||
+    folders[0] ||
+    null;
+  if (wanted && handlers) handlers.onSelectFolder(wanted);
 }
 
 /**

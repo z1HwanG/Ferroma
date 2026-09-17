@@ -1,14 +1,18 @@
 /**
- * Settings dialog: display name, signature, theme, messages per page, and the
- * "mark read on open" switch. Everything is stored in localStorage (see
- * `store.js`) except the theme, which `theme.js` owns.
+ * Settings dialog: display name, signature, theme, messages per page, the
+ * "mark read on open" switch, and the account password.
+ *
+ * The preferences are per-browser and live in localStorage (see `store.js`); the
+ * password is the one thing here that belongs to the *account*, so it is the one
+ * thing that goes to the server (`POST /api/v1/auth/password`).
  */
 
-import { el } from './dom.js';
+import { API_BASE, ApiError, request } from './api.js';
+import { el, setHidden, setText } from './dom.js';
 import { openModal } from './modal.js';
 import { MESSAGES_PER_PAGE_CHOICES, PREF_DEFAULTS, getPrefs, savePrefs } from './store.js';
 import { THEME_MODES, currentTheme, setTheme } from './theme.js';
-import { toastSuccess } from './toast.js';
+import { toastError, toastSuccess } from './toast.js';
 
 /** Save a value and keep the theme module in step. */
 function persist(patch) {
@@ -24,6 +28,10 @@ const FIELDS = {
   theme: 'settings-theme',
   perPage: 'settings-per-page',
   markReadOnOpen: 'settings-mark-read',
+  passwordCurrent: 'settings-password-current',
+  passwordNew: 'settings-password-new',
+  passwordConfirm: 'settings-password-confirm',
+  passwordStatus: 'settings-password-status',
 };
 
 export function openSettings() {
@@ -60,6 +68,93 @@ export function openSettings() {
   const markRead = el('input', { type: 'checkbox', id: FIELDS.markReadOnOpen });
   markRead.checked = prefs.markReadOnOpen;
 
+  /* ------------------------------------------------------------- password */
+
+  const currentPassword = el('input', {
+    class: 'input',
+    id: FIELDS.passwordCurrent,
+    type: 'password',
+    autocomplete: 'current-password',
+  });
+  const newPassword = el('input', {
+    class: 'input',
+    id: FIELDS.passwordNew,
+    type: 'password',
+    autocomplete: 'new-password',
+  });
+  const confirmPassword = el('input', {
+    class: 'input',
+    id: FIELDS.passwordConfirm,
+    type: 'password',
+    autocomplete: 'new-password',
+  });
+  const passwordStatus = el('p', { class: 'field-error', id: FIELDS.passwordStatus, role: 'alert', hidden: true });
+  const changePassword = el('button', { type: 'submit', class: 'btn', text: 'Change password' });
+
+  const passwordForm = el('form', { class: 'settings-grid', id: 'settings-password' }, [
+    el('div', { class: 'field' }, [
+      el('label', { class: 'field-label', for: FIELDS.passwordCurrent, text: 'Current password' }),
+      currentPassword,
+    ]),
+    el('div', { class: 'field' }, [
+      el('label', { class: 'field-label', for: FIELDS.passwordNew, text: 'New password' }),
+      newPassword,
+    ]),
+    el('div', { class: 'field' }, [
+      el('label', { class: 'field-label', for: FIELDS.passwordConfirm, text: 'Repeat the new password' }),
+      confirmPassword,
+    ]),
+    el('div', { class: 'field' }, [changePassword, passwordStatus]),
+  ]);
+
+  /** Show or clear the inline message under the password form. */
+  const showPasswordStatus = (message) => {
+    setText(passwordStatus, message);
+    setHidden(passwordStatus, message === '');
+  };
+
+  passwordForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    showPasswordStatus('');
+
+    const secret = currentPassword.value;
+    const replacement = newPassword.value;
+    if (secret === '' || replacement === '') {
+      showPasswordStatus('Fill in your current password and the new one.');
+      return;
+    }
+    if (replacement !== confirmPassword.value) {
+      showPasswordStatus('The two new passwords do not match.');
+      return;
+    }
+    if (replacement === secret) {
+      showPasswordStatus('The new password must differ from the current one.');
+      return;
+    }
+
+    changePassword.disabled = true;
+    setText(changePassword, 'Changing…');
+    try {
+      await request(`${API_BASE}/auth/password`, {
+        method: 'POST',
+        body: { current_password: secret, new_password: replacement },
+        toast: false,
+      });
+      currentPassword.value = '';
+      newPassword.value = '';
+      confirmPassword.value = '';
+      toastSuccess('Password changed.');
+      showPasswordStatus('');
+    } catch (error) {
+      const message = error instanceof ApiError ? error.message : 'The password could not be changed.';
+      showPasswordStatus(message);
+      toastError(message);
+    } finally {
+      changePassword.disabled = false;
+      setText(changePassword, 'Change password');
+    }
+  });
+
   const body = el('div', { class: 'settings-grid' }, [
     el('div', { class: 'field' }, [
       el('label', { class: 'field-label', for: FIELDS.displayName, text: 'Display name' }),
@@ -83,6 +178,8 @@ export function openSettings() {
       markRead,
       el('span', { text: 'Mark messages read after 2 seconds in the reading pane' }),
     ]),
+    el('h3', { class: 'card-title', text: 'Password' }),
+    passwordForm,
   ]);
 
   const close = el('button', { type: 'button', class: 'btn', text: 'Close' });

@@ -36,11 +36,26 @@ export function bool(value) {
   return false;
 }
 
-/** Unwrap `{items: [...]}` envelopes and bare arrays alike. */
+/**
+ * The collection keys this API wraps a list in.
+ *
+ * Most endpoints page with `{items, total}`, but two answer with the name of the
+ * collection instead: `GET /mailboxes` sends `{mailboxes: […]}` and
+ * `GET /mailboxes/:id/folders` sends `{mailbox_id, folders: […]}`. Every envelope
+ * the server emits is listed here on purpose — a key missing from this list turns a
+ * response that has rows into an empty screen, which is how the folder tree once
+ * shipped empty and left the whole message list unreachable.
+ */
+const LIST_ENVELOPES = ['items', 'data', 'mailboxes', 'folders'];
+
+/** Unwrap a list envelope of any of [`LIST_ENVELOPES`], or a bare array. */
 export function listOf(payload) {
   if (Array.isArray(payload)) return payload;
-  if (payload && Array.isArray(payload.items)) return payload.items;
-  if (payload && Array.isArray(payload.data)) return payload.data;
+  if (payload && typeof payload === 'object') {
+    for (const key of LIST_ENVELOPES) {
+      if (Array.isArray(payload[key])) return payload[key];
+    }
+  }
   return [];
 }
 
@@ -427,5 +442,51 @@ export function normalizeAuditEntry(value) {
     detail: pick(source, ['detail', 'details', 'metadata'], null),
     ip: String(pick(source, ['ip', 'ip_address', 'remote_addr'], '')),
     raw: source,
+  };
+}
+
+/* ----------------------------------------------------------------- dashboard */
+
+/**
+ * The numbers behind the Admin dashboard's stat grid.
+ *
+ * They come from three responses and, crucially, from **nested** keys inside them:
+ * `/health` carries today's traffic under `queue` and the live session count under
+ * `clients`, while `/storage` carries the user and domain counts. Reading one of
+ * those one level too high yields `undefined`, and the grid renders `undefined` as
+ * “—”, which reads as “this API does not report it” — how three cards stayed blank
+ * on servers that were reporting every one of them.
+ *
+ * The lookups live here, beside the other payload normalisers, so a test can prove
+ * them without a browser — see the `data:dashboard` rule in `tools/check.mjs`.
+ *
+ * @param {unknown} health `GET /api/v1/health`
+ * @param {unknown} queueStats `GET /api/v1/queue/stats`
+ * @param {unknown} storage `GET /api/v1/storage`
+ */
+export function dashboardStats(health, queueStats, storage) {
+  const h = health && typeof health === 'object' ? health : {};
+  const q = queueStats && typeof queueStats === 'object' ? queueStats : {};
+  const s = storage && typeof storage === 'object' ? storage : {};
+  const healthQueue = h.queue && typeof h.queue === 'object' ? h.queue : {};
+  const counts = q.counts && typeof q.counts === 'object' ? q.counts : q;
+
+  return {
+    // `/storage` is the only endpoint that counts accounts and domains.
+    users: pick(s, ['users', 'user_count'], undefined),
+    domains: pick(s, ['domains', 'domain_count'], undefined),
+    // `/queue/stats` has no notion of "today"; `/health` reports it under `queue`.
+    receivedToday: pick(q, ['received_today', 'today_received'], pick(healthQueue, ['received_today'], undefined)),
+    sentToday: pick(q, ['sent_today', 'today_sent'], pick(healthQueue, ['sent_today'], undefined)),
+    queuePending: pick(counts, ['pending'], pick(healthQueue, ['pending'], undefined)),
+    queueRetry: pick(counts, ['retry'], pick(healthQueue, ['retry'], undefined)),
+    failedDeliveries: pick(counts, ['failed'], pick(healthQueue, ['failed'], undefined)),
+    // Sizes and counts from `/storage`.
+    maildirBytes: pick(s, ['maildir_bytes'], undefined),
+    attachmentBytes: pick(s, ['attachment_bytes'], undefined),
+    databaseBytes: pick(s, ['database_bytes'], undefined),
+    // Non-revoked, non-expired `sessions` rows, under `clients`.
+    activeClientSessions: pick(h.clients && typeof h.clients === 'object' ? h.clients : {}, ['active_sessions', 'active_client_sessions'], undefined),
+    uptimeSecs: pick(h, ['uptime_secs'], undefined),
   };
 }

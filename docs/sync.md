@@ -94,7 +94,7 @@ CREATE TABLE change_log (
     seq        BIGSERIAL   PRIMARY KEY,
     user_id    BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     mailbox_id BIGINT      REFERENCES mailboxes(id) ON DELETE CASCADE,
-    folder_id  BIGINT      REFERENCES folders(id)   ON DELETE CASCADE,
+    folder_id  BIGINT,
     message_id BIGINT,
     kind       TEXT        NOT NULL,
     payload    JSONB       NOT NULL DEFAULT '{}'::jsonb,
@@ -107,9 +107,14 @@ Four indexes: `change_log_cursor_idx (user_id, seq)` — the sync query;
 `change_log_folder_idx (folder_id, seq)` — per-folder sync;
 `change_log_created_idx (created_at)` — retention pruning.
 
-`message_id` is **not** a foreign key. The schema says why in a comment:
-*"tombstones must outlive rows"*. This is the single most important schema
-decision in the sync design and §5 explains it.
+`message_id` and `folder_id` are **not** foreign keys. The schema says why in a
+comment: *"tombstones must outlive rows"*. Those two columns are the ones a
+`*_deleted` change names, so a constraint on either would break the journal exactly
+when it matters — a `folder_deleted` entry is written *after* the folder row is gone,
+and before `migrations/0003_change_log_folder_tombstones.sql` that insert answered
+`500` with `change_log_folder_id_fkey`. `mailbox_id` keeps its cascade: no
+`mailbox_deleted` kind exists, so nothing writes a mailbox tombstone. This is the
+single most important schema decision in the sync design and §5 explains it.
 
 ### 3.2 Why `seq` is the cursor
 

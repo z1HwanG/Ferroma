@@ -1,4 +1,4 @@
-﻿//! A bounded in-process log ring buffer behind `GET /api/v1/logs`.
+//! A bounded in-process log ring buffer behind `GET /api/v1/logs`.
 //!
 //! The Admin panel's "System Logs" screen has to work on a host where nothing ships
 //! logs anywhere. [`LogBuffer`] is filled by a `tracing` layer
@@ -75,6 +75,31 @@ pub fn parse_level(raw: &str) -> Option<Level> {
         "trace" => Some(Level::TRACE),
         _ => None,
     }
+}
+
+/// The level a ring should capture from, given a `tracing` filter directive.
+///
+/// The ring is bounded and lives in memory, so it captures at the level the operator
+/// already chose to log at: `info` captures `INFO` and above, and
+/// `ferroma_smtp=debug,ferroma_core=info,warn` captures from the bare `warn` — the
+/// directive that applies to everything the per-target ones do not name.
+///
+/// A directive with no bare level at all (`ferroma_smtp=debug`) falls back to
+/// [`Level::INFO`], which is what `ferroma`'s own crates log at by default. The
+/// alternative — capturing from `WARN` — would leave the Admin "System Logs" screen
+/// blank on a healthy server whose operator asked for `info`, which is the one thing
+/// that screen must not do.
+pub fn floor_for(directive: &str) -> Level {
+    for part in directive.split(',') {
+        let part = part.trim();
+        if part.is_empty() || part.contains('=') {
+            continue;
+        }
+        if let Some(level) = parse_level(part) {
+            return level;
+        }
+    }
+    Level::INFO
 }
 
 /// Replace anything shaped like an opaque Ferroma credential with [`REDACTED`].
@@ -366,6 +391,35 @@ impl LogSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ring_floor_follows_a_bare_directive() {
+        // The common case: `server.log_level = "info"` must put INFO in the ring, or
+        // the Admin "System Logs" screen is blank on a healthy server.
+        assert_eq!(floor_for("info"), Level::INFO);
+        assert_eq!(floor_for(" warn "), Level::WARN);
+        assert_eq!(floor_for("debug"), Level::DEBUG);
+    }
+
+    #[test]
+    fn the_ring_floor_ignores_per_target_directives() {
+        // `ferroma_smtp=debug` says nothing about the level everything else logs at, so
+        // the bare `warn` that follows it is what the ring captures from.
+        assert_eq!(floor_for("ferroma_smtp=debug,warn"), Level::WARN);
+        assert_eq!(
+            floor_for("ferroma_smtp=debug,ferroma_core=info,error"),
+            Level::ERROR
+        );
+    }
+
+    #[test]
+    fn the_ring_floor_defaults_to_info() {
+        // Only per-target directives: nothing states the global level, so the ring
+        // takes the one `ferroma`'s own crates emit at.
+        assert_eq!(floor_for("ferroma_smtp=debug"), Level::INFO);
+        assert_eq!(floor_for(""), Level::INFO);
+        assert_eq!(floor_for("   "), Level::INFO);
+    }
     use chrono::TimeZone;
 
     fn at(secs: i64) -> DateTime<Utc> {

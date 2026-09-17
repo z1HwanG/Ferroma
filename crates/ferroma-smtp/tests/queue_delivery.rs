@@ -17,7 +17,7 @@ use ferroma_smtp::{
     DeliveryService, MockResolver, MxHost, MxResolver, QueueConfigView, QueueWorker, SmtpClient,
     SmtpClientConfig, TlsPolicy,
 };
-use ferroma_storage::repository::{NewMessage, NewQueueEntry};
+use ferroma_storage::repository::{NewMailbox, NewMessage, NewQueueEntry, NewUser};
 use ferroma_storage::Repositories;
 
 /// Everything one queue test needs.
@@ -170,6 +170,7 @@ fn fast_config() -> QueueConfigView {
         poll_interval: std::time::Duration::from_millis(10),
         bounce_on_failure: true,
         mailer_daemon: "MAILER-DAEMON@mx.test".to_string(),
+        hostname: "mx.test".to_string(),
         // These cases deliver straight to the recipient's MX. The relay path is
         // covered by `relay_deliveries_go_to_the_relay` in
         // `crates/ferroma-smtp/src/queue.rs`.
@@ -327,6 +328,135 @@ async fn a_successful_attempt_marks_the_row_delivered() {
         }
         other => panic!("wrong event: {other:?}"),
     }
+
+    fake.stop();
+    harness.cleanup().await;
+}
+
+// ---------------------------------------------------------------------------
+// Local delivery
+// ---------------------------------------------------------------------------
+
+/// A second address on a domain that already exists.
+///
+/// [`seed_mailbox`] creates its own domain, so it cannot be called twice for one
+/// domain; this is the same thing minus the `domains.create`.
+async fn seed_second_address(repos: &Repositories, domain: &str, local_part: &str) -> MailboxId {
+    let domain_row = repos
+        .domains
+        .find_by_name(domain)
+        .await
+        .expect("look up the domain")
+        .expect("the domain was seeded");
+    let user = repos
+        .users
+        .create(NewUser {
+            email: format!("{local_part}@{domain}"),
+            password_hash: "unused".to_string(),
+            display_name: Some(local_part.to_string()),
+            is_admin: false,
+            quota_bytes: None,
+        })
+        .await
+        .expect("create user");
+    let mailbox = repos
+        .mailboxes
+        .create(NewMailbox {
+            user_id: user.user_id(),
+            domain_id: domain_row.domain_id(),
+            local_part: local_part.to_string(),
+            display_name: None,
+            is_primary: true,
+            quota_bytes: None,
+        })
+        .await
+        .expect("create mailbox");
+    repos
+        .folders
+        .ensure_standard(mailbox.mailbox_id())
+        .await
+        .expect("create the standard folders");
+    mailbox.mailbox_id()
+}
+
+#[tokio::test]
+async fn a_local_recipient_is_delivered_into_the_local_mailbox() {
+    // Local user to local user. The recipient's domain is hosted here, so its mail
+    // exchanger is this very host — or, on a domain with no MX record of its own,
+    // nothing at all. A queue that only knows how to open an SMTP connection therefore
+    // retried until it bounced, and the local INBOX stayed empty for good.
+    crate::require_database!();
+    let harness = Harness::start().await;
+    let (user_id, mailbox_id) = seed_mailbox(&harness.repos, "mx.test", "alice", "unused").await;
+    let bob = seed_second_address(&harness.repos, "mx.test", "bob").await;
+    let message_id = harness.store_outbound(mailbox_id, "alice").await;
+    let entry = harness.queue(message_id, user_id, "bob@mx.test").await;
+
+    // The mock publishes no MX and no address for `mx.test`, so resolving one would
+    // fail here exactly the way it failed in production.
+    let fake = FakeMx::start(250).await;
+    let mut worker = harness.worker(&fake, fast_config());
+    assert_eq!(worker.dispatch_batch().await.expect("dispatch"), 1);
+
+    let row = harness
+        .repos
+        .queue
+        .find_by_id(entry.queue_id())
+        .await
+        .expect("lookup")
+        .expect("the row exists");
+    assert_eq!(row.status, "delivered", "last_error: {:?}", row.last_error);
+    assert_eq!(
+        row.remote_mx.as_deref(),
+        Some("mx.test"),
+        "the queue records that it stayed on this host"
+    );
+    assert_eq!(
+        fake.received(),
+        0,
+        "a local delivery must not open an SMTP connection at all"
+    );
+    assert_eq!(
+        inbox_count(&harness.repos, bob).await,
+        1,
+        "the message landed in the recipient's INBOX"
+    );
+
+    fake.stop();
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_local_address_with_no_mailbox_fails_permanently() {
+    // The control: a typo in a local address must bounce, not retry twelve times over
+    // a day. Nothing about it will be different on the next attempt.
+    crate::require_database!();
+    let harness = Harness::start().await;
+    let (user_id, mailbox_id) = seed_mailbox(&harness.repos, "mx.test", "alice", "unused").await;
+    let message_id = harness.store_outbound(mailbox_id, "alice").await;
+    let entry = harness.queue(message_id, user_id, "nobody@mx.test").await;
+
+    let fake = FakeMx::start(250).await;
+    let mut worker = harness.worker(&fake, fast_config());
+    assert_eq!(worker.dispatch_batch().await.expect("dispatch"), 1);
+
+    let row = harness
+        .repos
+        .queue
+        .find_by_id(entry.queue_id())
+        .await
+        .expect("lookup")
+        .expect("the row exists");
+    assert_eq!(row.status, "failed", "last_error: {:?}", row.last_error);
+    assert!(
+        row.last_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("no such mailbox"),
+        "last_error: {:?}",
+        row.last_error
+    );
+    assert_eq!(fake.received(), 0, "nothing should have been sent");
 
     fake.stop();
     harness.cleanup().await;

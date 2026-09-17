@@ -57,6 +57,7 @@ export function initReader(options) {
   byId('action-unread').addEventListener('click', () => withMessage(markUnread));
   byId('action-archive').addEventListener('click', () => withMessage(archive));
   byId('action-move').addEventListener('click', () => withMessage(openMoveDialog));
+  byId('action-source').addEventListener('click', () => withMessage(openSourceDialog));
   byId('action-delete').addEventListener('click', () => withMessage(deleteMessage));
 
   byId('tab-html').addEventListener('click', () => {
@@ -297,6 +298,7 @@ export function renderChrome() {
   byId('action-unread').disabled = !message;
   byId('action-archive').disabled = !message;
   byId('action-move').disabled = !message;
+  byId('action-source').disabled = !message;
   byId('action-delete').disabled = !message;
   byId('action-reply').disabled = !message;
   byId('action-reply-all').disabled = !message;
@@ -406,6 +408,48 @@ async function archive(message) {
     return;
   }
   await moveTo(message, archiveFolder, 'Archived.');
+}
+
+/**
+ * Show the message exactly as it is stored — RFC 5322 headers and all.
+ *
+ * This is the one place a message body is displayed without any interpretation: the
+ * bytes go into a `<pre>` through `textContent`, so a header an attacker controls
+ * cannot become markup. It is also what makes a suspicious message diagnosable, since
+ * the reading pane deliberately shows only the decoded, sanitised parts.
+ */
+async function openSourceDialog(message) {
+  let text;
+  try {
+    const response = await request(`${API_BASE}/messages/${message.id}/raw`, { raw: true, toast: false });
+    text = await response.text();
+  } catch (error) {
+    toastError(error instanceof ApiError ? error.message : 'The message source could not be read.');
+    return;
+  }
+
+  const pre = el('pre', { class: 'reader-text source-view', tabindex: '0', text });
+  const downloadButton = el('button', { type: 'button', class: 'btn', text: 'Download .eml' });
+  const closeButton = el('button', { type: 'button', class: 'btn btn-primary', text: 'Close' });
+
+  const modal = openModal({
+    title: message.subject ? `Source — ${message.subject}` : 'Message source',
+    body: el('div', {}, [
+      el('p', {
+        class: 'modal-message',
+        text: 'The stored bytes: every header, including the ones the reading pane hides.',
+      }),
+      pre,
+    ]),
+    footer: [downloadButton, el('span', { class: 'spacer' }), closeButton],
+    size: 'wide',
+    onMount: () => {
+      closeButton.addEventListener('click', () => modal.close('close'));
+      downloadButton.addEventListener('click', () => {
+        download(`${API_BASE}/messages/${message.id}/raw`, `message-${message.id}.eml`);
+      });
+    },
+  });
 }
 
 async function moveTo(message, folder, successText) {

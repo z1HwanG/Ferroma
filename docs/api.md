@@ -361,12 +361,15 @@ account.
 }
 ```
 
-Backed by a bounded in-process ring buffer that a `tracing` layer fills with events
-at `WARN` and above (configurable down to `INFO` with `?level=info`), so the panel
-works without shipping logs off the host. The buffer holds the most recent 1000
-entries and is **lost on restart** — that is the honest trade, and the response says
-so with `"buffer_entries"`, `"buffer_capacity"` and `"oldest_at"`. Filters:
-`?level=`, `?target=`, `?query=`, `?since=`, `?limit=`, `?offset=`.
+Backed by a bounded in-process ring buffer that a `tracing` layer fills — see
+`server/src/logring.rs`, which the server composes into its subscriber next to the
+stdout layer. The ring **captures** at the level the operator configured
+(`server.log_level`): a deployment logging at `info` records `INFO` and above, so the
+panel shows the same story as `docker compose logs` rather than sitting empty on a
+healthy host. It holds the most recent 1000 entries and is **lost on restart** — that
+is the honest trade, and the response says so with `"buffer_entries"`,
+`"buffer_capacity"` and `"oldest_at"`. Filters: `?level=` (a floor *within* what was
+captured), `?target=`, `?query=`, `?since=`, `?limit=`, `?offset=`.
 
 Message bodies, credentials and tokens are never written to this buffer; the log
 layer scrubs values that look like opaque tokens (`rt_…`, `st_…`) before storing them.
@@ -389,6 +392,50 @@ Filters: `?user_id=`, `?include_revoked=`, `?platform=`.
 `POST /api/v1/devices/:id/revoke` and `DELETE /api/v1/devices/:id` behave exactly as
 the client-API equivalents: the device is marked revoked, every session it holds is
 revoked, and `device.revoked` is published.
+
+### 4.9 TLS
+
+`GET /api/v1/tls` answers the Admin "TLS" screen: what TLS is configured, whether the
+process can actually read the PEM files, and which ports offer it.
+
+```json
+{
+  "enabled": true,
+  "min_version": "1.2",
+  "self_signed_fallback": false,
+  "use_platform_roots": true,
+  "allow_insecure_dev_mode": false,
+  "certificate": {
+    "path": "/etc/ferroma/tls/fullchain.pem",
+    "present": true, "readable": true, "size_bytes": 4312,
+    "modified_at": "2026-09-01T09:12:44Z",
+    "sha256": "9f2c…", "error": null
+  },
+  "private_key": {
+    "path": "/etc/ferroma/tls/privkey.pem",
+    "present": true, "readable": false, "size_bytes": 2412,
+    "modified_at": "2026-09-01T09:12:44Z",
+    "sha256": null, "error": "Permission denied (os error 13)"
+  },
+  "listeners": {
+    "smtps_port": 465, "imaps_port": 993, "https_port": 0,
+    "public_url": "https://mail.example.com", "public_url_is_tls": true
+  }
+}
+```
+
+Two deliberate omissions:
+
+* **The private key is never fingerprinted** — a hash of a secret is still a durable
+  fact about it. Presence, size, mtime and `readable` are enough to catch the failure
+  this screen exists for, which is a key the server's own user cannot open.
+* **The certificate's `notBefore` / `notAfter` are not parsed.** This build links no
+  X.509 parser, and an expiry derived from a file mtime would be a worse answer than
+  no answer. Compare `sha256` against `openssl x509 -fingerprint -sha256 -noout`
+  on the host, and watch expiry there.
+
+`readable` is the useful field: `enabled: true` with `readable: false` is a server
+that will fail its TLS handshakes while the configuration looks correct.
 
 ---
 

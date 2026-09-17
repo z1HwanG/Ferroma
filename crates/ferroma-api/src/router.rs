@@ -199,6 +199,7 @@ pub fn management_api() -> Router<AppState> {
         .route("/settings", get(routes::admin::system::list_settings))
         .route("/settings/{key}", put(routes::admin::system::put_setting))
         .route("/logs", get(routes::admin::logs::list_logs))
+        .route("/tls", get(routes::admin::tls::tls_status))
         .route("/devices", get(routes::admin::logs::list_devices))
         .route(
             "/devices/{id}",
@@ -582,6 +583,8 @@ pub fn route_table() -> Vec<(&'static str, &'static str)> {
         ("GET", "/api/v1/devices"),
         ("POST", "/api/v1/devices/{id}/revoke"),
         ("DELETE", "/api/v1/devices/{id}"),
+        // §4.9 TLS
+        ("GET", "/api/v1/tls"),
         // §5.1 mailboxes and folders
         ("GET", "/api/v1/mailboxes"),
         ("GET", "/api/v1/mailboxes/{id}/folders"),

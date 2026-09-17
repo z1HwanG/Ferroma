@@ -391,9 +391,10 @@ maildir 的 `set_flags`。一条 Webmail 路由不构造 MIME；它调用
 1. **游标就是 `change_log.seq`。** `ChangeLogRepository::changes_since(user_id,
    after, limit)` 以升序选出 `seq > after`，所以传入最后应用过的
    `seq` 永不重复某一条。客户端把它当作不透明的值。
-2. **删除是只追加的墓碑。** `change_log.message_id` 刻意*不*是
-   外键，因此一行 `message_deleted` 比它描述的 `messages` 行活得更久。
-   见 `migrations/0001_initial.sql` 中的注释。
+2. **删除是只追加的墓碑。** `change_log.message_id` 与 `change_log.folder_id`
+   都刻意*不*是外键，因此一行 `message_deleted` 或 `folder_deleted`
+   比它所描述的行活得更久。见 `migrations/0001_initial.sql` 与
+   `migrations/0003_change_log_folder_tombstones.sql` 中的注释。
 3. **重放是幂等的。** `OperationsRepository::begin` 是一条
    `INSERT … ON CONFLICT DO NOTHING RETURNING *`；对同一个 `operation_id` 的两次并发重试
    中，恰好一次得到 `OperationOutcome::Fresh`。

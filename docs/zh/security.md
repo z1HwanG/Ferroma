@@ -376,7 +376,7 @@ if let Some(ref ip_text) = ip_str {
 
 ### 6.1 中继策略
 
-在[../AGENTS.md](../AGENTS.md) §4.6与规范§9.4中陈述，并在[smtp.md](smtp.md) §6中完整规定：
+在[../AGENTS.md](../../AGENTS.md) §4.6与规范§9.4中陈述，并在[smtp.md](smtp.md) §6中完整规定：
 
 ```text
   收件人域为本地  →  接受（配额与限制照常生效）
@@ -997,4 +997,4 @@ PostgreSQL 的`LISTEN`/`NOTIFY`后端。
 | 幂等性、墓碑保留、失败矩阵 | [sync.md](sync.md) |
 | DNS 记录、TLS 终止、`.env`中的密钥、加固检查清单 | [deployment.md](deployment.md) |
 | crate 依赖图、分层规则、事件总线的范围 | [architecture.md](architecture.md) |
-| 构建期的 rustls 约束与约定 | [../AGENTS.md](../AGENTS.md) |
+| 构建期的 rustls 约束与约定 | [../AGENTS.md](../../AGENTS.md) |

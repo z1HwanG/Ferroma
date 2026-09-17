@@ -400,9 +400,11 @@ Three properties that hold by construction:
 1. **The cursor is `change_log.seq`.** `ChangeLogRepository::changes_since(user_id,
    after, limit)` selects `seq > after` ascending, so passing the last applied
    `seq` never repeats an entry. The client treats it as opaque.
-2. **Deletions are append-only tombstones.** `change_log.message_id` is
-   deliberately *not* a foreign key, so a `message_deleted` row outlives the
-   `messages` row it describes. See the comment in `migrations/0001_initial.sql`.
+2. **Deletions are append-only tombstones.** `change_log.message_id` and
+   `change_log.folder_id` are deliberately *not* foreign keys, so a `message_deleted`
+   or `folder_deleted` row outlives the row it describes. See the comments in
+   `migrations/0001_initial.sql` and
+   `migrations/0003_change_log_folder_tombstones.sql`.
 3. **Replay is idempotent.** `OperationsRepository::begin` is a single
    `INSERT … ON CONFLICT DO NOTHING RETURNING *`; of two concurrent retries of the
    same `operation_id` exactly one gets `OperationOutcome::Fresh`.
