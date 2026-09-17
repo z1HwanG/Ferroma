@@ -109,6 +109,8 @@ services:
       CONFIG_DIR: /etc/ferroma
       RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
       BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      # A backup must fail loudly rather than sit in a dropped-packet connect.
+      PGCONNECT_TIMEOUT: '10'
     volumes:
       - ./scripts/backup.sh:/usr/local/bin/backup.sh:ro
       # The mail store is mounted read-only: the backup never writes to it.
@@ -136,6 +138,7 @@ services:
       PGDATABASE: ${POSTGRES_DB:-ferroma}
       MAIL_DIR: /mail
       CONFIG_DIR: /etc/ferroma
+      PGCONNECT_TIMEOUT: '10'
     volumes:
       - ./scripts/restore.sh:/usr/local/bin/restore.sh:ro
       - ferroma-data:/mail

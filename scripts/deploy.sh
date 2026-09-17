@@ -190,6 +190,23 @@ docker_bridge_gateway() {
     esac
 }
 
+# Can a TCP connection be opened at all? A *filtered* port — a firewall dropping
+# packets, or a public hostname that points back at this machine where the NAT
+# refuses to hairpin — makes libpq wait for the kernel's SYN timeout of a couple
+# of minutes. That is what "it hangs at Checking PostgreSQL" looks like; this
+# answers in three seconds so the script can say something useful instead.
+port_reachable() {
+    if have timeout && have bash; then
+        timeout 3 bash -c "exec 3<>/dev/tcp/$1/$2" >/dev/null 2>&1 && return 0
+        return 1
+    fi
+    if have nc; then
+        nc -w 3 "$1" "$2" </dev/null >/dev/null 2>&1 && return 0
+        return 1
+    fi
+    return 0
+}
+
 # -----------------------------------------------------------------------------
 # Usage
 # -----------------------------------------------------------------------------
@@ -499,22 +516,32 @@ write_env() {
 # -----------------------------------------------------------------------------
 # PostgreSQL on this host
 # -----------------------------------------------------------------------------
+# This image is a *client*, not a database: it supplies `psql` for the checks
+# below, and later the backup sidecar and the one-off restore container. This
+# stack starts no PostgreSQL server of its own — yours is the only one.
 pull_pg_image() {
     if ! image_exists "$POSTGRES_IMAGE"; then
         step "Pulling $POSTGRES_IMAGE"
-        info "used as the psql client for the checks below, and by the backup sidecar"
-        docker pull "$POSTGRES_IMAGE" >/dev/null || die "cannot pull $POSTGRES_IMAGE"
+        info "a psql/pg_dump client for the checks below, and the backup sidecar image"
+        info "(it is not a database server: nothing here starts a second PostgreSQL)"
+        docker pull "$POSTGRES_IMAGE" 2>&1 | tail -n 3
+        image_exists "$POSTGRES_IMAGE" \
+            || die "cannot pull $POSTGRES_IMAGE — check the registry mirror or the network, or set POSTGRES_IMAGE in .env"
     fi
 }
 
 # Talk to the database the way Ferroma will. Any psql will do, so the postgres
 # image stands in when the host has none.
 psql_app() {
+    # `PGCONNECT_TIMEOUT` and `-w`: a filtered port must fail in seconds rather
+    # than wait for the kernel's SYN timeout, and a script must never sit at a
+    # password prompt.
     if have psql; then
-        PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" "$@" 2>&1
+        PGPASSWORD="$DB_PASSWORD" PGCONNECT_TIMEOUT=5 \
+            psql -w -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" "$@" 2>&1
     else
-        docker run --rm --network host -e PGPASSWORD="$DB_PASSWORD" "$POSTGRES_IMAGE" \
-            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" "$@" 2>&1
+        docker run --rm --network host -e PGPASSWORD="$DB_PASSWORD" -e PGCONNECT_TIMEOUT=5 "$POSTGRES_IMAGE" \
+            psql -w -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" "$@" 2>&1
     fi
 }
 
@@ -540,9 +567,15 @@ print_db_help() {
             warn "pg_hba.conf does not allow a password login from 127.0.0.1 (common on RHEL)."
             info "Add this to pg_hba.conf, then run SELECT pg_reload_conf();"
             info "  host    $DB_NAME    $DB_USER    127.0.0.1/32    scram-sha-256" ;;
-        *"could not connect"*|*"Connection refused"*|*"timeout expired"*|*"could not translate host"*)
+        *"could not connect"*|*"Connection refused"*|*"timeout expired"*|*"could not translate host"*|*"timed out"*)
             warn "nothing answered at $DB_HOST:$DB_PORT."
-            info "Check that PostgreSQL is running, and that its listen_addresses includes that address." ;;
+            if [ "$DB_HOST" != "127.0.0.1" ] && [ "$DB_HOST" != "localhost" ]; then
+                info "If PostgreSQL runs on this machine, use its loopback address instead — a"
+                info "public hostname that points back here often cannot be reached from here:"
+                info "  ./scripts/deploy.sh --db-host 127.0.0.1"
+            fi
+            info "If it is genuinely elsewhere, check that it listens on that address and that"
+            info "the firewall between here and it allows $DB_PORT." ;;
     esac
     printf '\n' >&2
     info "Run this on this host (skip whichever object already exists), then start"
@@ -570,13 +603,13 @@ run_superuser_sql() {
         su -s /bin/sh postgres -c 'psql -v ON_ERROR_STOP=1 -tA' < "$_file" >/dev/null 2>&1 && return 0
     fi
     if [ -n "$PG_SUPER_PASSWORD" ] && have psql; then
-        PGPASSWORD="$PG_SUPER_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$PG_SUPERUSER" \
+        PGPASSWORD="$PG_SUPER_PASSWORD" PGCONNECT_TIMEOUT=5 psql -w -h "$DB_HOST" -p "$DB_PORT" -U "$PG_SUPERUSER" \
             -v ON_ERROR_STOP=1 -tA < "$_file" >/dev/null 2>&1 && return 0
     fi
     if [ -n "$PG_SUPER_PASSWORD" ]; then
         docker run --rm --network host -v "$_file:/ferroma-provision.sql:ro" \
-            -e PGPASSWORD="$PG_SUPER_PASSWORD" "$POSTGRES_IMAGE" \
-            psql -h "$DB_HOST" -p "$DB_PORT" -U "$PG_SUPERUSER" \
+            -e PGPASSWORD="$PG_SUPER_PASSWORD" -e PGCONNECT_TIMEOUT=5 "$POSTGRES_IMAGE" \
+            psql -w -h "$DB_HOST" -p "$DB_PORT" -U "$PG_SUPERUSER" \
             -v ON_ERROR_STOP=1 -tAf /ferroma-provision.sql >/dev/null 2>&1 && return 0
     fi
     return 1
@@ -637,7 +670,25 @@ provision_database() {
 
 ensure_database() {
     step "Checking PostgreSQL at $DB_HOST:$DB_PORT"
+    info "as $DB_USER, database $DB_NAME"
     pull_pg_image
+
+    # Fail in seconds on a filtered port, with a diagnosis, instead of letting
+    # libpq wait out the kernel's SYN timeout and look like a hang.
+    if ! port_reachable "$DB_HOST" "$DB_PORT"; then
+        warn "no TCP connection to $DB_HOST:$DB_PORT within 3 seconds."
+        if [ "$DB_HOST" != "127.0.0.1" ] && [ "$DB_HOST" != "localhost" ]; then
+            info "If PostgreSQL is on this machine, point the script at its loopback address:"
+            info "  a public hostname that resolves back to this host frequently cannot be reached"
+            info "  from this host (hairpin NAT), and a cloud firewall may block $DB_PORT outright."
+            printf '\n' >&2
+            info "  ./scripts/deploy.sh --db-host 127.0.0.1 …   # keeps everything already in .env"
+        else
+            info "Check that PostgreSQL is running and listening on $DB_PORT:"
+            info "  ss -ltnp | grep $DB_PORT"
+        fi
+        die "no usable database — nothing was started."
+    fi
 
     if probe_db; then
         info "$DB_USER@$DB_NAME reachable"
