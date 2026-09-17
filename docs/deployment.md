@@ -310,7 +310,7 @@ fixes it rather than leaving you to guess:
 | 1. Preflight | are `docker`, the compose plugin and the compose files all present |
 | 2. Collect configuration | asks interactively: mail domain, MX hostname, admin address, database address, API port (default `127.0.0.1:18080`) |
 | 3. Write `.env` | generates a random database password and `FERROMA_JWT_SECRET`, mode 600; **it is the only configuration file** |
-| 4. Create the role and the database | prefers `sudo -u postgres` (peer auth) to run idempotent `CREATE ROLE` / `CREATE DATABASE`; if it cannot, it prints SQL you can paste and stops |
+| 4. Create the role and the database | tries, in order: `sudo -u postgres` (peer auth), the `psql` **inside a PostgreSQL container on this host** (how 1Panel and similar panels run it, through `docker exec`), and the superuser named by `--pg-password`; if none works it prints SQL you can paste — in the `docker exec` form when the database is a container |
 | 5. Build the image | a local `docker build` (10–30 minutes the first time); `docker pull` instead when `FERROMA_IMAGE` names a registry |
 | 6. Create the schema | runs `ferroma database init` in the container (which also creates the database when it is missing) |
 | 7. Install the certificate | installs the certificate into `./tls` as uid 10001 for 465/993, and checks that the SAN covers the MX hostname |

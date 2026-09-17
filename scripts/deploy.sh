@@ -207,6 +207,30 @@ port_reachable() {
     return 0
 }
 
+# Is the configured database this machine? A public hostname that resolves to one
+# of our own addresses counts: 1Panel and similar panels run PostgreSQL in a
+# container and hand out the panel's hostname.
+db_host_is_local() {
+    case "$DB_HOST" in
+        127.0.0.1|localhost|::1) return 0 ;;
+    esac
+    _addr=$(getent hosts "$DB_HOST" 2>/dev/null | awk '{print $1}' | head -n 1)
+    [ -n "$_addr" ] || return 1
+    for _ip in $(hostname -I 2>/dev/null); do
+        [ "$_ip" = "$_addr" ] && return 0
+    done
+    return 1
+}
+
+# Running containers that look like a PostgreSQL *server* — where peer/trust auth
+# already works, and where the host has no `postgres` system user to become.
+local_postgres_containers() {
+    docker ps --format '{{.Names}}\t{{.Image}}' 2>/dev/null \
+        | grep -i 'postgres' \
+        | grep -iv '^ferroma' \
+        | awk '{print $1}'
+}
+
 # -----------------------------------------------------------------------------
 # Usage
 # -----------------------------------------------------------------------------
@@ -551,14 +575,23 @@ probe_db() {
 }
 
 print_db_help() {
+    # Where would the operator have to type the SQL? A containerised PostgreSQL
+    # has no `postgres` system user on the host to `sudo -u` into.
+    _pgc=""
+    if db_host_is_local; then
+        _pgc=$(local_postgres_containers | head -n 1)
+    fi
+
     printf '\n' >&2
     warn "PostgreSQL refused the connection Ferroma needs:"
     printf '      %s\n\n' "$(printf '%s' "${DB_PROBE_OUT:-}" | head -n 3)" >&2
     case "${DB_PROBE_OUT:-}" in
         *"password authentication failed"*)
-            warn "the role exists but the password does not match .env."
-            info "Either put the real password in .env (POSTGRES_PASSWORD), or set it:"
-            info "  ALTER ROLE \"$DB_USER\" WITH PASSWORD '<the password in .env>';" ;;
+            warn "the server rejected that role and password."
+            info "Under scram-sha-256 this same message is returned whether the password"
+            info "is wrong *or* the role does not exist at all, so check which it is:"
+            info "  docker exec -i <postgres container> psql -U $PG_SUPERUSER -c '\\du'"
+            info "Then either reset the password, or create the role — see below." ;;
         *"role"*"does not exist"*)
             warn "the role does not exist and could not be created automatically." ;;
         *"database"*"does not exist"*)
@@ -581,8 +614,17 @@ print_db_help() {
     info "Run this on this host (skip whichever object already exists), then start"
     info "deploy.sh again — it reuses the password already in .env:"
     printf '\n' >&2
-    printf "    sudo -u postgres psql -c \"CREATE ROLE %s LOGIN PASSWORD '<the password in .env>';\"\n" "$DB_USER" >&2
-    printf '    sudo -u postgres createdb -O %s --encoding=UTF8 --locale=C %s\n' "$DB_USER" "$DB_NAME" >&2
+    if [ -n "${_pgc:-}" ]; then
+        # The database is a container (1Panel and friends): there is no `postgres`
+        # system user on the host, so the commands go through `docker exec`.
+        printf "    docker exec -i %s psql -U %s -c \"ALTER ROLE %s WITH PASSWORD '<the password in .env>';\"\n" \
+            "$_pgc" "$PG_SUPERUSER" "$DB_USER" >&2
+        printf '    docker exec -i %s createdb -U %s -O %s --encoding=UTF8 --locale=C %s\n' \
+            "$_pgc" "$PG_SUPERUSER" "$DB_USER" "$DB_NAME" >&2
+    else
+        printf "    sudo -u postgres psql -c \"CREATE ROLE %s LOGIN PASSWORD '<the password in .env>';\"\n" "$DB_USER" >&2
+        printf '    sudo -u postgres createdb -O %s --encoding=UTF8 --locale=C %s\n' "$DB_USER" "$DB_NAME" >&2
+    fi
     printf '\n' >&2
 }
 
@@ -601,6 +643,15 @@ run_superuser_sql() {
     fi
     if [ "$(id -u)" = 0 ]; then
         su -s /bin/sh postgres -c 'psql -v ON_ERROR_STOP=1 -tA' < "$_file" >/dev/null 2>&1 && return 0
+    fi
+    # PostgreSQL in a container on this host (1Panel and friends): its own psql
+    # has peer/trust access to its server, which is the only way in when the host
+    # has no `postgres` system user. Only when the configured database *is* this
+    # machine, so a remote database is never provisioned by accident.
+    if db_host_is_local; then
+        for _c in $(local_postgres_containers); do
+            docker exec -i "$_c" psql -U "$PG_SUPERUSER" -v ON_ERROR_STOP=1 -tA < "$_file" >/dev/null 2>&1 && return 0
+        done
     fi
     if [ -n "$PG_SUPER_PASSWORD" ] && have psql; then
         PGPASSWORD="$PG_SUPER_PASSWORD" PGCONNECT_TIMEOUT=5 psql -w -h "$DB_HOST" -p "$DB_PORT" -U "$PG_SUPERUSER" \

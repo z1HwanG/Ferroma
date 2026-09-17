@@ -294,7 +294,7 @@ git clone … && cd ferroma
 | 1. 预检 | `docker`、compose 插件、compose 文件是否齐全 |
 | 2. 收集配置 | 交互式问：邮件域、MX 主机名、管理员邮箱、数据库地址、API 端口（默认 `127.0.0.1:18080`） |
 | 3. 写 `.env` | 生成随机数据库密码与 `FERROMA_JWT_SECRET`，权限 600；**它是唯一的配置文件** |
-| 4. 建角色与库 | 优先用 `sudo -u postgres`（peer 认证）执行幂等的 `CREATE ROLE` / `CREATE DATABASE`；做不到就打印可直接粘贴的 SQL 并停下 |
+| 4. 建角色与库 | 依次尝试：`sudo -u postgres`（peer 认证）、本机 PostgreSQL **容器**里的 `psql`（1Panel 这类面板的常见形态，用 `docker exec`）、`--pg-password` 给出的超级用户；都做不到就打印可直接粘贴的 SQL（容器场景给 `docker exec` 形式）并停下 |
 | 5. 构建镜像 | 本机 `docker build`（首次 10–30 分钟）；`FERROMA_IMAGE` 指向仓库地址时改为 `docker pull` |
 | 6. 建表 | 在容器里跑 `ferroma database init`（库不存在时也会建） |
 | 7. 装证书 | 把证书以 uid 10001 装进 `./tls` 供 465/993 使用，并检查 SAN 是否覆盖 MX 主机名 |
