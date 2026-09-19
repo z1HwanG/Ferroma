@@ -381,7 +381,18 @@ export function openCompose(seed) {
     status,
   ]);
 
-  const send = el('button', { type: 'submit', class: 'btn btn-primary', text: 'Send' });
+  // The button is rendered into the dialog footer, which is a *sibling* of
+  // `<form id="compose-form">` — `modal.js` appends `.modal-body` and `.modal-foot`
+  // as separate children of the card, and the standalone layout does the same. A
+  // `type="submit"` button that is neither a descendant of the form nor associated
+  // by the `form` attribute is inert: the browser discards the click, no `submit`
+  // event fires, and the handler below never runs, so Send looked dead.
+  const send = el('button', {
+    type: 'submit',
+    form: 'compose-form',
+    class: 'btn btn-primary',
+    text: 'Send',
+  });
   const saveDraft = el('button', { type: 'button', class: 'btn', text: 'Save draft' });
   const discard = el('button', { type: 'button', class: 'btn', text: 'Discard' });
 
@@ -452,6 +463,30 @@ export function openCompose(seed) {
       extra,
     );
 
+  /**
+   * Reply/forward threading headers.
+   *
+   * A function rather than a local in one handler because both Send and Save
+   * draft need it: the draft handler referenced a binding that existed only
+   * inside the submit handler's scope, so every "Save draft" click threw
+   * `ReferenceError: extra is not defined` and reported a generic failure.
+   */
+  const threadingExtra = () => {
+    const extra = {};
+    if (!source) return extra;
+    const raw = source.raw || {};
+    const header = raw.message_id_header || raw.rfc_message_id || raw.message_id_header_value;
+    if (typeof header === 'string' && header !== '') extra.in_reply_to = header;
+    const references = Array.isArray(raw.references)
+      ? raw.references.slice()
+      : typeof raw.references === 'string' && raw.references
+        ? raw.references.split(/\s+/).filter(Boolean)
+        : [];
+    if (extra.in_reply_to) references.push(extra.in_reply_to);
+    if (references.length) extra.references = references;
+    return extra;
+  };
+
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     showStatus('');
@@ -466,19 +501,7 @@ export function openCompose(seed) {
       return;
     }
 
-    const extra = {};
-    if (source) {
-      const raw = source.raw || {};
-      const header = raw.message_id_header || raw.rfc_message_id || raw.message_id_header_value;
-      if (typeof header === 'string' && header !== '') extra.in_reply_to = header;
-      const references = Array.isArray(raw.references)
-        ? raw.references.slice()
-        : typeof raw.references === 'string' && raw.references
-          ? raw.references.split(/\s+/).filter(Boolean)
-          : [];
-      if (extra.in_reply_to) references.push(extra.in_reply_to);
-      if (references.length) extra.references = references;
-    }
+    const extra = threadingExtra();
 
     send.disabled = true;
     saveDraft.disabled = true;
@@ -526,7 +549,7 @@ export function openCompose(seed) {
     try {
       await request(`${API_BASE}/drafts`, {
         method: 'POST',
-        body: buildDraftPayload(values, extra),
+        body: buildDraftPayload(values, threadingExtra()),
         toast: false,
       });
       toastSuccess('Draft saved to the Drafts folder.');
