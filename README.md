@@ -223,6 +223,34 @@ cargo clippy --workspace  →  0 errors (2 `manual_is_multiple_of` notes with cl
 The official client ships as a tested shared core plus a CLI. The three-pane GUI
 described in specification §51 is the one piece that is not built.
 
+### Carried into 0.1.4
+
+Two things found while cutting 0.1.3. Both are real, neither was worth stalling the
+release for, and neither is fixed by a mechanical edit:
+
+* **The image cannot say which build it is.** `ferroma-core/src/version.rs` reads
+  `FERROMA_BUILD_TIMESTAMP` and `FERROMA_GIT_SHA` with `option_env!`, so they have to
+  be in the environment of the `cargo build`. The `Dockerfile` declares
+  `FERROMA_VERSION`, `FERROMA_REVISION` and `FERROMA_CREATED` and uses them *only* for
+  the OCI labels, so the compiler never sees them: `ferroma version` inside the
+  container prints `built: unknown` / `revision: unknown`, and the Admin sidebar
+  footer prints the same. `docker inspect` does have the revision, so the release is
+  identifiable from outside and not from within — which is the direction a bug report
+  arrives from. The fix is a few lines in the builder stage: re-declare the `ARG`s
+  there and set `ENV FERROMA_GIT_SHA` / `FERROMA_BUILD_TIMESTAMP` before the real
+  `cargo build`, **after** the dependency-cache layer, or every release would
+  invalidate that layer. Deferred because it needs another arm64 build under
+  emulation (~70 minutes) and 0.1.3 was already published — see the `TODO(0.1.4)`
+  comment in the `Dockerfile`.
+* **Eight documents still carry `_(planned)_` claims from before the crates existed.**
+  The count is 80, of which one is
+  `architecture.md`'s own sentence explaining the convention. Five of them
+  (`client.md`, `imap.md`, `security.md`, `smtp.md`, `sync.md`) still open with a
+  status banner calling implemented crates unimplemented; `architecture.md`'s banner
+  and product table were corrected in 0.1.3, the rest were not. Every marker is a
+  claim about behaviour that has to be checked against the code, so this is a read of
+  its own rather than a search-and-replace.
+
 The full specification lives in [`Ferroma-完整项目书.md`](Ferroma-完整项目书.md) (Chinese,
 64 sections). [`AGENTS.md`](AGENTS.md) explains the repository conventions.
 A Chinese translation of this file is at [`README_zh.md`](README_zh.md).
@@ -243,6 +271,7 @@ A Chinese translation of this file is at [`README_zh.md`](README_zh.md).
 | [`docs/security.md`](docs/security.md) | the threat model and each control, plus known gaps |
 | [`docs/deployment.md`](docs/deployment.md) | DNS, TLS, backups, upgrades, troubleshooting |
 | [`docs/client.md`](docs/client.md) | the official client's architecture and features |
+| [`CHANGELOG.md`](CHANGELOG.md) | what changed in each release, and what is queued for the next one |
 
 ---
 

@@ -78,6 +78,15 @@ FROM debian:bookworm-slim AS runtime
 # produced it — and `org.opencontainers.image.source` is what links the Docker Hub
 # repository back to the source tree. The defaults keep a plain `docker build .`
 # self-describing instead of labelling the image with empty strings.
+# TODO(0.1.4): these three reach the OCI labels below and never reach the compiler.
+# `ferroma-core/src/version.rs` reads FERROMA_BUILD_TIMESTAMP and FERROMA_GIT_SHA with
+# `option_env!` at compile time, so `ferroma version` in the image prints
+# `built: unknown` / `revision: unknown` even though the label carries the commit.
+# Re-declare the ARGs in the `builder` stage and set
+#   ENV FERROMA_GIT_SHA=$FERROMA_REVISION FERROMA_BUILD_TIMESTAMP=$FERROMA_CREATED
+# immediately BEFORE the final `cargo build` — after the dependency-cache layer, which
+# a per-release value would otherwise invalidate every time. See README "Carried into
+# 0.1.4".
 ARG FERROMA_VERSION=dev
 ARG FERROMA_REVISION=unknown
 ARG FERROMA_CREATED=unknown
