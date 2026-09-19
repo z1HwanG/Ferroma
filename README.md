@@ -215,8 +215,9 @@ run that starts the real server, delivers a message over SMTP, reads it back ove
 finds it through the API, and syncs it with the real desktop client.
 
 ```text
-cargo test --workspace    →  2376 passed, 0 failed, 0 skipped
-cargo clippy --workspace  →  0 warnings, 0 errors
+cargo test --workspace    →  2437 passed, 0 failed, 0 skipped
+cargo clippy --workspace  →  0 errors (2 `manual_is_multiple_of` notes with clippy 1.98;
+                              that lint is newer than the pinned 1.88 toolchain)
 ```
 
 The official client ships as a tested shared core plus a CLI. The three-pane GUI
@@ -284,6 +285,7 @@ crates/
 server/              the `ferroma` binary
 client/              the official desktop client
 web/, admin/         Webmail and Admin single-page apps (no build step)
+shared/              the ES modules both apps import; the server mounts it at /shared
 migrations/          PostgreSQL DDL, embedded into the binary
 config/              ferroma.toml — also embedded as the default configuration
 docs/                architecture, protocol and operations documentation

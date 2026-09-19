@@ -9,7 +9,8 @@
 
 * **配置键**：`server.hostname`、`limits.max_message_size`、`api.jwt_secret`、
   `[dns] resolvers`、`tls.cert_path` 等。保留点号与方括号。
-* **环境变量**：`DATABASE_URL`、`FERROMA_JWT_SECRET`、`FERROMA__API__WEBMAIL_DIR`。
+* **环境变量**：`DATABASE_URL`、`FERROMA_JWT_SECRET`、`FERROMA__API__WEBMAIL_DIR`、
+  `FERROMA__API__ADMIN_DIR`、`FERROMA__API__SHARED_DIR`。
 * **命令行**：`ferroma serve`、`ferroma database init`、`cargo test --workspace`。
 * **HTTP 方法与路径**：`GET /api/v1/messages/{id}`、`DELETE /api/v1/drafts/{id}`。
 * **协议关键字**：`EHLO`、`MAIL FROM`、`RCPT TO`、`DATA`、`IDLE`、`APPEND`、`FETCH`。

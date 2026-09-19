@@ -11,14 +11,12 @@ of repositories. This document describes the products, the crate graph, the
 layering rule and what happens to a message from the moment a remote MX opens a
 TCP connection to the moment a client's socket receives a `mail.received` frame.
 
-> **Status:** architectural description of the repository as it stands. The
-> `ferroma-core`, `ferroma-mail`, `ferroma-storage`, `ferroma-auth` and
-> `ferroma-events` crates are implemented. `ferroma-smtp`, `ferroma-imap`,
-> `ferroma-sync`, `ferroma-api`, `server` and `client` are crate skeletons with a
-> documented interface and no implementation yet; every statement about their
-> internals below is marked _(planned)_ and is a design specification, not an
-> observation. The HTTP and FCP wire contracts are frozen separately in
-> [api.md](api.md) and [fcp.md](fcp.md) — this document never restates them.
+> **Status:** architectural description of the repository as it stands. Every crate
+> named below is implemented and exercised by `cargo test --workspace`. A statement
+> that describes behaviour the specification calls for but this build does not have
+> is marked _(planned)_ and is a design note, not an observation. The HTTP and FCP
+> wire contracts are frozen separately in [api.md](api.md) and [fcp.md](fcp.md) —
+> this document never restates them.
 
 ---
 
@@ -26,14 +24,17 @@ TCP connection to the moment a client's socket receives a `mail.received` frame.
 
 | Product | Where it lives | What it is | Status |
 |---|---|---|---|
-| **Ferroma Server** | `server/` (binary `ferroma`), `crates/*` | The daemon: SMTP, IMAP, HTTP API, queue workers, sync service, event bus | binary is a stub; libraries partially implemented |
-| **Ferroma Webmail** | `web/` | Browser mail client, a static SPA served by the API | SPA sources present; not served yet _(planned)_ |
-| **Ferroma Admin** | `admin/` | Domain/user/queue/DNS/storage administration SPA | SPA sources present; not served yet _(planned)_ |
-| **Ferroma Client** | `client/` (binary `ferroma-client`) | Official desktop client (Windows, Linux, macOS), shared core + UI shell | skeleton |
+| **Ferroma Server** | `server/` (binary `ferroma`), `crates/*` | The daemon: SMTP, IMAP, HTTP API, queue workers, sync service, event bus | implemented; `ferroma serve` binds every listener |
+| **Ferroma Webmail** | `web/`, `shared/` | Browser mail client, a static SPA served by the API | served at `/` by `api.serve_frontend`; English and Simplified Chinese |
+| **Ferroma Admin** | `admin/`, `shared/` | Domain/user/queue/DNS/storage administration SPA | served at `/admin/`, behind `is_admin`; English and Simplified Chinese |
+| **Ferroma Client** | `client/` (binary `ferroma-client`) | Official desktop client (Windows, Linux, macOS), shared core + UI shell | core implemented and tested, driven by a CLI; the three-pane GUI (§51) is not built |
 
 Webmail and Admin are not separate processes. They are static assets served by
 `ferroma-api` under the same origin as `/api/v1`, gated by `api.serve_frontend`
-and by `is_admin` for the Admin routes. Both consume the **Management API**; the
+and by `is_admin` for the Admin routes. The ES modules the two apps share live in
+`shared/` and are mounted at `/shared`, so `../shared/api.js` resolves to the same
+URL from `/main.js` and from `/admin/main.js`; `api.shared_dir` names the directory.
+Both consume the **Management API**; the
 official client consumes the **Client API (FCP)** and nothing else.
 
 Webmail and the official client deliberately share four subsystems — mail core,
@@ -113,7 +114,7 @@ Two consequences worth knowing before you touch a manifest:
 2. **`client` shares `ferroma-core` and nothing else.** Cargo would happily let
    the client link `ferroma-storage`, but the desktop client must not drag a
    PostgreSQL pool or a Maildir into a shipped binary; its own SQLite cache lives
-   in `client/src/database/` _(planned)_.
+   in `client/src/database.rs`.
 
 ---
 
@@ -161,8 +162,8 @@ Where the boundary is enforced today:
 ## 4. Request lifecycle — an inbound SMTP message
 
 The path a message takes from a stranger's MX to a stored row and a `new/` file.
-Steps marked _(planned)_ describe `ferroma-smtp` and `ferroma-api` as specified;
-the storage and event steps are implemented.
+Every step below is implemented; the SMTP and API stages are `ferroma-smtp` and
+`ferroma-api`.
 
 ```text
  remote MX ──TCP:25──► ferroma-smtp listener

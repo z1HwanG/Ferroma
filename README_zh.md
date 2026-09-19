@@ -171,8 +171,9 @@ ferroma config check --dns-domain example.com
 上表最后一行以上的全部内容，都由下面的测试体系验证，其中包括一项验收测试：启动真实服务器、通过 SMTP 投递一封信、用 IMAP 读回来、再通过 API 找到它，并用真实的桌面客户端完成同步。
 
 ```text
-cargo test --workspace    →  2376 通过，0 失败，0 跳过
-cargo clippy --workspace  →  0 告警，0 错误
+cargo test --workspace    →  2437 通过，0 失败，0 跳过
+cargo clippy --workspace  →  0 错误（clippy 1.98 下多 2 条 `manual_is_multiple_of`；
+                              该 lint 比钉住的 1.88 工具链更新）
 ```
 
 官方客户端目前交付的是「经过测试的共享核心 + 命令行」。项目书 §51 描述的三栏式图形界面，是唯一尚未构建的部分。
@@ -234,6 +235,7 @@ crates/
 server/              `ferroma` 二进制
 client/              官方桌面客户端
 web/, admin/         Webmail 与 Admin 单页应用（无构建步骤）
+shared/              两个前端共用的 ES 模块，服务端挂在 /shared
 migrations/          PostgreSQL DDL，编译期嵌入二进制
 config/              ferroma.toml —— 同时作为内嵌默认配置
 docs/                架构、协议与运维文档
