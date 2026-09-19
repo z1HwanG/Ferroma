@@ -94,6 +94,8 @@ views.setup = async () => (await import('./views/setup.js')).render;
 
 function start() {
   renderNavigation();
+  initNav();
+  watchNavBreakpoint();
   wireChrome();
 
   setUnauthorizedHandler(() => {
@@ -213,6 +215,29 @@ function updateNavCurrent(section) {
 function closeNav() {
   byId('app-view').dataset.nav = 'closed';
   byId('nav-toggle').setAttribute('aria-expanded', 'false');
+}
+
+/** The width at which the sidebar stops being docked and becomes a drawer. */
+const NARROW = '(max-width: 860px)';
+
+/**
+ * Put the navigation into the state the current layout is actually in.
+ *
+ * `data-nav` means two different things on purpose: below 860px it opens the
+ * overlapping drawer, above it the sidebar is docked and the same attribute only
+ * collapses it. Without this, the attribute starts unset, the toggle's first click
+ * merely asserts the state the layout is already in, and the button looks dead —
+ * which is exactly how it behaved on every desktop-width window.
+ */
+function initNav() {
+  const narrow = window.matchMedia(NARROW).matches;
+  byId('app-view').dataset.nav = narrow ? 'closed' : 'open';
+  byId('nav-toggle').setAttribute('aria-expanded', narrow ? 'false' : 'true');
+}
+
+/** Re-assert the default when the window crosses the breakpoint. */
+function watchNavBreakpoint() {
+  window.matchMedia(NARROW).addEventListener('change', initNav);
 }
 
 function renderAccountMenu() {

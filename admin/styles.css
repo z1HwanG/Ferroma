@@ -1126,6 +1126,20 @@ textarea.input {
 
 /* -------------------------------------------------------------- responsive */
 
+/* `data-nav` drives two different layouts. Above 860px the sidebar is docked, and
+   the toggle collapses it to give the content the full width — which is what an
+   operator expects from that button, and what the wide tables want. Below 860px
+   the same attribute opens the overlapping drawer, below. */
+@media (min-width: 861px) {
+  .app[data-nav="closed"] .sidebar {
+    display: none;
+  }
+
+  .app[data-nav="closed"] .layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 @media (max-width: 860px) {
   .layout {
     grid-template-columns: minmax(0, 1fr);
