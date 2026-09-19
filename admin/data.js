@@ -380,6 +380,11 @@ export function normalizeDomain(value) {
     enabled: bool(pick(source, ['enabled', 'active'], true)),
     catchAll: pick(source, ['catch_all'], null),
     createdAt: pick(source, ['created_at', 'created'], null),
+    updatedAt: pick(source, ['updated_at', 'changed_at'], null),
+    // `GET /domains` sends this and `POST`/`PATCH` do not, so it is nullable by design:
+    // a freshly created domain genuinely has no count yet. It decides whether a delete
+    // is refused with a 409, so the domains view needs it.
+    mailboxCount: pick(source, ['mailbox_count'], null),
     raw: source,
   };
 }
@@ -398,6 +403,7 @@ export function normalizeAlias(value) {
     target: String(pick(source, ['target', 'destination', 'forward_to'], '')),
     domainId: num(pick(source, ['domain_id'], 0), 0),
     enabled: bool(pick(source, ['enabled', 'active'], true)),
+    createdAt: pick(source, ['created_at', 'created'], null),
     raw: source,
   };
 }
