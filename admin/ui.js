@@ -124,7 +124,12 @@ export function table(options) {
   const head = el('tr', {}, options.columns.map((column) => el('th', { scope: 'col', text: column.label })));
   const body = el('tbody');
   for (const cells of options.rows) {
-    body.append(el('tr', {}, cells));
+    // The `td` is not optional. A `<tr>` whose children are the `<span>`/`<div>` a view
+    // builds is not a table row: those boxes are laid out outside the column model, so
+    // no column sizing, no alignment and — the first thing to disappear — no padding.
+    // Every table in this console rendered its body that way, which is why body rows did
+    // not line up with their own headers.
+    body.append(el('tr', {}, cells.map((node) => el('td', {}, [node]))));
   }
   return el('div', { class: 'table-wrap' }, [
     el('table', { class: 'table' }, [
