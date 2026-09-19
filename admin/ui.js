@@ -533,8 +533,20 @@ export function openDrawer(options) {
     }
   }
 
+  /**
+   * A route change takes the panel with it.
+   *
+   * The drawer is appended to `<body>`, so the router replacing `#view-root` does not
+   * remove it: without this, opening a queue entry and then clicking another section
+   * left the old entry's panel hanging over the new one.
+   */
+  function onRouteChange() {
+    close();
+  }
+
   function close() {
     document.removeEventListener('keydown', onKey);
+    window.removeEventListener('hashchange', onRouteChange);
     host.remove();
     if (previous && previous.isConnected) previous.focus();
     if (options.onClose) options.onClose();
@@ -543,6 +555,7 @@ export function openDrawer(options) {
   closeButton.addEventListener('click', close);
   host.querySelector('.drawer-scrim').addEventListener('click', close);
   document.addEventListener('keydown', onKey);
+  window.addEventListener('hashchange', onRouteChange);
   panel.focus({ preventScroll: true });
 
   return { close, node: panel };
