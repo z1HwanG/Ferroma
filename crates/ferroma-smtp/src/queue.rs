@@ -34,8 +34,9 @@
 //! and returns. A test can therefore prove that an in-flight delivery completed
 //! before `run` returned.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
@@ -51,6 +52,7 @@ use tokio::sync::watch;
 
 use crate::client::{DeliveryOutcome, SmtpClient, SmtpClientConfig};
 use crate::delivery::{DeliveryService, INBOX};
+use crate::dkim::{DkimKey, DkimSigner};
 use crate::mx::{MxHost, MxResolver};
 
 /// The queue settings the worker needs, as a plain view.
@@ -79,6 +81,11 @@ pub struct QueueConfigView {
     pub hostname: String,
     /// Where outbound mail goes instead of straight to the recipient's MX.
     pub relay: Option<RelayConfig>,
+    /// The `[dkim]` block, which decides whether an outgoing message is signed.
+    ///
+    /// Carried here so the worker needs no extra constructor argument, and so the
+    /// signing rules stay next to the delivery path that applies them.
+    pub dkim: ferroma_core::config::DkimConfig,
 }
 
 /// A relay every (or some) outbound message is handed to.
@@ -134,6 +141,7 @@ impl QueueConfigView {
             mailer_daemon: format!("MAILER-DAEMON@{}", config.server.hostname),
             hostname: config.server.hostname.clone(),
             relay: RelayConfig::from_config(config),
+            dkim: config.dkim.clone(),
         }
     }
 
@@ -171,6 +179,12 @@ pub struct QueueWorker {
     /// How many attempts this worker has made, for `/health` and for tests.
     delivered: Arc<AtomicU64>,
     failed: Arc<AtomicU64>,
+    /// Parsed outbound signer per sender domain, built on first use.
+    ///
+    /// `None` is a cached "this domain has no usable key", so a misconfiguration is
+    /// reported once per domain instead of on every delivery attempt. Deriving an RSA
+    /// key from PEM is not free and a queue worker sends many messages per domain.
+    signers: Mutex<HashMap<String, Option<DkimSigner>>>,
 }
 
 impl std::fmt::Debug for QueueWorker {
@@ -204,6 +218,7 @@ impl QueueWorker {
             stop: Arc::new(AtomicBool::new(false)),
             delivered: Arc::new(AtomicU64::new(0)),
             failed: Arc::new(AtomicU64::new(0)),
+            signers: Mutex::new(HashMap::new()),
         }
     }
 
@@ -458,6 +473,11 @@ impl QueueWorker {
             return self.deliver_locally(entry, &recipient, &body).await;
         }
 
+        // Past that branch the message leaves this server, which is where an outbound
+        // signature belongs: a mailbox we host has no use for one, and a signature is
+        // only meaningful to the remote MTA that receives the message.
+        let body = self.signed_body(&entry.sender, body).await;
+
         // Where the message goes: the recipient's MX, or the relay when one is
         // configured and this sender belongs on it. A relay skips MX resolution
         // entirely — that is the whole point of it, since a host with no reverse
@@ -523,6 +543,135 @@ impl QueueWorker {
         last.unwrap_or_else(|| {
             DeliveryOutcome::transport_failure("no mail exchanger answered", None)
         })
+    }
+
+    /// Borrow the signer cache, recovering from a poisoned lock.
+    ///
+    /// The cache is a pure optimisation, so a panic elsewhere must not stop this worker
+    /// from delivering mail.
+    fn signers(&self) -> std::sync::MutexGuard<'_, HashMap<String, Option<DkimSigner>>> {
+        self.signers.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Sign an outgoing message for its sender's domain, when signing is configured.
+    ///
+    /// **Best-effort by design.** A key that cannot be read or parsed is logged and the
+    /// message is sent unsigned, because the queue exists to get mail delivered and
+    /// refusing to send would lose it outright. The consequence is that a missing or
+    /// broken key is visible only in the log — `WARN` with the domain, once per domain
+    /// per process, not once per message. `ferroma doctor` and the Admin TLS/DKIM panel
+    /// are where an operator should be able to see it before mail goes out unsigned;
+    /// neither checks outbound signing yet.
+    ///
+    /// The signature's `d=` is the *sender's* domain, so that is what selects the key
+    /// and what the operator's single-domain filter is matched against.
+    async fn signed_body(&self, sender: &str, body: Vec<u8>) -> Vec<u8> {
+        if !self.config.dkim.enabled {
+            return body;
+        }
+        let Ok(address) = EmailAddress::parse(sender.trim()) else {
+            return body;
+        };
+        let domain = address.domain().to_ascii_lowercase();
+        if !signing_requested(&self.config.dkim, &domain) {
+            return body;
+        }
+
+        // Fast path: the signer for this domain has already been built. The lock is held
+        // across the signature because RSA signing is CPU-bound and brief, and it never
+        // awaits.
+        {
+            let cache = self.signers();
+            if let Some(entry) = cache.get(&domain) {
+                return match entry {
+                    Some(signer) => signer.sign_message(&body).unwrap_or_else(|e| {
+                        tracing::warn!(domain = %domain, error = %e, "DKIM signing failed; sending unsigned");
+                        body
+                    }),
+                    None => body,
+                };
+            }
+        }
+
+        let fallback_selector = self.config.dkim.selector.clone();
+        let Some((pem, selector)) = self.signing_key(&domain, &fallback_selector).await else {
+            tracing::warn!(
+                domain = %domain,
+                "DKIM signing is enabled, but no private key is available for this sender \
+                 domain, so outbound mail from it will leave unsigned"
+            );
+            self.cache_signer(&domain, None);
+            return body;
+        };
+
+        let built = DkimKey::from_pem(&pem).and_then(|key| {
+            DkimSigner::from_key(
+                key.with_domain(domain.clone()).with_selector(selector),
+                &self.config.dkim,
+            )
+        });
+        let signer = match built {
+            Ok(signer) => signer,
+            Err(e) => {
+                tracing::warn!(domain = %domain, error = %e, "the DKIM key could not be used; sending unsigned");
+                self.cache_signer(&domain, None);
+                return body;
+            }
+        };
+
+        let signed = signer.sign_message(&body);
+        self.cache_signer(&domain, Some(signer));
+        match signed {
+            Ok(signed) => signed,
+            Err(e) => {
+                tracing::warn!(domain = %domain, error = %e, "DKIM signing failed; sending unsigned");
+                body
+            }
+        }
+    }
+
+    /// The PEM and selector to sign `domain` with.
+    ///
+    /// The per-domain key the Admin panel manages wins; `[dkim] private_key_path` is the
+    /// fallback for a deployment that keeps one key in a file. A domain this server does
+    /// not host yields `None`: signing as a domain we do not own produces a signature
+    /// that cannot verify, which is worse than no signature at all.
+    async fn signing_key(&self, domain: &str, fallback_selector: &str) -> Option<(String, String)> {
+        match self.repos.domains.find_by_name(domain).await {
+            Ok(Some(row)) => {
+                let selector = row
+                    .dkim_selector
+                    .clone()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| fallback_selector.to_string());
+                match row.dkim_private_key.filter(|key| !key.trim().is_empty()) {
+                    Some(pem) => Some((pem, selector)),
+                    None => self.key_from_file(fallback_selector),
+                }
+            }
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(domain = %domain, error = %e, "could not read this domain's DKIM settings");
+                None
+            }
+        }
+    }
+
+    /// Read `[dkim] private_key_path`, when one is configured and readable.
+    fn key_from_file(&self, selector: &str) -> Option<(String, String)> {
+        let path = self.config.dkim.private_key_path.as_ref()?;
+        match std::fs::read_to_string(path) {
+            Ok(pem) => Some((pem, selector.to_string())),
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "the DKIM private key file could not be read");
+                None
+            }
+        }
+    }
+
+    /// Remember the signer built for `domain`, including the negative result.
+    fn cache_signer(&self, domain: &str, signer: Option<DkimSigner>) {
+        self.signers().insert(domain.to_string(), signer);
     }
 
     /// Deliver to a mailbox this server hosts.
@@ -748,6 +897,21 @@ pub fn next_attempt_at(config: &QueueConfigView, attempts: i32, now: DateTime<Ut
     now + config.backoff_for_attempt(attempts)
 }
 
+/// Whether `[dkim]` asks for a signature over mail from `domain`.
+///
+/// `enabled` alone signs every local domain; `domain` narrows it to one. Both sides
+/// come from configuration and from a parsed address, so the comparison ignores case
+/// and surrounding whitespace — `Example.COM` and `example.com` are one domain.
+fn signing_requested(config: &ferroma_core::config::DkimConfig, domain: &str) -> bool {
+    if !config.enabled {
+        return false;
+    }
+    match config.domain.as_deref().map(str::trim).filter(|only| !only.is_empty()) {
+        Some(only) => only.eq_ignore_ascii_case(domain.trim()),
+        None => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -762,6 +926,7 @@ mod tests {
             mailer_daemon: "MAILER-DAEMON@mx.example.com".to_string(),
             hostname: "mx.example.com".to_string(),
             relay: None,
+            dkim: ferroma_core::config::DkimConfig::default(),
         }
     }
 
@@ -919,5 +1084,104 @@ mod tests {
         let clone = handle.clone();
         clone.shutdown();
         assert!(handle.is_stopping());
+    }
+}
+
+/// Outbound signing: the policy table, and a sign → verify round trip over exactly the
+/// signer the delivery path builds.
+///
+/// The signer itself is covered in `dkim.rs`; what these pin is the *wiring* — that
+/// enabling the switch signs, that the single-domain filter narrows it, and that the
+/// signer the queue constructs signs as the sender's own domain and selector.
+#[cfg(test)]
+mod signing_tests {
+    use super::*;
+    use crate::dkim::{DkimResult, DkimVerifier};
+    use crate::mx::{MockResolver, Resolver};
+    use ferroma_core::config::DkimConfig;
+
+    const DOMAIN: &str = "z1hwang.cn";
+    const SELECTOR: &str = "default";
+
+    /// Carries every header `DkimConfig::default()` names that a verifier needs.
+    const MESSAGE: &[u8] = b"From: Alice <alice@z1hwang.cn>\r\n\
+To: Bob <bob@example.net>\r\n\
+Subject: signed\r\n\
+Message-ID: <1@z1hwang.cn>\r\n\
+Date: Tue, 16 Sep 2026 12:00:00 +0000\r\n\
+\r\n\
+body\r\n";
+
+    fn config(enabled: bool, domain: Option<&str>) -> DkimConfig {
+        DkimConfig {
+            enabled,
+            selector: SELECTOR.to_string(),
+            domain: domain.map(str::to_string),
+            ..DkimConfig::default()
+        }
+    }
+
+    /// A key generated the way `ferroma dkim generate` generates one.
+    fn generated_pem() -> String {
+        use rsa::pkcs8::{EncodePrivateKey, LineEnding};
+        let mut rng = rand::thread_rng();
+        let key = rsa::RsaPrivateKey::new(&mut rng, 2048).expect("an RSA key");
+        key.to_pkcs8_pem(LineEnding::LF)
+            .expect("PKCS#8 encoding")
+            .to_string()
+    }
+
+    #[test]
+    fn nothing_is_signed_while_signing_is_switched_off() {
+        assert!(!signing_requested(&config(false, None), DOMAIN));
+        assert!(!signing_requested(&config(false, Some(DOMAIN)), DOMAIN));
+    }
+
+    #[test]
+    fn enabling_signing_covers_every_local_domain() {
+        assert!(signing_requested(&config(true, None), DOMAIN));
+        assert!(signing_requested(&config(true, None), "example.net"));
+    }
+
+    #[test]
+    fn a_single_domain_filter_narrows_signing_and_ignores_case() {
+        assert!(signing_requested(&config(true, Some(DOMAIN)), DOMAIN));
+        assert!(signing_requested(&config(true, Some(" Z1Hwang.CN ")), DOMAIN));
+        assert!(!signing_requested(&config(true, Some("example.net")), DOMAIN));
+        // A blank filter is not a filter: treating it as one would match nothing and
+        // silently stop all signing, which is the failure this whole change is about.
+        assert!(signing_requested(&config(true, Some("   ")), DOMAIN));
+    }
+
+    /// This is the assertion that fails if the delivery path stops signing, signs as the
+    /// wrong domain, or uses the wrong selector.
+    #[tokio::test]
+    async fn the_signer_the_queue_builds_produces_a_verifiable_signature() {
+        let parsed = DkimKey::from_pem(&generated_pem()).expect("the generated key parses");
+        let published = parsed.dns_record(SELECTOR);
+        let signer = DkimSigner::from_key(
+            parsed.with_domain(DOMAIN).with_selector(SELECTOR),
+            &config(true, None),
+        )
+        .expect("a signer");
+
+        let signed = signer.sign_message(MESSAGE).expect("signs");
+
+        // RFC 6376 §3.7: the signature is prepended and the message is untouched.
+        assert!(signed.ends_with(MESSAGE), "the message itself must survive");
+        let text = String::from_utf8_lossy(&signed);
+        assert!(text.starts_with("DKIM-Signature:"), "{text}");
+        assert!(text.contains("d=z1hwang.cn"), "{text}");
+        assert!(text.contains("s=default"), "{text}");
+        assert!(text.contains("bh="), "{text}");
+
+        let resolver: Arc<dyn Resolver> = Arc::new(
+            MockResolver::new()
+                .with_txt(&format!("{SELECTOR}._domainkey.{DOMAIN}"), vec![published]),
+        );
+        let verdict = DkimVerifier::new(resolver).verify(&signed).await;
+        assert_eq!(verdict.result, DkimResult::Pass, "{verdict:?}");
+        assert_eq!(verdict.domain.as_deref(), Some(DOMAIN));
+        assert_eq!(verdict.selector.as_deref(), Some(SELECTOR));
     }
 }

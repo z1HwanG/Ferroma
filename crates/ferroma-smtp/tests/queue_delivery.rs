@@ -175,6 +175,9 @@ fn fast_config() -> QueueConfigView {
         // covered by `relay_deliveries_go_to_the_relay` in
         // `crates/ferroma-smtp/src/queue.rs`.
         relay: None,
+        // Signing is exercised by the `signing_tests` unit module in `queue.rs`;
+        // these cases are about delivery outcomes, so it stays off.
+        dkim: ferroma_core::config::DkimConfig::default(),
     }
 }
 
