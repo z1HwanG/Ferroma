@@ -6,12 +6,24 @@
 
 import { API_BASE, ApiError, query, request } from '../api.js';
 import { domainsOf, mailboxesOf, totalOf, usersOf } from '../data.js';
-import { el, setHidden, setText } from '../dom.js';
+import { clear, el, setHidden, setText } from '../dom.js';
 import { formatBytes, formatLogStamp } from '../format.js';
-import { openModal, promptDialog } from '../modal.js';
+import { confirmDialog, openModal, promptDialog } from '../modal.js';
 import { go } from '../router.js';
 import { toastError, toastSuccess } from '../toast.js';
-import { actions, adminCard, badge, cell, field, pager, table, viewHead } from '../ui.js';
+import {
+  actions,
+  adminCard,
+  badge,
+  cell,
+  dataTable,
+  definitionList,
+  field,
+  filterBar,
+  openDrawer,
+  pager,
+  viewHead,
+} from '../ui.js';
 
 const PAGE_SIZE = 50;
 
@@ -27,7 +39,7 @@ export async function render(params) {
 
   const card = adminCard({
     title: 'Accounts',
-    subtitle: 'GET /api/v1/users',
+    subtitle: 'Sort by a column heading; select rows to act on several at once.',
     renderEmpty: () =>
       el('div', { class: 'empty-state' }, [
         el('p', { class: 'empty-title', text: state.query ? 'No matching users' : 'No users yet' }),
@@ -49,28 +61,34 @@ export async function render(params) {
   });
   search.value = state.query;
 
-  const searchForm = el('form', { class: 'inline-form', id: 'users-search' }, [
-    field('Search', search),
-    el('button', { type: 'submit', class: 'btn', text: 'Search' }),
-  ]);
-  searchForm.addEventListener('submit', (event) => {
-    event.preventDefault();
-    go('users', { query: search.value.trim(), offset: 0 });
-  });
-
   const createButton = el('button', { type: 'button', class: 'btn btn-primary', text: 'New user' });
   createButton.addEventListener('click', () => openUserDialog({}, () => refresh()));
 
   const refreshButton = el('button', { type: 'button', class: 'btn', text: 'Refresh' });
   refreshButton.addEventListener('click', () => refresh());
 
+  const bar = filterBar({
+    id: 'users-search',
+    fields: [
+      field('Search', search, 'Substring of the address or the display name.'),
+      el('button', { type: 'submit', class: 'btn', text: 'Search' }),
+    ],
+  });
+  // `submit` bubbles, so the listener belongs on the bar rather than on the <form>
+  // that `filterBar` builds internally.
+  bar.addEventListener('submit', (event) => {
+    event.preventDefault();
+    go('users', { query: search.value.trim(), offset: 0 });
+  });
+
   const root = el('div', {}, [
     viewHead('Users', 'Every account hosted by this server', [createButton, refreshButton]),
-    el('section', { class: 'card' }, [searchForm]),
+    bar,
     card.node,
   ]);
 
   const handlers = {
+    onDetails: (user) => openUserDrawer(user, handlers),
     onCreateAddress: (user) => openAddressDialog(user, () => refresh()),
     onEdit: (user) => openUserDialog({ user }, () => refresh()),
     onToggle: async (user) => {
@@ -118,6 +136,8 @@ export async function render(params) {
         toastError(messageOf(error, 'The account could not be deleted.'));
       }
     },
+    onBulkEnabled: (ids, enabled) => setEnabled(ids, enabled, () => refresh()),
+    onBulkDelete: (ids) => deleteUsers(ids, () => refresh()),
     onPage: (offset) => go('users', { query: state.query, offset }),
   };
 
@@ -146,49 +166,97 @@ export async function render(params) {
   return { node: root, cleanup() {} };
 }
 
+/* --------------------------------------------------------------- bulk actions */
+
+/** Enable or disable several accounts, reporting only what failed. */
+async function setEnabled(ids, enabled, refresh) {
+  const results = await Promise.allSettled(
+    ids.map((id) =>
+      request(`${API_BASE}/users/${id}`, { method: 'PATCH', body: { enabled }, toast: false }),
+    ),
+  );
+  const failed = results.filter((result) => result.status === 'rejected').length;
+  if (failed > 0) toastError(`${failed} of ${ids.length} account(s) could not be updated.`);
+  else toastSuccess(`${ids.length} account(s) ${enabled ? 'enabled' : 'disabled'}.`);
+  refresh();
+}
+
+/**
+ * Delete several accounts behind one confirmation.
+ *
+ * `confirmDialog` rather than the typed-address `promptDialog` the single-account path
+ * uses: typing fifty addresses is not a confirmation, it is a deterrent, and a bulk
+ * action that cannot be completed is worse than one that asks once.
+ */
+async function deleteUsers(ids, refresh) {
+  const confirmed = await confirmDialog({
+    title: `Delete ${ids.length} account(s)?`,
+    message: 'This cascades: addresses, folders, messages and queue rows go with them.',
+    confirmLabel: 'Delete',
+  });
+  if (!confirmed) return;
+  const results = await Promise.allSettled(
+    ids.map((id) => request(`${API_BASE}/users/${id}`, { method: 'DELETE', toast: false })),
+  );
+  const failed = results.filter((result) => result.status === 'rejected').length;
+  if (failed > 0) toastError(`${failed} of ${ids.length} account(s) could not be deleted.`);
+  else toastSuccess(`${ids.length} account(s) deleted.`);
+  refresh();
+}
+
 /* ------------------------------------------------------------------ rendering */
 
 function renderTable(users, handlers, total, offset) {
-  const rows = users.map((user) => {
-    const addressCount = user.mailboxes.length;
-    return [
+  const rows = users.map((user) => ({
+    key: user.id,
+    user,
+    cells: [
       el('div', {}, [
         el('div', { class: 'truncate', title: user.email, text: user.email }),
         el('div', {
           class: 'view-sub',
-          text: `${user.displayName || 'no display name'} · ${addressCount} address${addressCount === 1 ? '' : 'es'}`,
+          text: `${user.displayName || 'no display name'} · ${addressLabel(user)}`,
         }),
       ]),
       badge(user.enabled ? 'enabled' : 'disabled'),
       badge(user.isAdmin ? 'admin' : 'user'),
-      cell(
-        user.quotaBytes > 0
-          ? `${formatBytes(user.usedBytes)} of ${formatBytes(user.quotaBytes)}`
-          : `${formatBytes(user.usedBytes)} used`,
-      ),
-      cell(user.createdAt ? formatLogStamp(user.createdAt) : '—'),
+      cell(storageLabel(user)),
+      cell(user.createdAt ? formatLogStamp(user.createdAt) : '—', 'cell-mono'),
       actions(
-        button('Addresses', () => handlers.onCreateAddress(user)),
+        button('Details', () => handlers.onDetails(user)),
         button('Edit', () => handlers.onEdit(user)),
         button('Password', () => handlers.onPassword(user)),
         button(user.enabled ? 'Disable' : 'Enable', () => handlers.onToggle(user)),
         button('Delete', () => handlers.onDelete(user), 'btn-danger'),
       ),
-    ];
+    ],
+  }));
+
+  const grid = dataTable({
+    columns: [
+      { key: 'account', label: 'Account', value: (row) => row.user.email },
+      { key: 'state', label: 'State', value: (row) => (row.user.enabled ? 1 : 0) },
+      { key: 'role', label: 'Role', value: (row) => (row.user.isAdmin ? 1 : 0) },
+      { key: 'storage', label: 'Storage', value: (row) => row.user.usedBytes },
+      {
+        key: 'created',
+        label: 'Created',
+        value: (row) => (row.user.createdAt ? Date.parse(row.user.createdAt) : 0),
+      },
+      { key: 'actions', label: 'Actions', sortable: false },
+    ],
+    rows,
+    selectable: true,
+    bulkActions: [
+      { label: 'Enable', onClick: (ids) => handlers.onBulkEnabled(ids, true) },
+      { label: 'Disable', onClick: (ids) => handlers.onBulkEnabled(ids, false) },
+      { label: 'Delete', tone: 'danger', onClick: (ids) => handlers.onBulkDelete(ids) },
+    ],
+    emptyMessage: 'No accounts on this page.',
   });
 
   return el('div', {}, [
-    table({
-      columns: [
-        { label: 'Account' },
-        { label: 'State' },
-        { label: 'Role' },
-        { label: 'Storage' },
-        { label: 'Created' },
-        { label: 'Actions' },
-      ],
-      rows,
-    }),
+    grid.node,
     pager({
       offset,
       limit: PAGE_SIZE,
@@ -197,6 +265,98 @@ function renderTable(users, handlers, total, offset) {
       onNext: () => handlers.onPage(offset + PAGE_SIZE),
     }),
   ]);
+}
+
+/**
+ * How many addresses an account holds, or a plain statement when the response did not
+ * say.
+ *
+ * `GET /users` carries no address list — only `GET /auth/me` and
+ * `GET /users/:id/mailboxes` do — so a list row that printed "0 addresses" was
+ * asserting something it had never been told. The drawer fetches the real list.
+ */
+function addressLabel(user) {
+  if (!user.mailboxesKnown) return 'addresses not listed here';
+  const count = user.mailboxes.length;
+  return `${count} address${count === 1 ? '' : 'es'}`;
+}
+
+function storageLabel(user) {
+  return user.quotaBytes > 0
+    ? `${formatBytes(user.usedBytes)} of ${formatBytes(user.quotaBytes)}`
+    : `${formatBytes(user.usedBytes)} used`;
+}
+
+/**
+ * The detail drawer: the fields a row has no space for, plus the address list the list
+ * endpoint never sends.
+ *
+ * @param {object} user
+ */
+function openUserDrawer(user, handlers) {
+  const addresses = el('div', {}, [el('p', { class: 'loading-state', text: 'Loading addresses…' })]);
+
+  const body = el('div', {}, [
+    definitionList([
+      ['Email', user.email],
+      ['Display name', user.displayName || '—'],
+      ['Administrator', user.isAdmin ? 'yes' : 'no'],
+      ['Account', user.enabled ? 'enabled' : 'disabled'],
+      ['Storage', storageLabel(user)],
+      ['Created', user.createdAt ? formatLogStamp(user.createdAt) : '—'],
+    ]),
+    el('h3', { class: 'drawer-section', text: 'Addresses' }),
+    addresses,
+  ]);
+
+  // The account-level actions live here rather than in the row: six buttons per row
+  // pushed the table wider than the accounts it describes, and the two that open a
+  // dialog close the drawer first so the operator is not left with both.
+  const addAddress = el('button', { type: 'button', class: 'btn', text: 'Add address' });
+  addAddress.addEventListener('click', () => {
+    drawer.close();
+    handlers.onCreateAddress(user);
+  });
+  const edit = el('button', { type: 'button', class: 'btn btn-primary', text: 'Edit account' });
+  edit.addEventListener('click', () => {
+    drawer.close();
+    handlers.onEdit(user);
+  });
+
+  const drawer = openDrawer({
+    title: user.email,
+    subtitle: user.displayName || 'no display name',
+    body,
+    actions: [edit, addAddress],
+  });
+
+  request(`${API_BASE}/users/${user.id}/mailboxes`, { toast: false })
+    .then((payload) => {
+      const list = mailboxesOf(payload);
+      clear(addresses);
+      if (list.length === 0) {
+        addresses.append(el('p', { class: 'view-sub', text: 'This account holds no address.' }));
+        return;
+      }
+      addresses.append(
+        el(
+          'ul',
+          { class: 'drawer-list' },
+          list.map((mailbox) =>
+            el('li', {}, [
+              el('span', { class: 'cell-mono', text: mailbox.address }),
+              mailbox.isPrimary ? badge('primary') : null,
+            ]),
+          ),
+        ),
+      );
+    })
+    .catch((error) => {
+      clear(addresses);
+      addresses.append(
+        el('p', { class: 'view-sub', text: messageOf(error, 'The addresses could not be loaded.') }),
+      );
+    });
 }
 
 /* --------------------------------------------------------------------- forms */

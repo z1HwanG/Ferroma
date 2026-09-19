@@ -271,4 +271,297 @@ export function attentionList(issues) {
   );
 }
 
+/* ------------------------------------------------ filter bars and list tables */
+
+/**
+ * The strip above a list: the filters in a grid, the actions beside them.
+ *
+ * Separate from `inline-form` on purpose. A modal's inline form is a handful of
+ * fields submitted together; a list's filter bar is a toolbar that must stay aligned
+ * while its hint text wraps to different heights and a search box grows to fill the
+ * row. Both are grids — see `.filter-bar` in styles.css for why neither is a flex row.
+ *
+ * @param {{fields?: Node[], actions?: Node[], id?: string}} options
+ */
+export function filterBar(options) {
+  const fields = el('form', { class: 'filter-fields', id: options.id }, options.fields || []);
+  const actions = el('div', { class: 'filter-actions' }, options.actions || []);
+  return el('section', { class: 'card filter-bar' }, [fields, actions]);
+}
+
+/**
+ * A table whose headers sort and whose rows can be selected for bulk work.
+ *
+ * Sorting is **client-side over the rows it was given**, because none of the list
+ * endpoints accept a sort parameter: `/users`, `/queue`, `/logs` and `/devices`
+ * take `limit`/`offset` and nothing else. Sorting a page therefore orders that page,
+ * which is the honest behaviour for the API that exists rather than a control that
+ * silently does nothing.
+ *
+ * @param {{
+ *   columns: Array<{key: string, label: string, className?: string, value?: (row: object) => unknown}>,
+ *   rows: Array<{key: string|number, cells: Node[]}>,
+ *   sort?: {key: string, dir: 'asc'|'desc'}|null,
+ *   selectable?: boolean,
+ *   onSelectionChange?: (keys: Array<string|number>) => void,
+ *   bulkActions?: Array<{label: string, tone?: 'danger', onClick: (keys: Array<string|number>) => void}>,
+ *   emptyMessage?: string,
+ * }} options
+ */
+export function dataTable(options) {
+  const columns = options.columns;
+  const selectable = Boolean(options.selectable);
+  const bulkActions = options.bulkActions || [];
+  const selected = new Set();
+  let rows = options.rows.slice();
+  let sort = options.sort || null;
+
+  const bulkCount = el('span', { class: 'bulk-count' });
+  const bulkActionsHost = el('div', { class: 'bulk-actions' });
+  const bulkBar = el('div', { class: 'bulk-bar', hidden: true }, [bulkCount, bulkActionsHost]);
+
+  const selectAll = el('input', {
+    type: 'checkbox',
+    class: 'row-check',
+    'aria-label': 'Select every row on this page',
+  });
+
+  const head = el('tr');
+  if (selectable) head.append(el('th', { scope: 'col', class: 'col-select' }, [selectAll]));
+  for (const column of columns) {
+    const th = el('th', { scope: 'col', class: column.className || '' });
+    if (column.sortable === false) {
+      th.textContent = column.label;
+    } else {
+      th.append(
+        el('button', {
+          type: 'button',
+          class: 'th-sort',
+          text: column.label,
+          dataset: { key: column.key },
+        }),
+      );
+    }
+    head.append(th);
+  }
+
+  const tbody = el('tbody');
+  const wrap = el('div', { class: 'table-wrap' }, [
+    el('table', { class: `table${selectable ? ' table-selectable' : ''}` }, [
+      el('thead', {}, [head]),
+      tbody,
+    ]),
+  ]);
+  const empty = el('p', {
+    class: 'empty',
+    hidden: true,
+    text: options.emptyMessage || 'Nothing to show.',
+  });
+  const node = el('div', { class: 'data-table' }, [bulkBar, wrap, empty]);
+
+  /**
+   * What a column sorts on: the view's own accessor when it provides one, otherwise
+   * the rendered text. Without a `value` a date sorts as a string, so views that show
+   * dates or sizes should supply one.
+   */
+  function valueFor(row, key) {
+    const index = columns.findIndex((column) => column.key === key);
+    const column = columns[index];
+    if (column && column.value) return column.value(row);
+    const cellNode = row.cells[index];
+    return cellNode && cellNode.textContent ? cellNode.textContent.trim() : '';
+  }
+
+  function visible() {
+    if (!sort) return rows;
+    const direction = sort.dir === 'desc' ? -1 : 1;
+    return rows.slice().sort((a, b) => {
+      const left = valueFor(a, sort.key);
+      const right = valueFor(b, sort.key);
+      if (typeof left === 'number' && typeof right === 'number') return (left - right) * direction;
+      return String(left).localeCompare(String(right), undefined, { numeric: true, sensitivity: 'base' }) * direction;
+    });
+  }
+
+  function emitSelection() {
+    if (options.onSelectionChange) options.onSelectionChange([...selected]);
+  }
+
+  function renderHead() {
+    for (const button of head.querySelectorAll('.th-sort')) {
+      const active = Boolean(sort) && sort.key === button.dataset.key;
+      button.setAttribute('aria-sort', active ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none');
+      button.dataset.dir = active ? sort.dir : '';
+    }
+    selectAll.checked = selectable && rows.length > 0 && rows.every((row) => selected.has(row.key));
+    selectAll.indeterminate = !selectAll.checked && rows.some((row) => selected.has(row.key));
+  }
+
+  function renderBulk() {
+    bulkBar.hidden = selected.size === 0;
+    bulkCount.textContent = `${selected.size} selected`;
+  }
+
+  function renderBody() {
+    clear(tbody);
+    const list = visible();
+    wrap.hidden = list.length === 0;
+    empty.hidden = list.length !== 0;
+    for (const row of list) {
+      const tr = el('tr', { dataset: { key: String(row.key) } });
+      if (selectable) {
+        const check = el('input', {
+          type: 'checkbox',
+          class: 'row-check',
+          'aria-label': `Select this row`,
+        });
+        check.checked = selected.has(row.key);
+        check.addEventListener('change', () => {
+          if (check.checked) selected.add(row.key);
+          else selected.delete(row.key);
+          renderHead();
+          renderBulk();
+          emitSelection();
+        });
+        tr.append(el('td', { class: 'col-select' }, [check]));
+      }
+      for (const cellNode of row.cells) tr.append(el('td', {}, [cellNode]));
+      tbody.append(tr);
+    }
+  }
+
+  head.addEventListener('click', (event) => {
+    const button = event.target.closest('.th-sort');
+    if (!button) return;
+    const key = button.dataset.key;
+    const dir = sort && sort.key === key && sort.dir === 'asc' ? 'desc' : 'asc';
+    sort = { key, dir };
+    renderHead();
+    renderBody();
+  });
+
+  if (selectable) {
+    selectAll.addEventListener('change', () => {
+      if (selectAll.checked) for (const row of visible()) selected.add(row.key);
+      else selected.clear();
+      renderHead();
+      renderBody();
+      renderBulk();
+      emitSelection();
+    });
+    for (const action of bulkActions) {
+      const button = el('button', {
+        type: 'button',
+        class: `btn btn-small${action.tone === 'danger' ? ' btn-danger' : ''}`,
+        text: action.label,
+      });
+      button.addEventListener('click', () => action.onClick([...selected]));
+      bulkActionsHost.append(button);
+    }
+  }
+
+  renderHead();
+  renderBody();
+  renderBulk();
+
+  return {
+    node,
+    setRows(next) {
+      rows = next.slice();
+      // Drop selections whose row is gone, or a bulk action would fire for an id the
+      // operator can no longer see.
+      const live = new Set(rows.map((row) => row.key));
+      for (const key of [...selected]) if (!live.has(key)) selected.delete(key);
+      renderHead();
+      renderBody();
+      renderBulk();
+    },
+    clearSelection() {
+      selected.clear();
+      renderHead();
+      renderBody();
+      renderBulk();
+    },
+    selectedKeys() {
+      return [...selected];
+    },
+  };
+}
+
+/**
+ * A right-hand detail panel.
+ *
+ * Deliberately not a modal. Reading one queue entry or one account should not cover
+ * the list it came from — an operator compares the detail against the row above it,
+ * and a modal makes that impossible. The scrim only dims; the panel docks right.
+ *
+ * @param {{title: string, subtitle?: string, body: Node, actions?: Node[], onClose?: () => void}} options
+ */
+export function openDrawer(options) {
+  const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
+  const closeButton = el('button', {
+    type: 'button',
+    class: 'btn btn-icon',
+    'aria-label': 'Close details',
+    text: '\u00d7',
+  });
+  const panel = el(
+    'aside',
+    { class: 'drawer', role: 'dialog', 'aria-label': options.title || 'Details', tabindex: '-1' },
+    [
+      el('header', { class: 'drawer-head' }, [
+        el('div', {}, [
+          el('h2', { class: 'drawer-title', text: options.title || 'Details' }),
+          options.subtitle ? el('p', { class: 'view-sub', text: options.subtitle }) : null,
+        ]),
+        closeButton,
+      ]),
+      el('div', { class: 'drawer-body' }, [options.body]),
+      options.actions && options.actions.length
+        ? el('footer', { class: 'drawer-foot' }, options.actions)
+        : null,
+    ],
+  );
+  const host = el('div', { class: 'drawer-host' }, [el('div', { class: 'drawer-scrim' }), panel]);
+  document.body.append(host);
+
+  function onKey(event) {
+    if (event.key === 'Escape') {
+      event.stopPropagation();
+      close();
+    }
+  }
+
+  function close() {
+    document.removeEventListener('keydown', onKey);
+    host.remove();
+    if (previous && previous.isConnected) previous.focus();
+    if (options.onClose) options.onClose();
+  }
+
+  closeButton.addEventListener('click', close);
+  host.querySelector('.drawer-scrim').addEventListener('click', close);
+  document.addEventListener('keydown', onKey);
+  panel.focus({ preventScroll: true });
+
+  return { close, node: panel };
+}
+
+/**
+ * A key/value block for a detail panel or drawer.
+ *
+ * @param {Array<[string, Node|string]>} rows
+ */
+export function definitionList(rows) {
+  return el(
+    'dl',
+    { class: 'kv' },
+    rows.map(([label, value]) => [
+      el('dt', { class: 'kv-key', text: label }),
+      el('dd', { class: 'kv-value' }, [value]),
+    ]).flat(),
+  );
+}
+
 export { setHidden, setText };

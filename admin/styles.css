@@ -1145,6 +1145,229 @@ textarea.input {
   background: var(--surface-3);
 }
 
+/* ------------------------------------------------------- filter bars / tables */
+
+/*
+ * A filter bar is a grid, not a wrapping flex row.
+ *
+ * Each field is label + control + hint, and the hints differ in height: one wraps to
+ * two lines while its neighbour does not. With `align-items: flex-end` the *bottoms*
+ * of the fields line up, so a taller field pushes its own label and input upward and
+ * the row comes out ragged — labels on different baselines, controls on different
+ * baselines. Tops align instead, and `1fr` columns give every control the same width
+ * rather than letting a narrow `<select>` sit beside a wide text input.
+ */
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: start;
+  justify-content: space-between;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+
+.filter-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px 14px;
+  flex: 1 1 420px;
+  min-width: 0;
+}
+
+.filter-fields .field {
+  margin-bottom: 0;
+}
+
+/* A submit button sits beside the fields, not stretched to fill a whole column and
+   the full height of the row's tallest hint. */
+.filter-fields > .btn {
+  justify-self: start;
+  align-self: center;
+  white-space: nowrap;
+}
+
+.filter-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding-top: 18px; /* drops the buttons onto the controls' baseline */
+}
+
+/* Sortable headers are buttons, so they must not look like buttons. */
+.th-sort {
+  padding: 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.th-sort::after {
+  content: "";
+  display: inline-block;
+  width: 0;
+  margin-left: 6px;
+  border: 4px solid transparent;
+  border-top-color: currentColor;
+  opacity: 0.35;
+  vertical-align: middle;
+}
+
+.th-sort[data-dir="asc"]::after {
+  border-top-color: transparent;
+  border-bottom-color: currentColor;
+  opacity: 1;
+}
+
+.th-sort[data-dir="desc"]::after {
+  opacity: 1;
+}
+
+.th-sort:hover {
+  color: var(--text);
+}
+
+.col-select {
+  width: 34px;
+  padding-right: 0;
+}
+
+.row-check {
+  margin: 0;
+  vertical-align: middle;
+}
+
+/* The bulk bar appears only while rows are selected, so it never takes the place of
+   the header an operator is reading. */
+.bulk-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+}
+
+.bulk-count {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.bulk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.table-selectable tbody tr:has(.row-check:checked) {
+  background: var(--accent-soft);
+}
+
+/* ------------------------------------------------------------------- drawers */
+
+.drawer-host {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.drawer-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgb(0 0 0 / 35%);
+}
+
+.drawer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(520px, 100% - 32px);
+  height: 100%;
+  background: var(--surface);
+  border-left: 1px solid var(--border-strong);
+  box-shadow: var(--shadow);
+  outline: none;
+}
+
+.drawer-head {
+  display: flex;
+  gap: 10px;
+  align-items: start;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.drawer-title {
+  font-size: 16px;
+}
+
+.drawer-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 14px 16px;
+}
+
+.drawer-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+
+/* Key/value block, used by drawers and detail panels. */
+.kv {
+  display: grid;
+  grid-template-columns: minmax(96px, 34%) minmax(0, 1fr);
+  gap: 6px 12px;
+  margin-bottom: 16px;
+}
+
+.kv-key {
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+
+.kv-value {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.drawer-section {
+  margin-bottom: 8px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.drawer-list {
+  display: grid;
+  gap: 6px;
+}
+
+.drawer-list li {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
 /* -------------------------------------------------------------- responsive */
 
 /* `data-nav` drives two different layouts. Above 860px the sidebar is docked, and
