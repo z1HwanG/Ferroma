@@ -293,6 +293,10 @@ export function normalizeQueueEntry(value) {
     recipient: String(pick(source, ['recipient', 'to', 'rcpt_to'], '')),
     sender: String(pick(source, ['sender', 'from', 'mail_from'], '')),
     subject: String(pick(source, ['subject'], '')),
+    // Only `GET /queue/:id` sends a subject; a list row does not. Without this flag a
+    // grid row cannot tell an absent subject apart from one this response omitted, and
+    // the Subject column rendered empty for every message.
+    subjectKnown: typeof source.subject === 'string',
     messageId: num(pick(source, ['message_id'], 0), 0),
     status: String(pick(source, ['status', 'state'], 'unknown')).toLowerCase(),
     attempts: num(pick(source, ['attempts', 'attempt_count'], 0), 0),
@@ -319,12 +323,19 @@ export function attemptLogOf(payload) {
   const container = pick(source, ['attempts', 'log', 'history', 'delivery_log', 'entries'], []);
   return listOf(container).map((item) => {
     const entry = item && typeof item === 'object' ? item : {};
+    // The server's own names come first. `GET /queue/:id` sends `status_code`,
+    // `status_text`, `remote_mx`, `error`, `attempt` and `duration_ms`; the aliases
+    // after each one are for the other containers this normaliser accepts. Reading only
+    // `smtp_code`/`status`/`host` matched nothing the API actually sends, so the attempt
+    // log rendered with an empty status, a null code and an empty host.
     return {
       at: pick(entry, ['at', 'attempted_at', 'created_at', 'timestamp', 'time'], null),
-      status: String(pick(entry, ['status', 'result', 'state'], '')),
-      smtpCode: pick(entry, ['smtp_code', 'code', 'response_code'], null),
-      message: String(pick(entry, ['message', 'error', 'detail', 'reason', 'response'], '')),
-      host: String(pick(entry, ['host', 'mx_host', 'remote_host'], '')),
+      attempt: pick(entry, ['attempt', 'attempt_number'], null),
+      status: String(pick(entry, ['status', 'result', 'state', 'status_text'], '')),
+      smtpCode: pick(entry, ['status_code', 'smtp_code', 'code', 'response_code'], null),
+      message: String(pick(entry, ['error', 'message', 'detail', 'reason', 'response'], '')),
+      host: String(pick(entry, ['remote_mx', 'host', 'mx_host', 'remote_host'], '')),
+      durationMs: pick(entry, ['duration_ms'], null),
     };
   });
 }
@@ -344,6 +355,12 @@ export function normalizeUser(value) {
     usedBytes: num(pick(source, ['used_bytes', 'used'], 0), 0),
     createdAt: pick(source, ['created_at', 'created'], null),
     mailboxes: listOf(pick(source, ['mailboxes', 'addresses'], [])).map(normalizeMailbox),
+    // `GET /users` carries no addresses — only `GET /auth/me` and
+    // `GET /users/:id/mailboxes` do. Without this flag a list row cannot distinguish an
+    // account holding no addresses apart from one whose addresses this response merely
+    // omitted, so every user in the table showed an address count of zero however many
+    // addresses they actually held.
+    mailboxesKnown: Array.isArray(source.mailboxes) || Array.isArray(source.addresses),
     raw: source,
   };
 }
@@ -438,7 +455,12 @@ export function normalizeAuditEntry(value) {
     actorUserId: pick(source, ['actor_user_id', 'actor_id', 'user_id'], null),
     actor: String(pick(source, ['actor', 'actor_email', 'actor_name'], '')),
     action: String(pick(source, ['action', 'event'], '')),
-    target: String(pick(source, ['target', 'resource', 'subject'], '')),
+    // The server names these `target_type` and `target_id`. Reading only
+    // `target|resource|subject` matched nothing on a real row, so the Target column was
+    // permanently "—" on every entry in the audit log.
+    target: String(pick(source, ['target', 'resource', 'subject', 'target_type'], '')),
+    targetType: String(pick(source, ['target_type', 'target'], '')),
+    targetId: pick(source, ['target_id', 'resource_id'], null),
     detail: pick(source, ['detail', 'details', 'metadata'], null),
     ip: String(pick(source, ['ip', 'ip_address', 'remote_addr'], '')),
     raw: source,
