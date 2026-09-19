@@ -463,6 +463,9 @@ export function normalizeAuditEntry(value) {
     targetId: pick(source, ['target_id', 'resource_id'], null),
     detail: pick(source, ['detail', 'details', 'metadata'], null),
     ip: String(pick(source, ['ip', 'ip_address', 'remote_addr'], '')),
+    // The audit view needs this, and reading it out of `raw` from the view would make
+    // that the one place in the console that bypasses the normalised shape.
+    userAgent: String(pick(source, ['user_agent'], '')),
     raw: source,
   };
 }
