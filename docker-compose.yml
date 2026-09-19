@@ -43,6 +43,12 @@ services:
     # This stack builds the image itself; the name is fully qualified so that the
     # result of `docker compose build` can be pushed without re-tagging.
     image: ${FERROMA_REPO:-wesukilaye/ferroma}:${FERROMA_VERSION:-dev}
+    # `build:` and `image:` together do not mean "build it and call it that" to
+    # Compose. With the default pull policy it tries to *pull* that name first, and
+    # `…:dev` has never been published, so `docker compose up -d` died looking for it
+    # instead of compiling anything. Pinning the policy is what makes this file build
+    # the tree it sits in.
+    pull_policy: build
     container_name: ferroma
     restart: unless-stopped
     depends_on:

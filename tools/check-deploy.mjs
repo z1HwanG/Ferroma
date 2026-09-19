@@ -210,6 +210,7 @@ const producedByBuilder = new Set([
   '/build/config/ferroma.toml',
   '/build/web',
   '/build/admin',
+  '/build/shared',
   // Produced by `cargo build --release`.
   '/build/target/release/ferroma',
 ]);
@@ -294,6 +295,50 @@ for (const file of composeFiles) {
         `use \${${name}:-fallback} or \${${name}:?message} so an unset value is caught ` +
         `rather than silently empty`,
     );
+  }
+
+  // A service with both `build:` and `image:` is not "build it and call it that" to
+  // Compose: with the default pull policy it tries to *pull* the name first. Measured
+  // on Compose v5 against `docker-compose.yml`, `docker compose up -d` pulled
+  // `wesukilaye/ferroma:dev` — a tag that was never published — and stopped there
+  // instead of building the tree, which is the opposite of what the file, its comment
+  // and the README all say it does. Such a service has to pin `pull_policy: build`.
+  {
+    const services = [];
+    let inServices = false;
+    let current = null;
+    for (const line of code.split('\n')) {
+      if (/^services:\s*$/.test(line)) {
+        inServices = true;
+        continue;
+      }
+      if (!inServices) continue;
+      // A key in column zero ends the `services:` block.
+      if (/^\S/.test(line)) {
+        inServices = false;
+        current = null;
+        continue;
+      }
+      const name = /^ {2}([A-Za-z0-9._-]+):\s*$/.exec(line);
+      if (name) {
+        current = { name: name[1], build: false, image: false, pullPolicy: false };
+        services.push(current);
+        continue;
+      }
+      if (!current) continue;
+      if (/^ {4}build:/.test(line)) current.build = true;
+      if (/^ {4}image:/.test(line)) current.image = true;
+      if (/^ {4}pull_policy:/.test(line)) current.pullPolicy = true;
+    }
+    for (const service of services) {
+      if (service.build && service.image && !service.pullPolicy) {
+        problems.push(
+          `${file}: the "${service.name}" service both builds and names an image, ` +
+            `which Compose reads as "pull that name first" — add \`pull_policy: build\` ` +
+            `so it builds the tree instead of looking for a tag that may not exist`,
+        );
+      }
+    }
   }
 
   // Every service that mounts a config file should also declare it as a dependency
