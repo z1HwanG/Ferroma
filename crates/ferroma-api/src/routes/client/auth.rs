@@ -494,6 +494,7 @@ mod tests {
                 used_bytes: 0,
                 last_login_at: None,
                 created_at: chrono::Utc::now(),
+                mailboxes: None,
             },
         };
         let json = serde_json::to_value(&body).expect("must serialise");

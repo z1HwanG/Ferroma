@@ -4,13 +4,14 @@
  * maintained through `POST /api/v1/users/:id/mailboxes`.
  */
 
-import { API_BASE, ApiError, query, request } from '../api.js';
-import { domainsOf, mailboxesOf, totalOf, usersOf } from '../data.js';
-import { clear, el, setHidden, setText } from '../dom.js';
-import { formatBytes, formatLogStamp } from '../format.js';
-import { confirmDialog, openModal, promptDialog } from '../modal.js';
+import { API_BASE, ApiError, query, request } from '../../shared/api.js';
+import { domainsOf, mailboxesOf, totalOf, usersOf } from '../../shared/data.js';
+import { clear, el, setHidden, setText } from '../../shared/dom.js';
+import { formatBytes, formatLogStamp } from '../../shared/format.js';
+import { t, tn } from '../../shared/i18n.js';
+import { confirmDialog, openModal, promptDialog } from '../../shared/modal.js';
 import { go } from '../router.js';
-import { toastError, toastSuccess } from '../toast.js';
+import { toastError, toastSuccess } from '../../shared/toast.js';
 import {
   actions,
   adminCard,
@@ -38,15 +39,15 @@ export async function render(params) {
   };
 
   const card = adminCard({
-    title: 'Accounts',
-    subtitle: 'Sort by a column heading; select rows to act on several at once.',
+    title: t('Accounts'),
+    subtitle: t('Sort by a column heading; select rows to act on several at once.'),
     renderEmpty: () =>
       el('div', { class: 'empty-state' }, [
-        el('p', { class: 'empty-title', text: state.query ? 'No matching users' : 'No users yet' }),
+        el('p', { class: 'empty-title', text: state.query ? t('No matching users') : t('No users yet') }),
         el('p', {
           text: state.query
-            ? `Nothing matches “${state.query}”.`
-            : 'Create the first account, or run the setup wizard for a fresh install.',
+            ? t('Nothing matches “{query}”.', { query: state.query })
+            : t('Create the first account, or run the setup wizard for a fresh install.'),
         }),
       ]),
     renderData: (data) => data.node,
@@ -57,21 +58,21 @@ export async function render(params) {
     id: 'users-query',
     type: 'search',
     autocomplete: 'off',
-    placeholder: 'Search by address or name',
+    placeholder: t('Search by address or name'),
   });
   search.value = state.query;
 
-  const createButton = el('button', { type: 'button', class: 'btn btn-primary', text: 'New user' });
+  const createButton = el('button', { type: 'button', class: 'btn btn-primary', text: t('New user') });
   createButton.addEventListener('click', () => openUserDialog({}, () => refresh()));
 
-  const refreshButton = el('button', { type: 'button', class: 'btn', text: 'Refresh' });
+  const refreshButton = el('button', { type: 'button', class: 'btn', text: t('Refresh') });
   refreshButton.addEventListener('click', () => refresh());
 
   const bar = filterBar({
     id: 'users-search',
     fields: [
-      field('Search', search, 'Substring of the address or the display name.'),
-      el('button', { type: 'submit', class: 'btn', text: 'Search' }),
+      field(t('Search'), search, t('Substring of the address or the display name.')),
+      el('button', { type: 'submit', class: 'btn', text: t('Search') }),
     ],
   });
   // `submit` bubbles, so the listener belongs on the bar rather than on the <form>
@@ -82,7 +83,7 @@ export async function render(params) {
   });
 
   const root = el('div', {}, [
-    viewHead('Users', 'Every account hosted by this server', [createButton, refreshButton]),
+    viewHead(t('Users'), t('Every account hosted by this server'), [createButton, refreshButton]),
     bar,
     card.node,
   ]);
@@ -98,42 +99,42 @@ export async function render(params) {
           body: { enabled: !user.enabled },
           toast: false,
         });
-        toastSuccess(`${user.email} ${user.enabled ? 'disabled' : 'enabled'}.`);
+        toastSuccess(t('{email} {state}.', { email: user.email, state: user.enabled ? t('disabled') : t('enabled') }));
         refresh();
       } catch (error) {
-        toastError(messageOf(error, 'The account could not be updated.'));
+        toastError(messageOf(error, t('The account could not be updated.')));
       }
     },
     onPassword: async (user) => {
       const password = await promptDialog({
-        title: `New password for ${user.email}`,
-        label: 'New password',
-        confirmLabel: 'Set password',
-        hint: 'Every other session for this account is revoked.',
+        title: t('New password for {email}', { email: user.email }),
+        label: t('New password'),
+        confirmLabel: t('Set password'),
+        hint: t('Every other session for this account is revoked.'),
       });
       if (password === null) return;
       try {
         await request(`${API_BASE}/users/${user.id}`, { method: 'PATCH', body: { password }, toast: false });
-        toastSuccess('Password changed.');
+        toastSuccess(t('Password changed.'));
       } catch (error) {
-        toastError(messageOf(error, 'The password could not be changed.'));
+        toastError(messageOf(error, t('The password could not be changed.')));
       }
     },
     onDelete: async (user) => {
       const typed = await promptDialog({
-        title: 'Delete account',
-        label: `Type ${user.email} to confirm`,
-        confirmLabel: 'Delete account',
+        title: t('Delete account'),
+        label: t('Type {email} to confirm', { email: user.email }),
+        confirmLabel: t('Delete account'),
         requireValue: user.email,
-        hint: 'This cascades: addresses, folders, messages and queue rows go with it.',
+        hint: t('This cascades: addresses, folders, messages and queue rows go with it.'),
       });
       if (typed === null) return;
       try {
         await request(`${API_BASE}/users/${user.id}`, { method: 'DELETE', toast: false });
-        toastSuccess(`${user.email} deleted.`);
+        toastSuccess(t('{email} deleted.', { email: user.email }));
         refresh();
       } catch (error) {
-        toastError(messageOf(error, 'The account could not be deleted.'));
+        toastError(messageOf(error, t('The account could not be deleted.')));
       }
     },
     onBulkEnabled: (ids, enabled) => setEnabled(ids, enabled, () => refresh()),
@@ -158,7 +159,7 @@ export async function render(params) {
         data: { node: renderTable(users, handlers, totalOf(payload), state.offset) },
       });
     } catch (error) {
-      card.setState({ state: 'error', message: messageOf(error, 'Users could not be loaded.') });
+      card.setState({ state: 'error', message: messageOf(error, t('Users could not be loaded.')) });
     }
   }
 
@@ -176,8 +177,11 @@ async function setEnabled(ids, enabled, refresh) {
     ),
   );
   const failed = results.filter((result) => result.status === 'rejected').length;
-  if (failed > 0) toastError(`${failed} of ${ids.length} account(s) could not be updated.`);
-  else toastSuccess(`${ids.length} account(s) ${enabled ? 'enabled' : 'disabled'}.`);
+  if (failed > 0) {
+    toastError(tn(ids.length, '{failed} of {count} account could not be updated.', '{failed} of {count} accounts could not be updated.', { failed, count: ids.length }));
+  } else {
+    toastSuccess(tn(ids.length, '{count} account {state}.', '{count} accounts {state}.', { count: ids.length, state: enabled ? t('enabled') : t('disabled') }));
+  }
   refresh();
 }
 
@@ -190,17 +194,20 @@ async function setEnabled(ids, enabled, refresh) {
  */
 async function deleteUsers(ids, refresh) {
   const confirmed = await confirmDialog({
-    title: `Delete ${ids.length} account(s)?`,
-    message: 'This cascades: addresses, folders, messages and queue rows go with them.',
-    confirmLabel: 'Delete',
+    title: tn(ids.length, 'Delete {count} account?', 'Delete {count} accounts?', { count: ids.length }),
+    message: t('This cascades: addresses, folders, messages and queue rows go with them.'),
+    confirmLabel: t('Delete'),
   });
   if (!confirmed) return;
   const results = await Promise.allSettled(
     ids.map((id) => request(`${API_BASE}/users/${id}`, { method: 'DELETE', toast: false })),
   );
   const failed = results.filter((result) => result.status === 'rejected').length;
-  if (failed > 0) toastError(`${failed} of ${ids.length} account(s) could not be deleted.`);
-  else toastSuccess(`${ids.length} account(s) deleted.`);
+  if (failed > 0) {
+    toastError(tn(ids.length, '{failed} of {count} account could not be deleted.', '{failed} of {count} accounts could not be deleted.', { failed, count: ids.length }));
+  } else {
+    toastSuccess(tn(ids.length, '{count} account deleted.', '{count} accounts deleted.', { count: ids.length }));
+  }
   refresh();
 }
 
@@ -215,7 +222,7 @@ function renderTable(users, handlers, total, offset) {
         el('div', { class: 'truncate', title: user.email, text: user.email }),
         el('div', {
           class: 'view-sub',
-          text: `${user.displayName || 'no display name'} · ${addressLabel(user)}`,
+          text: t('{name} · {addresses}', { name: user.displayName || t('no display name'), addresses: addressLabel(user) }),
         }),
       ]),
       badge(user.enabled ? 'enabled' : 'disabled'),
@@ -223,36 +230,36 @@ function renderTable(users, handlers, total, offset) {
       cell(storageLabel(user)),
       cell(user.createdAt ? formatLogStamp(user.createdAt) : '—', 'cell-mono'),
       actions(
-        button('Details', () => handlers.onDetails(user)),
-        button('Edit', () => handlers.onEdit(user)),
-        button('Password', () => handlers.onPassword(user)),
-        button(user.enabled ? 'Disable' : 'Enable', () => handlers.onToggle(user)),
-        button('Delete', () => handlers.onDelete(user), 'btn-danger'),
+        button(t('Details'), () => handlers.onDetails(user)),
+        button(t('Edit'), () => handlers.onEdit(user)),
+        button(t('Password'), () => handlers.onPassword(user)),
+        button(user.enabled ? t('Disable') : t('Enable'), () => handlers.onToggle(user)),
+        button(t('Delete'), () => handlers.onDelete(user), 'btn-danger'),
       ),
     ],
   }));
 
   const grid = dataTable({
     columns: [
-      { key: 'account', label: 'Account', value: (row) => row.user.email },
-      { key: 'state', label: 'State', value: (row) => (row.user.enabled ? 1 : 0) },
-      { key: 'role', label: 'Role', value: (row) => (row.user.isAdmin ? 1 : 0) },
-      { key: 'storage', label: 'Storage', value: (row) => row.user.usedBytes },
+      { key: 'account', label: t('Account'), value: (row) => row.user.email },
+      { key: 'state', label: t('State'), value: (row) => (row.user.enabled ? 1 : 0) },
+      { key: 'role', label: t('Role'), value: (row) => (row.user.isAdmin ? 1 : 0) },
+      { key: 'storage', label: t('Storage'), value: (row) => row.user.usedBytes },
       {
         key: 'created',
-        label: 'Created',
+        label: t('Created'),
         value: (row) => (row.user.createdAt ? Date.parse(row.user.createdAt) : 0),
       },
-      { key: 'actions', label: 'Actions', sortable: false },
+      { key: 'actions', label: t('Actions'), sortable: false },
     ],
     rows,
     selectable: true,
     bulkActions: [
-      { label: 'Enable', onClick: (ids) => handlers.onBulkEnabled(ids, true) },
-      { label: 'Disable', onClick: (ids) => handlers.onBulkEnabled(ids, false) },
-      { label: 'Delete', tone: 'danger', onClick: (ids) => handlers.onBulkDelete(ids) },
+      { label: t('Enable'), onClick: (ids) => handlers.onBulkEnabled(ids, true) },
+      { label: t('Disable'), onClick: (ids) => handlers.onBulkEnabled(ids, false) },
+      { label: t('Delete'), tone: 'danger', onClick: (ids) => handlers.onBulkDelete(ids) },
     ],
-    emptyMessage: 'No accounts on this page.',
+    emptyMessage: t('No accounts on this page.'),
   });
 
   return el('div', {}, [
@@ -276,15 +283,15 @@ function renderTable(users, handlers, total, offset) {
  * asserting something it had never been told. The drawer fetches the real list.
  */
 function addressLabel(user) {
-  if (!user.mailboxesKnown) return 'addresses not listed here';
+  if (!user.mailboxesKnown) return t('addresses not listed here');
   const count = user.mailboxes.length;
-  return `${count} address${count === 1 ? '' : 'es'}`;
+  return tn(count, '{count} address', '{count} addresses', { count });
 }
 
 function storageLabel(user) {
   return user.quotaBytes > 0
-    ? `${formatBytes(user.usedBytes)} of ${formatBytes(user.quotaBytes)}`
-    : `${formatBytes(user.usedBytes)} used`;
+    ? t('{used} of {quota}', { used: formatBytes(user.usedBytes), quota: formatBytes(user.quotaBytes) })
+    : t('{used} used', { used: formatBytes(user.usedBytes) });
 }
 
 /**
@@ -294,30 +301,30 @@ function storageLabel(user) {
  * @param {object} user
  */
 function openUserDrawer(user, handlers) {
-  const addresses = el('div', {}, [el('p', { class: 'loading-state', text: 'Loading addresses…' })]);
+  const addresses = el('div', {}, [el('p', { class: 'loading-state', text: t('Loading addresses…') })]);
 
   const body = el('div', {}, [
     definitionList([
-      ['Email', user.email],
-      ['Display name', user.displayName || '—'],
-      ['Administrator', user.isAdmin ? 'yes' : 'no'],
-      ['Account', user.enabled ? 'enabled' : 'disabled'],
-      ['Storage', storageLabel(user)],
-      ['Created', user.createdAt ? formatLogStamp(user.createdAt) : '—'],
+      [t('Email'), user.email],
+      [t('Display name'), user.displayName || '—'],
+      [t('Administrator'), user.isAdmin ? t('yes') : t('no')],
+      [t('Account'), user.enabled ? t('enabled') : t('disabled')],
+      [t('Storage'), storageLabel(user)],
+      [t('Created'), user.createdAt ? formatLogStamp(user.createdAt) : '—'],
     ]),
-    el('h3', { class: 'drawer-section', text: 'Addresses' }),
+    el('h3', { class: 'drawer-section', text: t('Addresses') }),
     addresses,
   ]);
 
   // The account-level actions live here rather than in the row: six buttons per row
   // pushed the table wider than the accounts it describes, and the two that open a
   // dialog close the drawer first so the operator is not left with both.
-  const addAddress = el('button', { type: 'button', class: 'btn', text: 'Add address' });
+  const addAddress = el('button', { type: 'button', class: 'btn', text: t('Add address') });
   addAddress.addEventListener('click', () => {
     drawer.close();
     handlers.onCreateAddress(user);
   });
-  const edit = el('button', { type: 'button', class: 'btn btn-primary', text: 'Edit account' });
+  const edit = el('button', { type: 'button', class: 'btn btn-primary', text: t('Edit account') });
   edit.addEventListener('click', () => {
     drawer.close();
     handlers.onEdit(user);
@@ -325,7 +332,7 @@ function openUserDrawer(user, handlers) {
 
   const drawer = openDrawer({
     title: user.email,
-    subtitle: user.displayName || 'no display name',
+    subtitle: user.displayName || t('no display name'),
     body,
     actions: [edit, addAddress],
   });
@@ -335,7 +342,7 @@ function openUserDrawer(user, handlers) {
       const list = mailboxesOf(payload);
       clear(addresses);
       if (list.length === 0) {
-        addresses.append(el('p', { class: 'view-sub', text: 'This account holds no address.' }));
+        addresses.append(el('p', { class: 'view-sub', text: t('This account holds no address.') }));
         return;
       }
       addresses.append(
@@ -354,7 +361,7 @@ function openUserDrawer(user, handlers) {
     .catch((error) => {
       clear(addresses);
       addresses.append(
-        el('p', { class: 'view-sub', text: messageOf(error, 'The addresses could not be loaded.') }),
+        el('p', { class: 'view-sub', text: messageOf(error, t('The addresses could not be loaded.')) }),
       );
     });
 }
@@ -373,7 +380,7 @@ function openUserDialog(options, onDone) {
     id: 'user-email',
     type: 'email',
     autocomplete: 'off',
-    placeholder: 'alice@example.com',
+    placeholder: t('alice@example.com'),
   });
   email.value = editing ? user.email : '';
   email.disabled = editing;
@@ -401,20 +408,20 @@ function openUserDialog(options, onDone) {
   const error = el('p', { class: 'field-error', id: 'user-error', hidden: true });
 
   const body = el('div', {}, [
-    field('Email address', email, editing ? 'The address cannot be changed after creation.' : ''),
-    field('Display name', displayName),
-    editing ? null : field('Password', password, 'At least 12 characters is a good habit.'),
-    field('Quota in MiB', quota, '0 means unlimited.'),
-    el('label', { class: 'checkbox', for: 'user-admin' }, [admin, el('span', { text: 'Administrator' })]),
-    el('label', { class: 'checkbox', for: 'user-enabled' }, [enabled, el('span', { text: 'Account enabled' })]),
+    field(t('Email address'), email, editing ? t('The address cannot be changed after creation.') : ''),
+    field(t('Display name'), displayName),
+    editing ? null : field(t('Password'), password, t('At least 12 characters is a good habit.')),
+    field(t('Quota in MiB'), quota, t('0 means unlimited.')),
+    el('label', { class: 'checkbox', for: 'user-admin' }, [admin, el('span', { text: t('Administrator') })]),
+    el('label', { class: 'checkbox', for: 'user-enabled' }, [enabled, el('span', { text: t('Account enabled') })]),
     error,
   ]);
 
-  const cancel = el('button', { type: 'button', class: 'btn', text: 'Cancel' });
-  const submit = el('button', { type: 'button', class: 'btn btn-primary', text: editing ? 'Save changes' : 'Create user' });
+  const cancel = el('button', { type: 'button', class: 'btn', text: t('Cancel') });
+  const submit = el('button', { type: 'button', class: 'btn btn-primary', text: editing ? t('Save changes') : t('Create user') });
 
   const modal = openModal({
-    title: editing ? `Edit ${user.email}` : 'New user',
+    title: editing ? t('Edit {email}', { email: user.email }) : t('New user'),
     body,
     footer: [cancel, submit],
     onMount: () => {
@@ -422,7 +429,10 @@ function openUserDialog(options, onDone) {
       submit.addEventListener('click', async () => {
         const quotaMiB = Number.parseInt(quota.value, 10);
         const payload = {
-          display_name: displayName.value.trim() || undefined,
+          // An empty string, not `undefined`: `JSON.stringify` drops `undefined`, so the
+          // key never reached the server and clearing the field reported success while
+          // keeping the old name. The API reads an empty string as "clear it".
+          display_name: displayName.value.trim(),
           quota_bytes: Number.isFinite(quotaMiB) ? Math.max(0, quotaMiB) * 1024 * 1024 : undefined,
           is_admin: admin.checked,
           enabled: enabled.checked,
@@ -430,35 +440,35 @@ function openUserDialog(options, onDone) {
         if (!editing) payload.email = email.value.trim();
 
         if (!editing && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.value.trim())) {
-          setText(error, 'Enter a valid email address.');
+          setText(error, t('Enter a valid email address.'));
           setHidden(error, false);
           return;
         }
         if (!editing && password.value.length < 8) {
-          setText(error, 'The password needs at least 8 characters.');
+          setText(error, t('The password needs at least 8 characters.'));
           setHidden(error, false);
           return;
         }
         if (!editing) payload.password = password.value;
 
         submit.disabled = true;
-        setText(submit, 'Saving…');
+        setText(submit, t('Saving…'));
         try {
           if (editing) {
             await request(`${API_BASE}/users/${user.id}`, { method: 'PATCH', body: payload, toast: false });
-            toastSuccess('Account updated.');
+            toastSuccess(t('Account updated.'));
           } else {
             await request(`${API_BASE}/users`, { method: 'POST', body: payload, toast: false });
-            toastSuccess(`Account ${payload.email} created.`);
+            toastSuccess(t('Account {email} created.', { email: payload.email }));
           }
           modal.close('saved');
           onDone();
         } catch (err) {
-          setText(error, messageOf(err, 'The account could not be saved.'));
+          setText(error, messageOf(err, t('The account could not be saved.')));
           setHidden(error, false);
         } finally {
           submit.disabled = false;
-          setText(submit, editing ? 'Save changes' : 'Create user');
+          setText(submit, editing ? t('Save changes') : t('Create user'));
         }
       });
     },
@@ -468,7 +478,7 @@ function openUserDialog(options, onDone) {
 
 /** Address list and creation for one user. */
 async function openAddressDialog(user, onDone) {
-  const listHost = el('div', {}, [el('p', { class: 'loading-state', text: 'Loading addresses…' })]);
+  const listHost = el('div', {}, [el('p', { class: 'loading-state', text: t('Loading addresses…') })]);
   const domainSelect = el('select', { class: 'input', id: 'address-domain' });
   const localPart = el('input', { class: 'input', id: 'address-local', type: 'text', autocomplete: 'off' });
   const primary = el('input', { type: 'checkbox', id: 'address-primary' });
@@ -478,26 +488,26 @@ async function openAddressDialog(user, onDone) {
 
   const body = el('div', {}, [
     listHost,
-    el('h3', { class: 'card-title', text: 'Create an address' }),
+    el('h3', { class: 'card-title', text: t('Create an address') }),
     el('div', { class: 'row' }, [
-      field('Domain', domainSelect),
-      field('Local part', localPart, 'The part before the @.'),
+      field(t('Domain'), domainSelect),
+      field(t('Local part'), localPart, t('The part before the @.')),
     ]),
     el('div', { class: 'row' }, [
-      field('Quota in MiB', quota, '0 inherits the account quota.'),
+      field(t('Quota in MiB'), quota, t('0 inherits the account quota.')),
       el('label', { class: 'checkbox', for: 'address-primary' }, [
         primary,
-        el('span', { text: 'Make this the primary address' }),
+        el('span', { text: t('Make this the primary address') }),
       ]),
     ]),
     error,
   ]);
 
-  const close = el('button', { type: 'button', class: 'btn', text: 'Close' });
-  const create = el('button', { type: 'button', class: 'btn btn-primary', text: 'Create address' });
+  const close = el('button', { type: 'button', class: 'btn', text: t('Close') });
+  const create = el('button', { type: 'button', class: 'btn btn-primary', text: t('Create address') });
 
   const modal = openModal({
-    title: `Addresses for ${user.email}`,
+    title: t('Addresses for {email}', { email: user.email }),
     size: 'wide',
     body,
     footer: [close, create],
@@ -507,18 +517,18 @@ async function openAddressDialog(user, onDone) {
         const domainId = Number.parseInt(domainSelect.value, 10);
         const value = localPart.value.trim().toLowerCase();
         if (!domainId) {
-          setText(error, 'Choose a domain first.');
+          setText(error, t('Choose a domain first.'));
           setHidden(error, false);
           return;
         }
         if (!/^[a-z0-9!#$%&'*+/=?^_`{|}~.-]+$/.test(value) || value.startsWith('.') || value.endsWith('.')) {
-          setText(error, 'Enter a valid local part.');
+          setText(error, t('Enter a valid local part.'));
           setHidden(error, false);
           return;
         }
         const quotaMiB = Number.parseInt(quota.value, 10);
         create.disabled = true;
-        setText(create, 'Creating…');
+        setText(create, t('Creating…'));
         try {
           await request(`${API_BASE}/users/${user.id}/mailboxes`, {
             method: 'POST',
@@ -532,17 +542,17 @@ async function openAddressDialog(user, onDone) {
             },
             toast: false,
           });
-          toastSuccess(`Address ${value} created.`);
+          toastSuccess(t('Address {address} created.', { address: value }));
           localPart.value = '';
           primary.checked = false;
           await loadAddresses();
           onDone();
         } catch (err) {
-          setText(error, messageOf(err, 'The address could not be created.'));
+          setText(error, messageOf(err, t('The address could not be created.')));
           setHidden(error, false);
         } finally {
           create.disabled = false;
-          setText(create, 'Create address');
+          setText(create, t('Create address'));
         }
       });
     },
@@ -557,16 +567,16 @@ async function openAddressDialog(user, onDone) {
       const list = mailboxesOf(addresses);
       listHost.replaceChildren(
         list.length === 0
-          ? el('p', { class: 'view-sub', text: 'This account has no address yet.' })
+          ? el('p', { class: 'view-sub', text: t('This account has no address yet.') })
           : table({
-              columns: [{ label: 'Address' }, { label: 'Primary' }, { label: 'Storage' }],
+              columns: [{ label: t('Address') }, { label: t('Primary') }, { label: t('Storage') }],
               rows: list.map((mailbox) => [
                 cell(mailbox.address, 'cell-mono'),
                 badge(mailbox.isPrimary ? 'yes' : 'no'),
                 cell(
                   mailbox.quotaBytes
-                    ? `${formatBytes(mailbox.usedBytes)} of ${formatBytes(mailbox.quotaBytes)}`
-                    : `${formatBytes(mailbox.usedBytes)} used`,
+                    ? t('{used} of {quota}', { used: formatBytes(mailbox.usedBytes), quota: formatBytes(mailbox.quotaBytes) })
+                    : t('{used} used', { used: formatBytes(mailbox.usedBytes) }),
                 ),
               ]),
             }),
@@ -575,7 +585,7 @@ async function openAddressDialog(user, onDone) {
       const domains_ = domainsOf(domains);
       domainSelect.replaceChildren();
       if (domains_.length === 0) {
-        domainSelect.append(el('option', { value: '', text: 'no domains available' }));
+        domainSelect.append(el('option', { value: '', text: t('no domains available') }));
         domainSelect.disabled = true;
       } else {
         domainSelect.disabled = false;
@@ -585,7 +595,7 @@ async function openAddressDialog(user, onDone) {
       }
     } catch (err) {
       listHost.replaceChildren(
-        el('p', { class: 'field-error', text: messageOf(err, 'Addresses could not be loaded.') }),
+        el('p', { class: 'field-error', text: messageOf(err, t('Addresses could not be loaded.')) }),
       );
     }
   }

@@ -205,6 +205,7 @@ impl Harness {
                     .to_string(),
                 display_name: Some("Alice".into()),
                 is_admin: false,
+                enabled: true,
                 quota_bytes: Some(1_073_741_824),
             })
             .await

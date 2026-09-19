@@ -524,7 +524,7 @@ async fn create_user_enforces_the_password_policy_and_uniqueness() {
     // A weak password never reaches the database.
     let err = t
         .auth
-        .create_user("weak@example.com", "short", None, false, None)
+        .create_user("weak@example.com", "short", None, false, true, None)
         .await
         .unwrap_err();
     assert!(matches!(err, FerromaError::Invalid(_)));
@@ -532,7 +532,7 @@ async fn create_user_enforces_the_password_policy_and_uniqueness() {
     t.create_user("alice@example.com").await;
     let err = t
         .auth
-        .create_user("ALICE@example.com", TEST_PASSWORD, None, false, None)
+        .create_user("ALICE@example.com", TEST_PASSWORD, None, false, true, None)
         .await
         .unwrap_err();
     assert!(matches!(err, FerromaError::Conflict(_)), "{err:?}");

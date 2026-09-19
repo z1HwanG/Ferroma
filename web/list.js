@@ -11,12 +11,13 @@
  *   Enter        open the active row
  */
 
-import { API_BASE, ApiError, query, request } from './api.js';
-import { messagesOf, totalOf } from './data.js';
-import { byId, clear, el, labelWithTitle, setHidden, setText, svgIcon } from './dom.js';
-import { timeElement } from './format.js';
+import { API_BASE, ApiError, query, request } from '../shared/api.js';
+import { messagesOf, totalOf } from '../shared/data.js';
+import { byId, clear, el, labelWithTitle, setHidden, setText, svgIcon } from '../shared/dom.js';
+import { timeElement } from '../shared/format.js';
+import { t } from '../shared/i18n.js';
 import { getPrefs, getState, mutate } from './store.js';
-import { toastError } from './toast.js';
+import { toastError } from '../shared/toast.js';
 
 /** @type {null | {onOpen: (id: number) => void, onToggleStar: (message: object) => void}} */
 let handlers = null;
@@ -163,8 +164,8 @@ export function renderList() {
       setText(
         empty,
         state.search
-          ? `No messages match “${state.search}” in this folder.`
-          : 'This folder is empty.',
+          ? t('No messages match “{query}” in this folder.', { query: state.search })
+          : t('This folder is empty.'),
       );
       setHidden(empty, false);
     }
@@ -200,7 +201,7 @@ function renderBulkBar() {
   const bar = byId('bulk-bar');
   const count = state.checked.size;
   setHidden(bar, count === 0);
-  setText(byId('bulk-count'), `${count} selected`);
+  setText(byId('bulk-count'), t('{count} selected', { count }));
 }
 
 /**
@@ -228,21 +229,21 @@ function renderRow(message, index, state) {
   dot.setAttribute('aria-hidden', 'true');
 
   const sender = el('span', { class: 'row-sender' });
-  labelWithTitle(sender, message.fromName || message.fromAddress || '(unknown sender)', 'From');
+  labelWithTitle(sender, message.fromName || message.fromAddress || t('(unknown sender)'), t('From'));
 
   const subject = el('span', { class: 'row-subject' });
-  labelWithTitle(subject, message.subject, 'Subject');
+  labelWithTitle(subject, message.subject, t('Subject'));
 
   const line = el('span', { class: 'row-line' }, [sender, el('span', { class: 'row-sep', text: '—' }), subject]);
   const snippet = el('span', { class: 'row-snippet' });
-  labelWithTitle(snippet, message.snippet || '', 'Preview');
+  labelWithTitle(snippet, message.snippet || '', t('Preview'));
 
   const side = el('span', { class: 'row-side' });
   if (message.hasAttachments) {
     const clip = svgIcon('clip');
     clip.setAttribute('class', 'row-clip');
     clip.setAttribute('role', 'img');
-    clip.setAttribute('aria-label', 'Has attachments');
+    clip.setAttribute('aria-label', t('Has attachments'));
     side.append(clip);
   }
   side.append(timeElement(message.date));
@@ -251,8 +252,10 @@ function renderRow(message, index, state) {
     type: 'button',
     class: 'btn btn-icon btn-small row-flag',
     'aria-pressed': message.flagged ? 'true' : 'false',
-    'aria-label': message.flagged ? `Unstar “${message.subject}”` : `Star “${message.subject}”`,
-    title: message.flagged ? 'Remove star' : 'Add star',
+    'aria-label': message.flagged
+      ? t('Unstar “{subject}”', { subject: message.subject })
+      : t('Star “{subject}”', { subject: message.subject }),
+    title: message.flagged ? t('Remove star') : t('Add star'),
   });
   star.append(svgIcon('star'));
   if (!message.flagged) star.style.visibility = 'hidden';
@@ -388,7 +391,7 @@ export async function toggleStar(message) {
     });
     renderList();
   } catch (error) {
-    toastError(error instanceof ApiError ? error.message : 'The star could not be changed.');
+    toastError(error instanceof ApiError ? error.message : t('The star could not be changed.'));
   }
 }
 

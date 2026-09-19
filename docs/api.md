@@ -56,6 +56,25 @@ Every failure returns the same envelope:
 `FerromaError::code()`); `message` is human-readable and may change. `details` is
 optional and only present when there is something structured to say.
 
+`message` follows `Accept-Language` (RFC 9110): `zh` of any region selects the
+Simplified Chinese catalog, anything else — including an absent header — answers in
+English, and a message with no translation yet is sent in English rather than
+dropped. `code` never changes with the locale, so a client's branching is
+language-independent:
+
+```http
+GET /api/v1/domains/9999 HTTP/1.1
+Authorization: Bearer …
+Accept-Language: zh-CN,zh;q=0.9,en;q=0.8
+```
+
+```json
+{ "error": { "code": "not_found", "message": "未找到：域名 9999" } }
+```
+
+A request whose path matches no route, or a route whose method is not allowed,
+answers with this same envelope rather than an empty body.
+
 | HTTP | `code` | Meaning |
 |---|---|---|
 | 400 | `invalid_input`, `parse_error`, `protocol_error` | the request is malformed |
@@ -216,7 +235,11 @@ The authenticated user, plus their addresses:
 {
   "id": 7, "email": "alice@example.com", "display_name": "Alice",
   "is_admin": false, "quota_bytes": 1073741824, "used_bytes": 52428800,
-  "mailboxes": [ { "id": 3, "address": "alice@example.com", "is_primary": true } ]
+  "mailboxes": [
+    { "id": 3, "address": "alice@example.com", "user_id": 7, "display_name": "Alice",
+      "is_primary": true, "enabled": true, "quota_bytes": null,
+      "used_bytes": 4096, "created_at": "2026-01-01T00:00:00Z" }
+  ]
 }
 ```
 
@@ -337,11 +360,21 @@ report is omitted from the object rather than sent as `0`.
 
 ### 4.7 First-run setup
 
-`GET /api/v1/setup` → `{ "required": true }` while no admin exists.
+`GET /api/v1/setup` → `{ "required": true, "hostname": "mail.example.com" }` while
+no admin exists. `hostname` is the value the running configuration advertises, so a
+client can present it for confirmation instead of guessing.
+
 `POST /api/v1/setup` → `{email, password, hostname, domain}` creates the first
-admin, the domain and its primary address, then returns a normal token pair. Both
-endpoints return `409 conflict` once an admin exists; they are disabled entirely by
-`api.enable_setup_wizard = false`.
+admin, the domain and its primary address, then returns a normal token pair. The
+`hostname` is optional; when it is present and disagrees with `server.hostname` the
+request is `400 invalid_input` naming the setting to change, because the running
+configuration cannot be rewritten underneath the process and silently ignoring the
+value leaves the operator's DNS panel contradicting what they just typed.
+
+`POST /api/v1/setup` answers `409 conflict` once an admin exists. Both endpoints
+answer `404 not_found` when `api.enable_setup_wizard = false`: a disabled wizard is
+an endpoint that is not there, which is how a client tells "disabled" apart from
+"already completed".
 
 ### 4.8 System logs and devices
 

@@ -28,6 +28,9 @@ pub struct NewUser {
     pub display_name: Option<String>,
     /// Grants access to the Admin API.
     pub is_admin: bool,
+    /// Whether the account may log in. A disabled account is created but every
+    /// login and authenticated request for it is refused.
+    pub enabled: bool,
     /// Total bytes the account may store. `None` uses the schema default (1 GiB).
     pub quota_bytes: Option<i64>,
 }
@@ -64,14 +67,15 @@ impl UsersRepository {
         }
 
         sqlx::query_as::<_, User>(
-            "INSERT INTO users (email, password_hash, display_name, is_admin, quota_bytes)
-             VALUES ($1, $2, $3, $4, COALESCE($5::BIGINT, $6))
+            "INSERT INTO users (email, password_hash, display_name, is_admin, enabled, quota_bytes)
+             VALUES ($1, $2, $3, $4, $5, COALESCE($6::BIGINT, $7))
              RETURNING *",
         )
         .bind(&email)
         .bind(&new.password_hash)
         .bind(new.display_name.as_deref())
         .bind(new.is_admin)
+        .bind(new.enabled)
         .bind(new.quota_bytes)
         .bind(DEFAULT_QUOTA_BYTES)
         .fetch_one(&self.pool)
@@ -109,6 +113,23 @@ impl UsersRepository {
         self.find_by_email(email)
             .await?
             .ok_or_else(|| not_found(format!("user {email}")))
+    }
+
+    /// Look several identities up at once.
+    ///
+    /// `GET /audit` names who acted on each of its rows, so resolving the actors one
+    /// query per row would turn a page of audit entries into a burst of round trips.
+    pub async fn find_by_ids(&self, ids: &[UserId]) -> Result<Vec<User>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let raw: Vec<i64> = ids.iter().map(|id| id.get()).collect();
+        Ok(
+            sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ANY($1)")
+                .bind(&raw)
+                .fetch_all(&self.pool)
+                .await?,
+        )
     }
 
     /// A page of identities, newest first.

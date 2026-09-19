@@ -208,10 +208,14 @@ tls_port = 0
 base_path = "/api/v1"
 # Externally reachable URL: used in `.well-known/ferroma` and in generated links.
 public_url = "http://localhost:8080"
-# Built Webmail assets. Omit to use the copy embedded in the binary.
+# Built Webmail assets. Relative paths resolve against the process working
+# directory; a deployment outside the source tree must set this explicitly.
 # webmail_dir = "./web/dist"
 # Built Admin assets.
 # admin_dir = "./admin/dist"
+# The ES modules both apps import. Served at `/shared`, so the Webmail and the
+# Admin console keep one copy of them instead of one each.
+# shared_dir = "./shared"
 # Allowed CORS origins. Empty = same-origin only.
 cors_origins = []
 # HMAC secret for access/refresh tokens. REQUIRED in production: without it every

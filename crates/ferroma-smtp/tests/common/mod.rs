@@ -568,6 +568,7 @@ pub async fn seed_mailbox(
             password_hash: password_hash.to_string(),
             display_name: Some(local_part.to_string()),
             is_admin: false,
+            enabled: true,
             quota_bytes: None,
         })
         .await

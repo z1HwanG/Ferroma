@@ -7,12 +7,13 @@
  * entry — its full `details` object and the client's user agent live in a detail drawer.
  */
 
-import { API_BASE, ApiError, query, request } from '../api.js';
-import { listOf, normalizeAuditEntry, totalOf } from '../data.js';
-import { el } from '../dom.js';
-import { formatLogStamp } from '../format.js';
+import { API_BASE, ApiError, query, request } from '../../shared/api.js';
+import { listOf, normalizeAuditEntry, totalOf } from '../../shared/data.js';
+import { el } from '../../shared/dom.js';
+import { formatLogStamp } from '../../shared/format.js';
+import { t } from '../../shared/i18n.js';
 import { go } from '../router.js';
-import { toastSuccess } from '../toast.js';
+import { toastSuccess } from '../../shared/toast.js';
 import {
   actions,
   adminCard,
@@ -42,7 +43,7 @@ export async function render(params) {
     offset: Number.parseInt(params.get('offset') || '0', 10) || 0,
   };
 
-  const actor = el('input', { class: 'input', id: 'audit-actor', type: 'text', placeholder: 'user id' });
+  const actor = el('input', { class: 'input', id: 'audit-actor', type: 'text', placeholder: t('user id') });
   actor.value = state.actor;
   const action = el('input', { class: 'input', id: 'audit-action', type: 'text', placeholder: 'mail.sent' });
   action.value = state.action;
@@ -54,17 +55,17 @@ export async function render(params) {
   const bar = filterBar({
     id: 'audit-filter',
     fields: [
-      field('Actor user id', actor, 'The numeric id of the account that acted.'),
-      field('Action', action, 'Exact action name, e.g. “user.updated”.'),
+      field(t('Actor user id'), actor, t('The numeric id of the account that acted.')),
+      field(t('Action'), action, t('Exact action name, e.g. “user.updated”.')),
       // `?target_type=` is the API's own parameter for what the entry acted on, and it is
       // the only target filter the trail offers — there is no search by `target_id`.
-      field('Target kind', target, 'Substring of the target type, e.g. “user” or “storage”.'),
-      field('Since', since, 'Local time; sent as UTC.'),
-      el('button', { type: 'submit', class: 'btn', text: 'Apply' }),
+      field(t('Target kind'), target, t('Substring of the target type, e.g. “user” or “storage”.')),
+      field(t('Since'), since, t('Local time; sent as UTC.')),
+      el('button', { type: 'submit', class: 'btn', text: t('Apply') }),
     ],
     // Clearing is not a filter and not a submit: it belongs beside the fields, with the
     // bar's other actions, so it cannot be triggered by pressing Enter in a text box.
-    actions: [button('Clear', () => go('audit', {}))],
+    actions: [button(t('Clear'), () => go('audit', {}))],
   });
   // `submit` bubbles, so the listener belongs on the bar rather than on the <form> that
   // `filterBar` builds internally.
@@ -80,22 +81,22 @@ export async function render(params) {
     });
   });
 
-  const refreshButton = el('button', { type: 'button', class: 'btn', text: 'Refresh' });
+  const refreshButton = el('button', { type: 'button', class: 'btn', text: t('Refresh') });
   refreshButton.addEventListener('click', () => refresh());
 
   const card = adminCard({
-    title: 'Audit entries',
+    title: t('Audit entries'),
     subtitle: 'GET /api/v1/audit',
     renderEmpty: () =>
       el('div', { class: 'empty-state' }, [
-        el('p', { class: 'empty-title', text: 'No audit entries' }),
-        el('p', { text: 'Nothing matches the current filters.' }),
+        el('p', { class: 'empty-title', text: t('No audit entries') }),
+        el('p', { text: t('Nothing matches the current filters.') }),
       ]),
     renderData: (data) => data.node,
   });
 
   const root = el('div', {}, [
-    viewHead('Audit log', 'Who did what, and when', [refreshButton]),
+    viewHead(t('Audit log'), t('Who did what, and when'), [refreshButton]),
     bar,
     card.node,
   ]);
@@ -142,7 +143,7 @@ export async function render(params) {
     } catch (error) {
       card.setState({
         state: 'error',
-        message: error instanceof ApiError ? error.message : 'The audit log could not be loaded.',
+        message: error instanceof ApiError ? error.message : t('The audit log could not be loaded.'),
       });
     }
   }
@@ -171,7 +172,7 @@ function renderTable(entries, total, offset, handlers) {
       cell(targetText(entry)),
       cell(detailText(entry), 'truncate cell-mono'),
       cell(entry.ip || '—', 'cell-mono'),
-      actions(button('Details', () => handlers.onDetails(entry))),
+      actions(button(t('Details'), () => handlers.onDetails(entry))),
     ],
   }));
 
@@ -179,24 +180,24 @@ function renderTable(entries, total, offset, handlers) {
     columns: [
       // A timestamp is shown as text but sorted as an instant: comparing the rendered
       // strings would order the page by the day of the month first.
-      { key: 'when', label: 'When', value: (row) => (row.entry.at ? Date.parse(row.entry.at) : 0) },
+      { key: 'when', label: t('When'), value: (row) => (row.entry.at ? Date.parse(row.entry.at) : 0) },
       // Ids are numbers, so they sort as numbers. As text, "10" would come before "9".
       {
         key: 'actor',
-        label: 'Actor',
+        label: t('Actor'),
         value: (row) => (row.entry.actorUserId === null || row.entry.actorUserId === undefined ? 0 : Number(row.entry.actorUserId)),
       },
-      { key: 'action', label: 'Action', value: (row) => row.entry.action || '' },
-      { key: 'target', label: 'Target', value: (row) => targetText(row.entry) },
-      { key: 'detail', label: 'Detail', value: (row) => detailText(row.entry) },
-      { key: 'source', label: 'Source', value: (row) => row.entry.ip || '' },
-      { key: 'actions', label: 'Actions', sortable: false },
+      { key: 'action', label: t('Action'), value: (row) => row.entry.action || '' },
+      { key: 'target', label: t('Target'), value: (row) => targetText(row.entry) },
+      { key: 'detail', label: t('Detail'), value: (row) => detailText(row.entry) },
+      { key: 'source', label: t('IP address'), value: (row) => row.entry.ip || '' },
+      { key: 'actions', label: t('Actions'), sortable: false },
     ],
     rows,
     // The audit trail is append-only and this console exposes no endpoint that writes to
     // it. There is no honest bulk action to offer, so there is no selection either.
     selectable: false,
-    emptyMessage: 'No entries on this page.',
+    emptyMessage: t('No entries on this page.'),
   });
 
   return el('div', {}, [
@@ -229,30 +230,33 @@ function openEntryDrawer(entry) {
 
   const body = el('div', {}, [
     definitionList([
-      ['When', entry.at ? formatLogStamp(entry.at) : '—'],
-      ['Actor user id', entry.actorUserId === null || entry.actorUserId === undefined ? '—' : String(entry.actorUserId)],
-      ['Action', entry.action || '—'],
-      ['Target type', entry.targetType || '—'],
-      ['Target id', entry.targetId === null || entry.targetId === undefined ? '—' : String(entry.targetId)],
-      ['Source', entry.ip || '—'],
-      ['User agent', userAgentText(entry)],
+      [t('When'), entry.at ? formatLogStamp(entry.at) : '—'],
+      [t('Actor user id'), entry.actorUserId === null || entry.actorUserId === undefined ? '—' : String(entry.actorUserId)],
+      [t('Action'), entry.action || '—'],
+      [t('Target type'), entry.targetType || '—'],
+      [t('Target id'), entry.targetId === null || entry.targetId === undefined ? '—' : String(entry.targetId)],
+      [t('IP address'), entry.ip || '—'],
+      [t('User agent'), userAgentText(entry)],
     ]),
-    el('h3', { class: 'drawer-section', text: 'Details' }),
+    el('h3', { class: 'drawer-section', text: t('Details') }),
     hasDetail
       ? el('pre', { class: 'code-block', text: JSON.stringify(detail, null, 2) })
-      : el('p', { class: 'view-sub', text: 'This action recorded no details.' }),
-    el('h3', { class: 'drawer-section', text: 'Raw entry' }),
+      : el('p', { class: 'view-sub', text: t('This action recorded no details.') }),
+    el('h3', { class: 'drawer-section', text: t('Raw entry') }),
     rawNode,
   ]);
 
-  const copy = button('Copy raw entry', async () => {
+  const copy = button(t('Copy raw entry'), async () => {
     const copied = await copyToClipboard(raw, () => selectNode(rawNode));
-    toastSuccess(copied ? 'Entry copied.' : 'The entry is selected — press Ctrl/Cmd+C to copy it.');
+    toastSuccess(copied ? t('Entry copied.') : t('The entry is selected — press Ctrl/Cmd+C to copy it.'));
   });
 
   return openDrawer({
-    title: entry.action || 'Audit entry',
-    subtitle: `${entry.at ? formatLogStamp(entry.at) : 'unknown time'} · ${targetText(entry)}`,
+    title: entry.action || t('Audit entry'),
+    subtitle: t('{time} · {target}', {
+      time: entry.at ? formatLogStamp(entry.at) : t('unknown time'),
+      target: targetText(entry),
+    }),
     body,
     actions: [copy],
   });

@@ -13,20 +13,22 @@
  * sidebar reads as four short lists instead of one flat list of twelve.
  */
 
+import { t } from '../shared/i18n.js';
+
 /** @type {Array<{id: string, label: string, title: string, group: string, icon: string}>} */
 export const SECTIONS = [
-  { id: 'dashboard', label: 'Dashboard', title: 'Dashboard', group: '', icon: 'dashboard' },
-  { id: 'domains', label: 'Domains', title: 'Domains', group: 'Mail', icon: 'domains' },
-  { id: 'users', label: 'Users', title: 'Users', group: 'Mail', icon: 'users' },
-  { id: 'aliases', label: 'Aliases', title: 'Aliases', group: 'Mail', icon: 'aliases' },
-  { id: 'queue', label: 'Mail queue', title: 'Mail queue', group: 'Mail', icon: 'queue' },
-  { id: 'logs', label: 'System logs', title: 'System logs', group: 'System', icon: 'logs' },
-  { id: 'storage', label: 'Storage', title: 'Storage', group: 'System', icon: 'storage' },
-  { id: 'devices', label: 'Devices', title: 'Devices', group: 'System', icon: 'devices' },
-  { id: 'tls', label: 'TLS', title: 'TLS', group: 'System', icon: 'tls' },
-  { id: 'audit', label: 'Audit log', title: 'Audit log', group: 'Operator', icon: 'audit' },
-  { id: 'settings', label: 'Settings', title: 'Settings', group: 'Operator', icon: 'settings' },
-  { id: 'setup', label: 'Setup', title: 'First-run setup', group: 'Operator', icon: 'setup' },
+  { id: 'dashboard', label: t('Dashboard'), title: t('Dashboard'), group: '', icon: 'dashboard' },
+  { id: 'domains', label: t('Domains'), title: t('Domains'), group: t('Mail'), icon: 'domains' },
+  { id: 'users', label: t('Users'), title: t('Users'), group: t('Mail'), icon: 'users' },
+  { id: 'aliases', label: t('Aliases'), title: t('Aliases'), group: t('Mail'), icon: 'aliases' },
+  { id: 'queue', label: t('Mail queue'), title: t('Mail queue'), group: t('Mail'), icon: 'queue' },
+  { id: 'logs', label: t('System logs'), title: t('System logs'), group: t('System'), icon: 'logs' },
+  { id: 'storage', label: t('Storage'), title: t('Storage'), group: t('System'), icon: 'storage' },
+  { id: 'devices', label: t('Devices'), title: t('Devices'), group: t('System'), icon: 'devices' },
+  { id: 'tls', label: t('TLS certificates'), title: t('TLS certificates'), group: t('System'), icon: 'tls' },
+  { id: 'audit', label: t('Audit log'), title: t('Audit log'), group: t('Operator'), icon: 'audit' },
+  { id: 'settings', label: t('Settings'), title: t('Settings'), group: t('Operator'), icon: 'settings' },
+  { id: 'setup', label: t('Setup'), title: t('First-run setup'), group: t('Operator'), icon: 'setup' },
 ];
 
 

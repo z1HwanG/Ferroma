@@ -9,13 +9,14 @@
  * can only ever act on aliases of the domain the picker is showing.
  */
 
-import { API_BASE, ApiError, request } from '../api.js';
-import { aliasesOf, domainsOf } from '../data.js';
-import { el, setHidden, setText } from '../dom.js';
-import { formatLogStamp } from '../format.js';
-import { confirmDialog, openModal, promptDialog } from '../modal.js';
+import { API_BASE, ApiError, request } from '../../shared/api.js';
+import { aliasesOf, domainsOf } from '../../shared/data.js';
+import { el, setHidden, setText } from '../../shared/dom.js';
+import { formatLogStamp } from '../../shared/format.js';
+import { t, tn } from '../../shared/i18n.js';
+import { confirmDialog, openModal, promptDialog } from '../../shared/modal.js';
 import { go } from '../router.js';
-import { toastError, toastSuccess } from '../toast.js';
+import { toastError, toastSuccess } from '../../shared/toast.js';
 import {
   actions,
   adminCard,
@@ -37,24 +38,24 @@ export async function render(params) {
   const selected = Number.parseInt(params.get('domain') || '0', 10) || 0;
 
   const picker = el('select', { class: 'input', id: 'alias-domain' });
-  const aliasTitle = el('h2', { class: 'card-title', text: 'Aliases' });
+  const aliasTitle = el('h2', { class: 'card-title', text: t('Aliases') });
   const card = adminCard({
-    title: 'Aliases',
+    title: t('Aliases'),
     titleNode: aliasTitle,
-    subtitle: 'Sort by a column heading; select rows to act on several at once.',
+    subtitle: t('Sort by a column heading; select rows to act on several at once.'),
     renderEmpty: () =>
       el('div', { class: 'empty-state' }, [
-        el('p', { class: 'empty-title', text: 'No aliases for this domain' }),
-        el('p', { text: 'An alias forwards one local part to another address.' }),
+        el('p', { class: 'empty-title', text: t('No aliases for this domain') }),
+        el('p', { text: t('An alias forwards one local part to another address.') }),
       ]),
     renderData: (data) => data.node,
   });
 
-  const createButton = el('button', { type: 'button', class: 'btn btn-primary', text: 'New alias' });
+  const createButton = el('button', { type: 'button', class: 'btn btn-primary', text: t('New alias') });
   createButton.addEventListener('click', () => {
     const domainId = Number.parseInt(picker.value, 10);
     if (!domainId) {
-      toastError('Choose a domain first.');
+      toastError(t('Choose a domain first.'));
       return;
     }
     openAliasDialog({ domainId }, () => refresh());
@@ -63,8 +64,8 @@ export async function render(params) {
   const bar = filterBar({
     id: 'aliases-domain-bar',
     fields: [
-      field('Domain', picker, 'Aliases belong to one domain at a time.'),
-      el('button', { type: 'submit', class: 'btn', text: 'Show' }),
+      field(t('Domain'), picker, t('Aliases belong to one domain at a time.')),
+      el('button', { type: 'submit', class: 'btn', text: t('Show') }),
     ],
   });
   // The picker already applies on `change`; this keeps Enter from submitting the
@@ -76,7 +77,7 @@ export async function render(params) {
   });
 
   const root = el('div', {}, [
-    viewHead('Aliases', 'Forwarding addresses', [createButton]),
+    viewHead(t('Aliases'), t('Forwarding addresses'), [createButton]),
     bar,
     card.node,
   ]);
@@ -100,7 +101,7 @@ export async function render(params) {
     // mount: without it, switching domains left the previous domain's name over a
     // table of the new domain's aliases.
     const wanted = domains.find((domain) => String(domain.id) === picker.value);
-    if (wanted) setText(aliasTitle, `Aliases — ${wanted.name}`);
+    if (wanted) setText(aliasTitle, t('Aliases — {name}', { name: wanted.name }));
     go('aliases', { domain: picker.value }, { replace: true });
     refresh();
   }
@@ -117,7 +118,7 @@ export async function render(params) {
       const wanted = domains.find((domain) => domain.id === currentDomainId()) || domains[0] || null;
       picker.replaceChildren();
       if (domains.length === 0) {
-        picker.append(el('option', { value: '', text: 'no domains yet' }));
+        picker.append(el('option', { value: '', text: t('no domains yet') }));
         picker.disabled = true;
         return false;
       }
@@ -126,12 +127,12 @@ export async function render(params) {
         picker.append(el('option', { value: String(domain.id), text: domain.name }));
       }
       picker.value = String(wanted.id);
-      setText(aliasTitle, `Aliases — ${wanted.name}`);
+      setText(aliasTitle, t('Aliases — {name}', { name: wanted.name }));
       return true;
     } catch (error) {
-      picker.replaceChildren(el('option', { value: '', text: 'domains unavailable' }));
+      picker.replaceChildren(el('option', { value: '', text: t('domains unavailable') }));
       picker.disabled = true;
-      card.setState({ state: 'error', message: messageOf(error, 'Domains could not be loaded.') });
+      card.setState({ state: 'error', message: messageOf(error, t('Domains could not be loaded.')) });
       return false;
     }
   }
@@ -140,17 +141,17 @@ export async function render(params) {
     onDetails: (alias) => openAliasDrawer(alias, currentDomain, handlers),
     onEdit: async (alias) => {
       const target = await promptDialog({
-        title: `Forward ${alias.localPart}`,
-        label: 'Destination address',
-        confirmLabel: 'Save',
+        title: t('Forward {localPart}', { localPart: alias.localPart }),
+        label: t('Destination address'),
+        confirmLabel: t('Save'),
       });
       if (target === null) return;
       try {
         await request(`${API_BASE}/aliases/${alias.id}`, { method: 'PATCH', body: { target }, toast: false });
-        toastSuccess('Alias updated.');
+        toastSuccess(t('Alias updated.'));
         refresh();
       } catch (error) {
-        toastError(messageOf(error, 'The alias could not be updated.'));
+        toastError(messageOf(error, t('The alias could not be updated.')));
       }
     },
     onToggle: async (alias) => {
@@ -160,26 +161,26 @@ export async function render(params) {
           body: { enabled: !alias.enabled },
           toast: false,
         });
-        toastSuccess('Alias updated.');
+        toastSuccess(t('Alias updated.'));
         refresh();
       } catch (error) {
-        toastError(messageOf(error, 'The alias could not be updated.'));
+        toastError(messageOf(error, t('The alias could not be updated.')));
       }
     },
     onDelete: async (alias) => {
       const target = await promptDialog({
-        title: 'Delete alias',
-        label: `Type ${alias.localPart} to confirm`,
-        confirmLabel: 'Delete alias',
+        title: t('Delete alias'),
+        label: t('Type {localPart} to confirm', { localPart: alias.localPart }),
+        confirmLabel: t('Delete alias'),
         requireValue: alias.localPart,
       });
       if (target === null) return;
       try {
         await request(`${API_BASE}/aliases/${alias.id}`, { method: 'DELETE', toast: false });
-        toastSuccess('Alias deleted.');
+        toastSuccess(t('Alias deleted.'));
         refresh();
       } catch (error) {
-        toastError(messageOf(error, 'The alias could not be deleted.'));
+        toastError(messageOf(error, t('The alias could not be deleted.')));
       }
     },
     onBulkEnabled: (ids, enabled) => setEnabled(ids, enabled, () => refresh()),
@@ -203,13 +204,13 @@ export async function render(params) {
       }
       card.setState({ state: 'ready', data: { node: renderTable(aliases, handlers) } });
     } catch (error) {
-      card.setState({ state: 'error', message: messageOf(error, 'Aliases could not be loaded.') });
+      card.setState({ state: 'error', message: messageOf(error, t('Aliases could not be loaded.')) });
     }
   }
 
   const ok = await loadDomains();
   if (ok) await refresh();
-  else card.setState({ state: 'error', message: 'Domains could not be loaded.' });
+  else card.setState({ state: 'error', message: t('Domains could not be loaded.') });
 
   return { node: root, cleanup() {} };
 }
@@ -224,8 +225,11 @@ async function setEnabled(ids, enabled, refresh) {
     ),
   );
   const failed = results.filter((result) => result.status === 'rejected').length;
-  if (failed > 0) toastError(`${failed} of ${ids.length} alias(es) could not be updated.`);
-  else toastSuccess(`${ids.length} alias(es) ${enabled ? 'enabled' : 'disabled'}.`);
+  if (failed > 0) {
+    toastError(tn(ids.length, '{failed} of {count} alias could not be updated.', '{failed} of {count} aliases could not be updated.', { failed, count: ids.length }));
+  } else {
+    toastSuccess(tn(ids.length, '{count} alias {state}.', '{count} aliases {state}.', { count: ids.length, state: enabled ? t('enabled') : t('disabled') }));
+  }
   refresh();
 }
 
@@ -238,17 +242,20 @@ async function setEnabled(ids, enabled, refresh) {
  */
 async function deleteAliases(ids, refresh) {
   const confirmed = await confirmDialog({
-    title: `Delete ${ids.length} alias(es)?`,
-    message: 'Mail sent to a deleted alias stops being forwarded; the destination is untouched.',
-    confirmLabel: 'Delete',
+    title: tn(ids.length, 'Delete {count} alias?', 'Delete {count} aliases?', { count: ids.length }),
+    message: t('Mail sent to a deleted alias stops being forwarded; the destination is untouched.'),
+    confirmLabel: t('Delete'),
   });
   if (!confirmed) return;
   const results = await Promise.allSettled(
     ids.map((id) => request(`${API_BASE}/aliases/${id}`, { method: 'DELETE', toast: false })),
   );
   const failed = results.filter((result) => result.status === 'rejected').length;
-  if (failed > 0) toastError(`${failed} of ${ids.length} alias(es) could not be deleted.`);
-  else toastSuccess(`${ids.length} alias(es) deleted.`);
+  if (failed > 0) {
+    toastError(tn(ids.length, '{failed} of {count} alias could not be deleted.', '{failed} of {count} aliases could not be deleted.', { failed, count: ids.length }));
+  } else {
+    toastSuccess(tn(ids.length, '{count} alias deleted.', '{count} aliases deleted.', { count: ids.length }));
+  }
   refresh();
 }
 
@@ -272,9 +279,9 @@ function renderTable(aliases, handlers) {
         badge(alias.enabled ? 'enabled' : 'disabled'),
         cell(createdAt ? formatLogStamp(createdAt) : '—', 'cell-mono'),
         actions(
-          button('Details', () => handlers.onDetails(alias)),
-          button('Retarget', () => handlers.onEdit(alias)),
-          button('Delete', () => handlers.onDelete(alias), 'btn-danger'),
+          button(t('Details'), () => handlers.onDetails(alias)),
+          button(t('Retarget'), () => handlers.onEdit(alias)),
+          button(t('Delete'), () => handlers.onDelete(alias), 'btn-danger'),
         ),
       ],
     };
@@ -282,24 +289,24 @@ function renderTable(aliases, handlers) {
 
   return dataTable({
     columns: [
-      { key: 'alias', label: 'Alias', value: (row) => row.alias.localPart },
-      { key: 'target', label: 'Forwards to', value: (row) => row.alias.target },
-      { key: 'state', label: 'State', value: (row) => (row.alias.enabled ? 1 : 0) },
+      { key: 'alias', label: t('Alias'), value: (row) => row.alias.localPart },
+      { key: 'target', label: t('Forwards to'), value: (row) => row.alias.target },
+      { key: 'state', label: t('State'), value: (row) => (row.alias.enabled ? 1 : 0) },
       {
         key: 'created',
-        label: 'Created',
+        label: t('Created'),
         value: (row) => (row.createdAt ? Date.parse(row.createdAt) : 0),
       },
-      { key: 'actions', label: 'Actions', sortable: false },
+      { key: 'actions', label: t('Actions'), sortable: false },
     ],
     rows,
     selectable: true,
     bulkActions: [
-      { label: 'Enable', onClick: (ids) => handlers.onBulkEnabled(ids, true) },
-      { label: 'Disable', onClick: (ids) => handlers.onBulkEnabled(ids, false) },
-      { label: 'Delete', tone: 'danger', onClick: (ids) => handlers.onBulkDelete(ids) },
+      { label: t('Enable'), onClick: (ids) => handlers.onBulkEnabled(ids, true) },
+      { label: t('Disable'), onClick: (ids) => handlers.onBulkEnabled(ids, false) },
+      { label: t('Delete'), tone: 'danger', onClick: (ids) => handlers.onBulkDelete(ids) },
     ],
-    emptyMessage: 'No aliases for this domain.',
+    emptyMessage: t('No aliases for this domain.'),
   }).node;
 }
 
@@ -320,30 +327,30 @@ function openAliasDrawer(alias, domain, handlers) {
 
   const body = el('div', {}, [
     definitionList([
-      ['Alias', cell(address, 'cell-mono')],
-      ['Forwards to', cell(alias.target || '—', 'cell-mono')],
-      ['State', alias.enabled ? 'enabled' : 'disabled'],
-      ['Domain', domain ? domain.name : '—'],
-      ['Created', createdAt ? formatLogStamp(createdAt) : '—'],
+      [t('Alias'), cell(address, 'cell-mono')],
+      [t('Forwards to'), cell(alias.target || '—', 'cell-mono')],
+      [t('State'), alias.enabled ? t('enabled') : t('disabled')],
+      [t('Domain'), domain ? domain.name : '—'],
+      [t('Created'), createdAt ? formatLogStamp(createdAt) : '—'],
     ]),
   ]);
 
-  const retarget = button('Retarget', () => {
+  const retarget = button(t('Retarget'), () => {
     drawer.close();
     handlers.onEdit(alias);
   });
-  const toggle = button(alias.enabled ? 'Disable' : 'Enable', () => {
+  const toggle = button(alias.enabled ? t('Disable') : t('Enable'), () => {
     drawer.close();
     handlers.onToggle(alias);
   });
-  const remove = button('Delete', () => {
+  const remove = button(t('Delete'), () => {
     drawer.close();
     handlers.onDelete(alias);
   }, 'btn-danger');
 
   const drawer = openDrawer({
     title: address,
-    subtitle: alias.target ? `forwards to ${alias.target}` : 'no destination set',
+    subtitle: alias.target ? t('forwards to {target}', { target: alias.target }) : t('no destination set'),
     body,
     actions: [retarget, toggle, remove],
   });
@@ -356,15 +363,15 @@ function openAliasDialog(options, onDone) {
   const target = el('input', { class: 'input', id: 'alias-target', type: 'email', autocomplete: 'off' });
   const error = el('p', { class: 'field-error', id: 'alias-error', hidden: true });
   const body = el('div', {}, [
-    field('Local part', localPart, 'The part before the @ for the alias.'),
-    field('Forward to', target),
+    field(t('Local part'), localPart, t('The part before the @ for the alias.')),
+    field(t('Forward to'), target),
     error,
   ]);
-  const cancel = el('button', { type: 'button', class: 'btn', text: 'Cancel' });
-  const create = el('button', { type: 'button', class: 'btn btn-primary', text: 'Create alias' });
+  const cancel = el('button', { type: 'button', class: 'btn', text: t('Cancel') });
+  const create = el('button', { type: 'button', class: 'btn btn-primary', text: t('Create alias') });
 
   const modal = openModal({
-    title: 'New alias',
+    title: t('New alias'),
     body,
     footer: [cancel, create],
     onMount: () => {
@@ -373,32 +380,32 @@ function openAliasDialog(options, onDone) {
         const from = localPart.value.trim().toLowerCase();
         const to = target.value.trim();
         if (!/^[a-z0-9!#$%&'*+/=?^_`{|}~.-]+$/.test(from)) {
-          setText(error, 'Enter a valid local part.');
+          setText(error, t('Enter a valid local part.'));
           setHidden(error, false);
           return;
         }
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
-          setText(error, 'Enter a valid destination address.');
+          setText(error, t('Enter a valid destination address.'));
           setHidden(error, false);
           return;
         }
         create.disabled = true;
-        setText(create, 'Creating…');
+        setText(create, t('Creating…'));
         try {
           await request(`${API_BASE}/domains/${options.domainId}/aliases`, {
             method: 'POST',
             body: { local_part: from, target: to },
             toast: false,
           });
-          toastSuccess(`Alias ${from} created.`);
+          toastSuccess(t('Alias {localPart} created.', { localPart: from }));
           modal.close('created');
           onDone();
         } catch (err) {
-          setText(error, messageOf(err, 'The alias could not be created.'));
+          setText(error, messageOf(err, t('The alias could not be created.')));
           setHidden(error, false);
         } finally {
           create.disabled = false;
-          setText(create, 'Create alias');
+          setText(create, t('Create alias'));
         }
       });
     },

@@ -7,7 +7,8 @@
  * blank box. The previous content is replaced only when the new state is ready.
  */
 
-import { clear, el, labelWithTitle, setHidden, setText } from './dom.js';
+import { clear, el, labelWithTitle, setHidden, setText } from '../shared/dom.js';
+import { t } from '../shared/i18n.js';
 
 /**
  * @param {string} title
@@ -38,7 +39,7 @@ export function sectionHead(options) {
 }
 
 /** A `<p class="loading-state">`. */
-export function loadingState(message = 'Loading…') {
+export function loadingState(message = t('Loading…')) {
   return el('p', { class: 'loading-state', role: 'status', text: message });
 }
 
@@ -91,7 +92,7 @@ export function adminCard(options) {
   ]);
 
   const renderLoading = options.renderLoading || (() => loadingState());
-  const renderEmpty = options.renderEmpty || (() => emptyState({ title: 'Nothing to show' }));
+  const renderEmpty = options.renderEmpty || (() => emptyState({ title: t('Nothing to show') }));
   const renderError = options.renderError || ((message) => errorState(message));
 
   let current = '';
@@ -110,7 +111,7 @@ export function adminCard(options) {
       current = key;
       clear(body);
       if (next.state === 'loading') body.append(renderLoading());
-      else if (next.state === 'error') body.append(renderError(next.message || 'Something went wrong.'));
+      else if (next.state === 'error') body.append(renderError(next.message || t('Something went wrong.')));
       else if (next.state === 'empty') body.append(renderEmpty());
       else body.append(options.renderData(next.data));
     },
@@ -148,6 +149,17 @@ export function cell(text, className = '') {
 }
 
 /** Status pill. @param {string} status */
+/**
+ * A status pill.
+ *
+ * The argument is the *token* the server or the view uses — `enabled`, `pending`,
+ * `error` — not display text. The tone class is derived from that token, and the label
+ * is translated here, because both belong to the same closed vocabulary: translating at
+ * the call site would hand this function Chinese and leave every pill in the neutral
+ * tone, which is how a localised console silently loses its colour coding.
+ *
+ * @param {unknown} status
+ */
 export function badge(status) {
   const value = String(status || 'unknown').toLowerCase();
   // The families cover every value a view passes: entity states (`enabled`), queue
@@ -161,7 +173,10 @@ export function badge(status) {
         : value === 'fail' || value === 'failed' || value === 'disabled' || value === 'cancelled' || value === 'error'
           ? 'fail'
           : 'muted';
-  return el('span', { class: `badge badge-${kind}`, text: status === '' ? 'unknown' : String(status) });
+  const token = status === '' || status === null || status === undefined ? 'unknown' : String(status);
+  // The token is translated for display; a token with no catalog entry — a value the
+  // server invented, an address, a count — is shown exactly as it arrived.
+  return el('span', { class: `badge badge-${kind}`, text: t(token) });
 }
 
 /** A row of small buttons. */
@@ -173,8 +188,8 @@ export function actions(...buttons) {
  * @param {{offset: number, limit: number, total: number, onPrev: () => void, onNext: () => void}} options
  */
 export function pager(options) {
-  const prev = el('button', { type: 'button', class: 'btn btn-small', text: 'Previous' });
-  const next = el('button', { type: 'button', class: 'btn btn-small', text: 'Next' });
+  const prev = el('button', { type: 'button', class: 'btn btn-small', text: t('Previous') });
+  const next = el('button', { type: 'button', class: 'btn btn-small', text: t('Next') });
   prev.disabled = options.offset <= 0;
   next.disabled = options.offset + options.limit >= options.total;
   prev.addEventListener('click', options.onPrev);
@@ -184,7 +199,7 @@ export function pager(options) {
   return el('div', { class: 'pager' }, [
     prev,
     next,
-    el('span', { class: 'pager-info', text: `${from}–${to} of ${options.total}` }),
+    el('span', { class: 'pager-info', text: t('{from}–{to} of {total}', { from, to, total: options.total }) }),
   ]);
 }
 
@@ -240,7 +255,7 @@ export function statTile(options) {
   return el('div', { class: classes.join(' ') }, [
     el('p', { class: 'stat-label', text: options.label }),
     el('p', { class: 'stat-value', text: missing ? '—' : String(raw) }),
-    options.note ? el('p', { class: 'stat-note', text: missing ? 'not reported' : options.note }) : null,
+    options.note ? el('p', { class: 'stat-note', text: missing ? t('not reported') : options.note }) : null,
   ]);
 }
 
@@ -256,7 +271,7 @@ export function statTile(options) {
 export function attentionList(issues) {
   if (issues.length === 0) {
     return el('div', { class: 'attention attention-clear' }, [
-      el('p', { class: 'attention-clear-text', text: 'Nothing needs attention.' }),
+      el('p', { class: 'attention-clear-text', text: t('Nothing needs attention.') }),
     ]);
   }
   return el(
@@ -323,7 +338,7 @@ export function dataTable(options) {
   const selectAll = el('input', {
     type: 'checkbox',
     class: 'row-check',
-    'aria-label': 'Select every row on this page',
+    'aria-label': t('Select every row on this page'),
   });
 
   const head = el('tr');
@@ -355,7 +370,7 @@ export function dataTable(options) {
   const empty = el('p', {
     class: 'empty',
     hidden: true,
-    text: options.emptyMessage || 'Nothing to show.',
+    text: options.emptyMessage || t('Nothing to show.'),
   });
   const node = el('div', { class: 'data-table' }, [bulkBar, wrap, empty]);
 
@@ -399,7 +414,7 @@ export function dataTable(options) {
 
   function renderBulk() {
     bulkBar.hidden = selected.size === 0;
-    bulkCount.textContent = `${selected.size} selected`;
+    bulkCount.textContent = t('{count} selected', { count: selected.size });
   }
 
   function renderBody() {
@@ -413,7 +428,7 @@ export function dataTable(options) {
         const check = el('input', {
           type: 'checkbox',
           class: 'row-check',
-          'aria-label': `Select this row`,
+          'aria-label': t('Select this row'),
         });
         check.checked = selected.has(row.key);
         check.addEventListener('change', () => {
@@ -503,16 +518,16 @@ export function openDrawer(options) {
   const closeButton = el('button', {
     type: 'button',
     class: 'btn btn-icon',
-    'aria-label': 'Close details',
+    'aria-label': t('Close details'),
     text: '\u00d7',
   });
   const panel = el(
     'aside',
-    { class: 'drawer', role: 'dialog', 'aria-label': options.title || 'Details', tabindex: '-1' },
+    { class: 'drawer', role: 'dialog', 'aria-label': options.title || t('Details'), tabindex: '-1' },
     [
       el('header', { class: 'drawer-head' }, [
         el('div', {}, [
-          el('h2', { class: 'drawer-title', text: options.title || 'Details' }),
+          el('h2', { class: 'drawer-title', text: options.title || t('Details') }),
           options.subtitle ? el('p', { class: 'view-sub', text: options.subtitle }) : null,
         ]),
         closeButton,

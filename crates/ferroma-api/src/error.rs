@@ -49,6 +49,39 @@ pub struct ErrorDetail {
     pub details: Option<serde_json::Value>,
 }
 
+/// Build the documented envelope for a request that matched no route, or matched a
+/// path but not the method.
+///
+/// `axum` answers both with an empty body, and `docs/api.md` §1.3 promises the envelope
+/// on every failure. A front-end can render an empty 404 only as "Request failed
+/// (HTTP 404)", which tells the operator nothing.
+#[must_use]
+pub fn envelope_response(status: StatusCode, code: &str, message: &str) -> Response {
+    (
+        status,
+        Json(ErrorBody {
+            error: ErrorDetail {
+                code: code.to_string(),
+                message: message.to_string(),
+                details: None,
+            },
+        }),
+    )
+        .into_response()
+}
+
+/// The envelope for an API path that does not exist.
+#[must_use]
+pub fn not_found(message: &str) -> Response {
+    envelope_response(StatusCode::NOT_FOUND, "not_found", message)
+}
+
+/// The envelope for a path that exists but not for this method.
+#[must_use]
+pub fn method_not_allowed(message: &str) -> Response {
+    envelope_response(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", message)
+}
+
 /// Anything a handler can return as a failure.
 ///
 /// Handlers use `?` on `Result<_, FerromaError>` and `Result<_, StorageError>` and let
@@ -133,13 +166,16 @@ impl ApiError {
 
     /// The message that goes to the client.
     fn client_message(&self) -> String {
-        if self.is_internal() {
+        let english = if self.is_internal() {
             // Deliberately generic: `Storage(_)` renders as "database error: <sqlx>",
             // which names tables, constraints and sometimes values.
             "the server could not complete the request".to_string()
         } else {
             self.source.to_string()
-        }
+        };
+        // `code` stays language-neutral; only this half is negotiated. See
+        // [`crate::i18n`].
+        crate::i18n::current().message(&english)
     }
 
     /// A diagnostic for the log line. Carries the real cause, never the request body.

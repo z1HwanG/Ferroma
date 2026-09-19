@@ -149,6 +149,7 @@ impl Harness {
                 password_hash: "$argon2id$x".into(),
                 display_name: None,
                 is_admin: false,
+                enabled: true,
                 quota_bytes: None,
             })
             .await
@@ -672,6 +673,7 @@ async fn changes_are_scoped_to_their_owner() {
             password_hash: "$argon2id$x".into(),
             display_name: None,
             is_admin: false,
+            enabled: true,
             quota_bytes: None,
         })
         .await

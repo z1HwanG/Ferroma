@@ -358,6 +358,7 @@ async fn seed_second_address(repos: &Repositories, domain: &str, local_part: &st
             password_hash: "unused".to_string(),
             display_name: Some(local_part.to_string()),
             is_admin: false,
+            enabled: true,
             quota_bytes: None,
         })
         .await

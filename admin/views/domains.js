@@ -10,13 +10,14 @@
  * escalates to `?force=true` behind a second confirmation.
  */
 
-import { API_BASE, ApiError, request } from '../api.js';
-import { domainsOf, normalizeDkim, normalizeDnsReport } from '../data.js';
-import { clear, el, setHidden, setText } from '../dom.js';
-import { formatLogStamp } from '../format.js';
-import { confirmDialog, openModal, promptDialog } from '../modal.js';
+import { API_BASE, ApiError, request } from '../../shared/api.js';
+import { domainsOf, normalizeDkim, normalizeDnsReport } from '../../shared/data.js';
+import { clear, el, setHidden, setText } from '../../shared/dom.js';
+import { formatLogStamp } from '../../shared/format.js';
+import { t, tn } from '../../shared/i18n.js';
+import { confirmDialog, openModal, promptDialog } from '../../shared/modal.js';
 import { go } from '../router.js';
-import { toastError, toastSuccess } from '../toast.js';
+import { toastError, toastSuccess } from '../../shared/toast.js';
 import {
   actions,
   adminCard,
@@ -34,7 +35,7 @@ import {
 } from '../ui.js';
 
 const STATUS_GLYPH = { ok: '✓', warn: '!', fail: '✗', skip: '–' };
-const STATUS_LABEL = { ok: 'ok', warn: 'warn', fail: 'fail', skip: 'skipped' };
+const STATUS_LABEL = { ok: t('ok'), warn: t('warn'), fail: t('fail'), skip: t('skipped') };
 
 /**
  * How the Status column sorts.
@@ -50,12 +51,12 @@ const STATUS_RANK = { fail: 0, warn: 1, ok: 2, skip: 3 };
  */
 export async function render() {
   const listCard = adminCard({
-    title: 'Domains',
-    subtitle: 'Sort by a column heading; select rows to act on several at once.',
+    title: t('Domains'),
+    subtitle: t('Sort by a column heading; select rows to act on several at once.'),
     renderEmpty: () =>
       el('div', { class: 'empty-state' }, [
-        el('p', { class: 'empty-title', text: 'No domains yet' }),
-        el('p', { text: 'Add the first domain this server will receive mail for.' }),
+        el('p', { class: 'empty-title', text: t('No domains yet') }),
+        el('p', { text: t('Add the first domain this server will receive mail for.') }),
       ]),
     renderData: (data) => data.node,
   });
@@ -65,14 +66,14 @@ export async function render() {
     id: 'domains-filter',
     type: 'search',
     autocomplete: 'off',
-    placeholder: 'Filter by name or description',
+    placeholder: t('Filter by name or description'),
   });
 
   const bar = filterBar({
     id: 'domains-filter-bar',
     fields: [
-      field('Filter', filterInput, 'Matches the domain name or its description.'),
-      el('button', { type: 'submit', class: 'btn', text: 'Filter' }),
+      field(t('Filter'), filterInput, t('Matches the domain name or its description.')),
+      el('button', { type: 'submit', class: 'btn', text: t('Filter') }),
     ],
   });
   // `GET /domains` takes no query parameter, so this is a filter over what is
@@ -85,14 +86,14 @@ export async function render() {
     applyFilter();
   });
 
-  const createButton = el('button', { type: 'button', class: 'btn btn-primary', text: 'New domain' });
+  const createButton = el('button', { type: 'button', class: 'btn btn-primary', text: t('New domain') });
   createButton.addEventListener('click', () => openCreateDialog(refresh));
 
-  const refreshButton = el('button', { type: 'button', class: 'btn', text: 'Refresh' });
+  const refreshButton = el('button', { type: 'button', class: 'btn', text: t('Refresh') });
   refreshButton.addEventListener('click', () => refresh());
 
   const root = el('div', {}, [
-    viewHead('Domains', 'Mail domains hosted by this server', [createButton, refreshButton]),
+    viewHead(t('Domains'), t('Mail domains hosted by this server'), [createButton, refreshButton]),
     bar,
     listCard.node,
   ]);
@@ -111,18 +112,18 @@ export async function render() {
           body: { enabled: !domain.enabled },
           toast: false,
         });
-        toastSuccess(`Domain ${domain.name} ${domain.enabled ? 'disabled' : 'enabled'}.`);
+        toastSuccess(t('Domain {name} {state}.', { name: domain.name, state: domain.enabled ? t('disabled') : t('enabled') }));
         refresh();
       } catch (error) {
-        toastError(messageOf(error, 'The domain could not be updated.'));
+        toastError(messageOf(error, t('The domain could not be updated.')));
       }
     },
     onEdit: async (domain) => {
       const description = await promptDialog({
-        title: `Description for ${domain.name}`,
-        label: 'Description',
-        confirmLabel: 'Save',
-        hint: 'Shown next to the domain in this table. Leave a dash to clear it.',
+        title: t('Description for {name}', { name: domain.name }),
+        label: t('Description'),
+        confirmLabel: t('Save'),
+        hint: t('Shown next to the domain in this table. Leave a dash to clear it.'),
       });
       if (description === null) return;
       try {
@@ -131,41 +132,41 @@ export async function render() {
           body: { description: description === '—' ? '' : description },
           toast: false,
         });
-        toastSuccess('Domain updated.');
+        toastSuccess(t('Domain updated.'));
         refresh();
       } catch (error) {
-        toastError(messageOf(error, 'The domain could not be updated.'));
+        toastError(messageOf(error, t('The domain could not be updated.')));
       }
     },
     onDelete: async (domain) => {
       const confirmed = await confirmDialog({
-        title: 'Delete domain',
-        message: `Delete ${domain.name}? Addresses that still exist block the deletion unless you force it.`,
-        confirmLabel: 'Delete domain',
+        title: t('Delete domain'),
+        message: t('Delete {name}? Addresses that still exist block the deletion unless you force it.', { name: domain.name }),
+        confirmLabel: t('Delete domain'),
       });
       if (!confirmed) return;
       try {
         await request(`${API_BASE}/domains/${domain.id}`, { method: 'DELETE', toast: false });
-        toastSuccess(`Domain ${domain.name} deleted.`);
+        toastSuccess(t('Domain {name} deleted.', { name: domain.name }));
         refresh();
       } catch (error) {
         if (error instanceof ApiError && error.status === 409) {
           const forced = await confirmDialog({
-            title: 'Force delete',
-            message: `${error.message} Delete ${domain.name} and everything it owns?`,
-            confirmLabel: 'Delete everything',
+            title: t('Force delete'),
+            message: t('{message} Delete {name} and everything it owns?', { message: error.message, name: domain.name }),
+            confirmLabel: t('Delete everything'),
           });
           if (!forced) return;
           try {
             await request(`${API_BASE}/domains/${domain.id}?force=true`, { method: 'DELETE', toast: false });
-            toastSuccess(`Domain ${domain.name} and its addresses were deleted.`);
+            toastSuccess(t('Domain {name} and its addresses were deleted.', { name: domain.name }));
             refresh();
           } catch (again) {
-            toastError(messageOf(again, 'The domain could not be deleted.'));
+            toastError(messageOf(again, t('The domain could not be deleted.')));
           }
           return;
         }
-        toastError(messageOf(error, 'The domain could not be deleted.'));
+        toastError(messageOf(error, t('The domain could not be deleted.')));
       }
     },
     onBulkEnabled: (ids, enabled) => setEnabled(ids, enabled, () => refresh()),
@@ -196,7 +197,7 @@ export async function render() {
       // Drop the reference: the table it points at has just been taken off the screen,
       // and filtering a detached node would look like a filter that does nothing.
       grid = null;
-      listCard.setState({ state: 'error', message: messageOf(error, 'Domains could not be loaded.') });
+      listCard.setState({ state: 'error', message: messageOf(error, t('Domains could not be loaded.')) });
     }
   }
 
@@ -215,8 +216,11 @@ async function setEnabled(ids, enabled, refresh) {
     ),
   );
   const failed = results.filter((result) => result.status === 'rejected').length;
-  if (failed > 0) toastError(`${failed} of ${ids.length} domain(s) could not be updated.`);
-  else toastSuccess(`${ids.length} domain(s) ${enabled ? 'enabled' : 'disabled'}.`);
+  if (failed > 0) {
+    toastError(tn(ids.length, '{failed} of {count} domain could not be updated.', '{failed} of {count} domains could not be updated.', { failed, count: ids.length }));
+  } else {
+    toastSuccess(tn(ids.length, '{count} domain {state}.', '{count} domains {state}.', { count: ids.length, state: enabled ? t('enabled') : t('disabled') }));
+  }
   refresh();
 }
 
@@ -230,9 +234,9 @@ async function setEnabled(ids, enabled, refresh) {
  */
 async function deleteDomains(ids, refresh) {
   const confirmed = await confirmDialog({
-    title: `Delete ${ids.length} domain(s)?`,
-    message: 'A domain that still holds addresses is refused; delete those one at a time to force it.',
-    confirmLabel: 'Delete',
+    title: tn(ids.length, 'Delete {count} domain?', 'Delete {count} domains?', { count: ids.length }),
+    message: t('A domain that still holds addresses is refused; delete those one at a time to force it.'),
+    confirmLabel: t('Delete'),
   });
   if (!confirmed) return;
   const results = await Promise.allSettled(
@@ -240,9 +244,9 @@ async function deleteDomains(ids, refresh) {
   );
   const failed = results.filter((result) => result.status === 'rejected').length;
   if (failed > 0) {
-    toastError(`${failed} of ${ids.length} domain(s) could not be deleted — they may still hold addresses.`);
+    toastError(tn(ids.length, '{failed} of {count} domain could not be deleted — they may still hold addresses.', '{failed} of {count} domains could not be deleted — they may still hold addresses.', { failed, count: ids.length }));
   } else {
-    toastSuccess(`${ids.length} domain(s) deleted.`);
+    toastSuccess(tn(ids.length, '{count} domain deleted.', '{count} domains deleted.', { count: ids.length }));
   }
   refresh();
 }
@@ -266,34 +270,34 @@ function renderTable(domains, handlers) {
       badge(domain.enabled ? 'enabled' : 'disabled'),
       cell(domain.createdAt ? formatLogStamp(domain.createdAt) : '—', 'cell-mono'),
       actions(
-        button('Details', () => handlers.onDetails(domain)),
-        button('Aliases', () => handlers.onAliases(domain)),
-        button('Delete', () => handlers.onDelete(domain), 'btn-danger'),
+        button(t('Details'), () => handlers.onDetails(domain)),
+        button(t('Aliases'), () => handlers.onAliases(domain)),
+        button(t('Delete'), () => handlers.onDelete(domain), 'btn-danger'),
       ),
     ],
   }));
 
   const grid = dataTable({
     columns: [
-      { key: 'domain', label: 'Domain', value: (row) => row.domain.name },
-      { key: 'description', label: 'Description', value: (row) => row.domain.description },
-      { key: 'addresses', label: 'Addresses', value: (row) => row.domain.mailboxCount ?? 0 },
-      { key: 'state', label: 'State', value: (row) => (row.domain.enabled ? 1 : 0) },
+      { key: 'domain', label: t('Domain'), value: (row) => row.domain.name },
+      { key: 'description', label: t('Description'), value: (row) => row.domain.description },
+      { key: 'addresses', label: t('Addresses'), value: (row) => row.domain.mailboxCount ?? 0 },
+      { key: 'state', label: t('State'), value: (row) => (row.domain.enabled ? 1 : 0) },
       {
         key: 'created',
-        label: 'Created',
+        label: t('Created'),
         value: (row) => (row.domain.createdAt ? Date.parse(row.domain.createdAt) : 0),
       },
-      { key: 'actions', label: 'Actions', sortable: false },
+      { key: 'actions', label: t('Actions'), sortable: false },
     ],
     rows,
     selectable: true,
     bulkActions: [
-      { label: 'Enable', onClick: (ids) => handlers.onBulkEnabled(ids, true) },
-      { label: 'Disable', onClick: (ids) => handlers.onBulkEnabled(ids, false) },
-      { label: 'Delete', tone: 'danger', onClick: (ids) => handlers.onBulkDelete(ids) },
+      { label: t('Enable'), onClick: (ids) => handlers.onBulkEnabled(ids, true) },
+      { label: t('Disable'), onClick: (ids) => handlers.onBulkEnabled(ids, false) },
+      { label: t('Delete'), tone: 'danger', onClick: (ids) => handlers.onBulkDelete(ids) },
     ],
-    emptyMessage: 'No domain matches the filter.',
+    emptyMessage: t('No domain matches the filter.'),
   });
 
   return {
@@ -332,38 +336,38 @@ function renderTable(domains, handlers) {
  * @param {object} domain
  */
 function openDomainDrawer(domain, handlers) {
-  const dns = el('div', {}, [loadingState('Running the DNS checks…')]);
+  const dns = el('div', {}, [loadingState(t('Running the DNS checks…'))]);
   const updatedAt = domain.updatedAt;
 
   const body = el('div', {}, [
     definitionList([
-      ['Description', domain.description || '—'],
-      ['State', domain.enabled ? 'enabled' : 'disabled'],
-      ['Catch-all', domain.catchAll || '—'],
-      ['Addresses', addressCount(domain)],
-      ['Created', domain.createdAt ? formatLogStamp(domain.createdAt) : '—'],
-      ['Last changed', updatedAt ? formatLogStamp(updatedAt) : '—'],
+      [t('Description'), domain.description || '—'],
+      [t('State'), domain.enabled ? t('enabled') : t('disabled')],
+      [t('Catch-all'), domain.catchAll || '—'],
+      [t('Addresses'), addressCount(domain)],
+      [t('Created'), domain.createdAt ? formatLogStamp(domain.createdAt) : '—'],
+      [t('Last changed'), updatedAt ? formatLogStamp(updatedAt) : '—'],
     ]),
-    el('h3', { class: 'drawer-section', text: 'DNS health' }),
+    el('h3', { class: 'drawer-section', text: t('DNS health') }),
     dns,
   ]);
 
-  const toggle = button(domain.enabled ? 'Disable' : 'Enable', () => {
+  const toggle = button(domain.enabled ? t('Disable') : t('Enable'), () => {
     drawer.close();
     handlers.onToggle(domain);
   });
-  const edit = button('Edit description', () => {
+  const edit = button(t('Edit description'), () => {
     drawer.close();
     handlers.onEdit(domain);
   });
-  const remove = button('Delete', () => {
+  const remove = button(t('Delete'), () => {
     drawer.close();
     handlers.onDelete(domain);
   }, 'btn-danger');
 
   const drawer = openDrawer({
     title: domain.name,
-    subtitle: domain.description || 'no description',
+    subtitle: domain.description || t('no description'),
     body,
     actions: [toggle, edit, remove],
   });
@@ -381,7 +385,7 @@ function openDomainDrawer(domain, handlers) {
  */
 async function loadDns(domain, host) {
   clear(host);
-  host.append(loadingState('Running the DNS checks…'));
+  host.append(loadingState(t('Running the DNS checks…')));
   try {
     const [dns, dkim] = await Promise.all([
       request(`${API_BASE}/domains/${domain.id}/dns`, { toast: false }),
@@ -399,8 +403,8 @@ async function loadDns(domain, host) {
   } catch (error) {
     clear(host);
     host.append(
-      errorState(messageOf(error, 'The DNS checks could not be run.'), [
-        button('Retry', () => loadDns(domain, host)),
+      errorState(messageOf(error, t('The DNS checks could not be run.')), [
+        button(t('Retry'), () => loadDns(domain, host)),
       ]),
     );
   }
@@ -412,10 +416,10 @@ function renderDns(domain, report, record, onReload) {
       el('span', { class: 'score', text: `${report.score} / ${report.maxScore}` }),
       el('span', {
         class: 'view-sub',
-        text: report.checkedAt ? ` · checked ${formatLogStamp(report.checkedAt)}` : '',
+        text: report.checkedAt ? t(' · checked {when}', { when: formatLogStamp(report.checkedAt) }) : '',
       }),
     ]),
-    el('div', { class: 'card-actions' }, [button('Re-run checks', onReload)]),
+    el('div', { class: 'card-actions' }, [button(t('Re-run checks'), onReload)]),
   ]);
 
   const rows = report.records.map((entry) => ({
@@ -440,24 +444,24 @@ function renderDns(domain, report, record, onReload) {
     summary,
     dataTable({
       columns: [
-        { key: 'record', label: 'Record', value: (row) => row.entry.kind },
-        { key: 'status', label: 'Status', value: (row) => STATUS_RANK[row.entry.status] ?? 9 },
+        { key: 'record', label: t('Record'), value: (row) => row.entry.kind },
+        { key: 'status', label: t('Status'), value: (row) => STATUS_RANK[row.entry.status] ?? 9 },
         {
           key: 'expected',
-          label: 'Expected',
+          label: t('Expected'),
           value: (row) => (row.entry.expected === null ? '' : String(row.entry.expected)),
         },
-        { key: 'found', label: 'Found', value: (row) => row.entry.found.join(' ') },
-        { key: 'hint', label: 'Hint', value: (row) => row.entry.hint || '' },
+        { key: 'found', label: t('Found'), value: (row) => row.entry.found.join(' ') },
+        { key: 'hint', label: t('Hint'), value: (row) => row.entry.hint || '' },
       ],
       rows,
-      emptyMessage: 'No DNS record was checked.',
+      emptyMessage: t('No DNS record was checked.'),
     }).node,
   ];
 
   if (record) {
     const valueNode = el('p', { class: 'code-block', text: record.recordValue });
-    const copy = el('button', { type: 'button', class: 'btn btn-small', text: 'Copy value' });
+    const copy = el('button', { type: 'button', class: 'btn btn-small', text: t('Copy value') });
     copy.addEventListener('click', async () => {
       const copied = await copyToClipboard(record.recordValue, () => {
         const range = document.createRange();
@@ -468,27 +472,27 @@ function renderDns(domain, report, record, onReload) {
           selection.addRange(range);
         }
       });
-      if (copied) toastSuccess('DKIM record copied.');
-      else toastSuccess('The record is selected — press Ctrl/Cmd+C to copy it.');
+      if (copied) toastSuccess(t('DKIM record copied.'));
+      else toastSuccess(t('The record is selected — press Ctrl/Cmd+C to copy it.'));
     });
 
     children.push(
-      el('h3', { class: 'drawer-section', text: 'DKIM record to publish' }),
+      el('h3', { class: 'drawer-section', text: t('DKIM record to publish') }),
       definitionList([
-        ['Selector', cell(record.selector, 'cell-mono')],
-        ['Name', cell(record.recordName, 'cell-mono')],
-        ['Type', cell(record.recordType, 'cell-mono')],
+        [t('Selector'), cell(record.selector, 'cell-mono')],
+        [t('Name'), cell(record.recordName, 'cell-mono')],
+        [t('Type'), cell(record.recordType, 'cell-mono')],
       ]),
       valueNode,
       el('div', { class: 'card-actions' }, [
         copy,
-        button('Generate new key', () => generateDkim(domain.id, onReload)),
+        button(t('Generate new key'), () => generateDkim(domain.id, onReload)),
       ]),
     );
   } else {
     children.push(
-      el('p', { class: 'view-sub', text: 'No DKIM key is published yet for this domain.' }),
-      el('div', { class: 'card-actions' }, [button('Generate DKIM key', () => generateDkim(domain.id, onReload))]),
+      el('p', { class: 'view-sub', text: t('No DKIM key is published yet for this domain.') }),
+      el('div', { class: 'card-actions' }, [button(t('Generate DKIM key'), () => generateDkim(domain.id, onReload))]),
     );
   }
 
@@ -497,37 +501,37 @@ function renderDns(domain, report, record, onReload) {
 
 async function generateDkim(domainId, onDone) {
   const confirmed = await confirmDialog({
-    title: 'Generate DKIM key',
-    message: 'A new RSA key pair will be generated for this domain. Existing signatures stay valid, but you must publish the new TXT record.',
-    confirmLabel: 'Generate',
+    title: t('Generate DKIM key'),
+    message: t('A new RSA key pair will be generated for this domain. Existing signatures stay valid, but you must publish the new TXT record.'),
+    confirmLabel: t('Generate'),
     dangerous: false,
   });
   if (!confirmed) return;
   try {
     await request(`${API_BASE}/domains/${domainId}/dkim`, { method: 'POST', toast: false });
-    toastSuccess('DKIM key generated. Publish the TXT record shown below.');
+    toastSuccess(t('DKIM key generated. Publish the TXT record shown below.'));
     onDone();
   } catch (error) {
-    toastError(messageOf(error, 'The DKIM key could not be generated.'));
+    toastError(messageOf(error, t('The DKIM key could not be generated.')));
   }
 }
 
 /* --------------------------------------------------------------------- create */
 
 function openCreateDialog(onDone) {
-  const name = el('input', { class: 'input', id: 'domain-name', type: 'text', autocomplete: 'off', placeholder: 'example.com' });
+  const name = el('input', { class: 'input', id: 'domain-name', type: 'text', autocomplete: 'off', placeholder: t('example.com') });
   const description = el('input', { class: 'input', id: 'domain-description', type: 'text', autocomplete: 'off' });
   const error = el('p', { class: 'field-error', id: 'domain-error', hidden: true });
   const body = el('div', {}, [
-    field('Domain name', name, 'The bare domain, without a leading @ or a trailing dot.'),
-    field('Description', description, 'Optional, shown in the list.'),
+    field(t('Domain name'), name, t('The bare domain, without a leading @ or a trailing dot.')),
+    field(t('Description'), description, t('Optional, shown in the list.')),
     error,
   ]);
-  const cancel = el('button', { type: 'button', class: 'btn', text: 'Cancel' });
-  const create = el('button', { type: 'button', class: 'btn btn-primary', text: 'Create domain' });
+  const cancel = el('button', { type: 'button', class: 'btn', text: t('Cancel') });
+  const create = el('button', { type: 'button', class: 'btn btn-primary', text: t('Create domain') });
 
   const modal = openModal({
-    title: 'New domain',
+    title: t('New domain'),
     body,
     footer: [cancel, create],
     onMount: (card) => {
@@ -535,28 +539,28 @@ function openCreateDialog(onDone) {
       create.addEventListener('click', async () => {
         const value = name.value.trim().toLowerCase();
         if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(value)) {
-          setText(error, 'Enter a valid domain, for example example.com.');
+          setText(error, t('Enter a valid domain, for example example.com.'));
           setHidden(error, false);
           name.focus();
           return;
         }
         create.disabled = true;
-        setText(create, 'Creating…');
+        setText(create, t('Creating…'));
         try {
           await request(`${API_BASE}/domains`, {
             method: 'POST',
             body: { name: value, description: description.value.trim() || undefined },
             toast: false,
           });
-          toastSuccess(`Domain ${value} created.`);
+          toastSuccess(t('Domain {name} created.', { name: value }));
           modal.close('created');
           onDone();
         } catch (err) {
-          setText(error, messageOf(err, 'The domain could not be created.'));
+          setText(error, messageOf(err, t('The domain could not be created.')));
           setHidden(error, false);
         } finally {
           create.disabled = false;
-          setText(create, 'Create domain');
+          setText(create, t('Create domain'));
         }
       });
       card.addEventListener('keydown', (event) => {

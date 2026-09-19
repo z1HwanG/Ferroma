@@ -147,7 +147,7 @@ impl TestAuth {
     /// Create an account with the standard test password.
     pub async fn create_user(&self, email: &str) -> ferroma_storage::models::User {
         self.auth
-            .create_user(email, TEST_PASSWORD, Some("Test User"), false, None)
+            .create_user(email, TEST_PASSWORD, Some("Test User"), false, true, None)
             .await
             .expect("create_user")
     }
@@ -155,7 +155,7 @@ impl TestAuth {
     /// Create an admin account.
     pub async fn create_admin(&self, email: &str) -> ferroma_storage::models::User {
         self.auth
-            .create_user(email, TEST_PASSWORD, Some("Admin"), true, None)
+            .create_user(email, TEST_PASSWORD, Some("Admin"), true, true, None)
             .await
             .expect("create_admin")
     }

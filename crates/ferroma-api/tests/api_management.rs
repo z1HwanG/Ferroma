@@ -8,6 +8,7 @@ mod common;
 
 use axum::http::StatusCode;
 use common::{folder_id, seed_account, TestApp};
+use ferroma_core::Config;
 use serde_json::json;
 
 /// A password the auth policy accepts.
@@ -85,6 +86,18 @@ async fn login_then_me_reports_the_account_and_its_addresses() {
     assert_eq!(mailboxes[0]["address"], "alice@example.net");
     assert_eq!(mailboxes[0]["is_primary"], true);
     assert_eq!(mailboxes[0]["id"].as_i64(), Some(mailbox_id));
+
+    // Each address is a full mailbox record, not the reduced brief: the Webmail's
+    // normaliser reads `quota_bytes` and `used_bytes` off it, and without them every
+    // address it listed reported as empty.
+    assert_eq!(mailboxes[0]["user_id"].as_i64(), Some(user_id));
+    assert_eq!(mailboxes[0]["enabled"], true);
+    assert_eq!(mailboxes[0]["used_bytes"], 0, "{body}");
+    assert!(mailboxes[0]["created_at"].is_string(), "{body}");
+    assert!(
+        mailboxes[0].get("quota_bytes").is_some(),
+        "quota_bytes is always present, null when the address inherits the account's: {body}"
+    );
 
     // No password material may appear anywhere in the body.
     assert!(!me.text().contains("argon2"), "{}", me.text());
@@ -1038,6 +1051,335 @@ async fn a_non_admin_cannot_see_another_users_message_by_guessing_its_id() {
         .await
         .status,
         StatusCode::NOT_FOUND
+    );
+
+    app.cleanup().await;
+}
+
+/* ------------------------------- the contract gaps the Admin console hits ------- */
+
+#[tokio::test]
+async fn an_unknown_api_path_answers_with_the_documented_envelope() {
+    require_database!();
+    let app = TestApp::new().await;
+
+    // Without a fallback on the management router this fell through to the Webmail's
+    // SPA fallback and answered `index.html` with `200 OK`: an API typo looked like a
+    // page, and `admin/api.js` rendered "Request failed (HTTP 200)".
+    let response = app.get("/api/v1/definitely-not-a-route", None).await;
+    assert_eq!(response.status, StatusCode::NOT_FOUND);
+    assert_eq!(response.error_code(), "not_found");
+    assert!(
+        response.json()["error"]["message"].is_string(),
+        "{}",
+        response.json()
+    );
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_known_path_with_the_wrong_method_answers_with_the_envelope() {
+    require_database!();
+    let app = TestApp::new().await;
+
+    // `/health` is a `GET`; a bare axum `405` has an empty body, which a front-end can
+    // only render as "Request failed (HTTP 405)".
+    let response = app
+        .json("POST", "/api/v1/health", None, json!({}))
+        .await;
+    assert_eq!(response.status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(response.error_code(), "method_not_allowed");
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn listing_users_reports_each_accounts_addresses() {
+    require_database!();
+    let app = TestApp::new().await;
+    let admin = bootstrap_admin(&app).await;
+    let (user_id, _mailbox_id, _token) =
+        seed_account(&app, &admin, "example.net", "alice@example.net", PASSWORD).await;
+
+    // The console's user table prints an address count per row, so `GET /users` has to
+    // carry the addresses. It used to send none, and the table said "addresses not
+    // listed here" for ever.
+    let page = app.get("/api/v1/users", Some(&admin)).await.expect(StatusCode::OK);
+    let alice = page["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|user| user["email"] == "alice@example.net")
+        .expect("alice is on the page");
+    let addresses = alice["mailboxes"].as_array().expect("mailboxes");
+    assert_eq!(addresses.len(), 1, "{alice}");
+    assert_eq!(addresses[0]["address"], "alice@example.net", "{alice}");
+
+    // An account with none says so with an empty list, which is a different answer
+    // from an omitted key.
+    let admin_row = page["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|user| user["email"] == "admin@example.com")
+        .expect("the administrator is on the page");
+    assert_eq!(admin_row["mailboxes"].as_array().map(Vec::len), Some(1), "{admin_row}");
+
+    // The single-account read never asked for them, so the key is absent rather than
+    // empty — that is what the client's `mailboxesKnown` flag reports.
+    let single = app
+        .get(&format!("/api/v1/users/{user_id}"), Some(&admin))
+        .await
+        .expect(StatusCode::OK);
+    assert!(single.get("mailboxes").is_none(), "{single}");
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn an_account_can_be_created_disabled() {
+    require_database!();
+    let app = TestApp::new().await;
+    let admin = bootstrap_admin(&app).await;
+
+    // The console's New-account dialog offers "Account enabled"; serde used to drop the
+    // key, so unticking it still created a usable account.
+    let created = app
+        .json(
+            "POST",
+            "/api/v1/users",
+            Some(&admin),
+            json!({ "email": "carol@example.net", "password": PASSWORD, "enabled": false }),
+        )
+        .await
+        .expect(StatusCode::CREATED);
+    assert_eq!(created["enabled"], false, "{created}");
+    let id = created["id"].as_i64().expect("id");
+
+    let fetched = app
+        .get(&format!("/api/v1/users/{id}"), Some(&admin))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(fetched["enabled"], false, "{fetched}");
+
+    let enabled = app
+        .json(
+            "PATCH",
+            &format!("/api/v1/users/{id}"),
+            Some(&admin),
+            json!({ "enabled": true }),
+        )
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(enabled["enabled"], true, "{enabled}");
+
+    // Omitting the field still creates a usable account.
+    let defaulted = app
+        .json(
+            "POST",
+            "/api/v1/users",
+            Some(&admin),
+            json!({ "email": "dave@example.net", "password": PASSWORD }),
+        )
+        .await
+        .expect(StatusCode::CREATED);
+    assert_eq!(defaulted["enabled"], true, "{defaulted}");
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn the_audit_trail_names_the_acting_account() {
+    require_database!();
+    let app = TestApp::new().await;
+    let admin = bootstrap_admin(&app).await;
+
+    app.json(
+        "POST",
+        "/api/v1/users",
+        Some(&admin),
+        json!({ "email": "carol@example.net", "password": PASSWORD }),
+    )
+    .await
+    .expect(StatusCode::CREATED);
+
+    // The console's audit table has an Actor column and reads an address, so the row
+    // carries one. It used to send only `actor_user_id`, and the column showed `7`.
+    let page = app
+        .get("/api/v1/audit?action=user.created", Some(&admin))
+        .await
+        .expect(StatusCode::OK);
+    let row = page["items"]
+        .as_array()
+        .expect("items")
+        .first()
+        .expect("an audit row")
+        .clone();
+    assert_eq!(row["actor"], "admin@example.com", "{row}");
+    assert!(row["actor_user_id"].is_i64(), "{row}");
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn the_setup_wizard_is_not_found_when_it_is_disabled() {
+    require_database!();
+    let mut config = Config::default();
+    config.api.enable_setup_wizard = false;
+    let app = TestApp::with_config(config).await;
+
+    // "Disabled entirely" means the endpoint is not there. Answering
+    // `200 {required:false}` made the console tell an operator who has no administrator
+    // that one already existed, and left its "disabled" panel dead code.
+    let status = app.get("/api/v1/setup", None).await;
+    assert_eq!(status.status, StatusCode::NOT_FOUND);
+    assert_eq!(status.error_code(), "not_found");
+
+    let posted = app
+        .json(
+            "POST",
+            "/api/v1/setup",
+            None,
+            json!({
+                "email": "admin@example.com",
+                "password": PASSWORD,
+                "domain": "example.com"
+            }),
+        )
+        .await;
+    assert_eq!(posted.status, StatusCode::NOT_FOUND, "{}", posted.json());
+    assert_eq!(posted.error_code(), "not_found");
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn the_setup_wizard_refuses_a_hostname_the_server_does_not_advertise() {
+    require_database!();
+    let app = TestApp::new().await;
+
+    // The wizard shows the hostname the running configuration advertises, because the
+    // process cannot rewrite it; the operator confirms rather than retypes.
+    let status = app.get("/api/v1/setup", None).await.expect(StatusCode::OK);
+    assert_eq!(status["required"], true, "{status}");
+    assert_eq!(status["hostname"], "localhost", "{status}");
+
+    let refused = app
+        .json(
+            "POST",
+            "/api/v1/setup",
+            None,
+            json!({
+                "email": "admin@example.com",
+                "password": PASSWORD,
+                "hostname": "mail.example.com",
+                "domain": "example.com"
+            }),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.json());
+    assert!(
+        refused.json()["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("server.hostname"),
+        "the error names the setting to change: {}",
+        refused.json()
+    );
+
+    // Agreeing with the configuration is the ordinary path.
+    let accepted = app
+        .json(
+            "POST",
+            "/api/v1/setup",
+            None,
+            json!({
+                "email": "admin@example.com",
+                "password": PASSWORD,
+                "hostname": "localhost",
+                "domain": "example.com"
+            }),
+        )
+        .await;
+    assert_eq!(accepted.status, StatusCode::CREATED, "{}", accepted.json());
+
+    app.cleanup().await;
+}
+
+/* ------------------------------------------------------- Accept-Language negotiation */
+
+#[tokio::test]
+async fn accept_language_selects_the_language_of_the_error_message() {
+    require_database!();
+    use axum::body::Body;
+    use axum::http::{header, Request as HttpRequest};
+
+    let app = TestApp::new().await;
+    let admin = bootstrap_admin(&app).await;
+
+    let with_language = |language: &'static str| {
+        let admin = admin.clone();
+        let app = &app;
+        async move {
+            let request = HttpRequest::builder()
+                .method("GET")
+                .uri("/api/v1/domains/9999")
+                .header(header::AUTHORIZATION, format!("Bearer {admin}"))
+                .header(header::ACCEPT_LANGUAGE, language)
+                .body(Body::empty())
+                .expect("valid request");
+            app.request(request).await
+        }
+    };
+
+    let english = with_language("en-US,en;q=0.9").await;
+    assert_eq!(english.status, StatusCode::NOT_FOUND);
+    assert_eq!(english.error_code(), "not_found");
+    assert_eq!(
+        english.json()["error"]["message"],
+        "not found: domain 9999",
+        "{}",
+        english.json()
+    );
+
+    let chinese = with_language("zh-CN,zh;q=0.9,en;q=0.8").await;
+    assert_eq!(chinese.status, StatusCode::NOT_FOUND);
+    // `code` is machine-readable and language-neutral; only `message` follows the
+    // header, so a client switching languages never has to change its branching.
+    assert_eq!(chinese.error_code(), "not_found");
+    assert_eq!(
+        chinese.json()["error"]["message"],
+        "未找到：域名 9999",
+        "{}",
+        chinese.json()
+    );
+
+    // A request that asks for nothing gets English, which is the documented default.
+    let default = app.get("/api/v1/domains/9999", Some(&admin)).await;
+    assert_eq!(
+        default.json()["error"]["message"],
+        "not found: domain 9999",
+        "{}",
+        default.json()
+    );
+
+    // A message a person reads rather than a machine, from the auth service.
+    let refused = app
+        .json_with_headers(
+            "POST",
+            "/api/v1/auth/login",
+            None,
+            json!({ "email": "admin@example.com", "password": "not the password" }),
+            &[("accept-language", "zh-CN")],
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        refused.json()["error"]["message"],
+        "未授权：邮箱地址或密码不正确",
+        "{}",
+        refused.json()
     );
 
     app.cleanup().await;

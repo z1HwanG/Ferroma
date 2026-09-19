@@ -128,6 +128,13 @@ async fn admin_pool() -> PgPool {
 ///
 /// Deliberately never drops it: dropping an in-use database is what broke the storage
 /// suite originally.
+///
+/// Tolerant of losing the race, like the storage/auth/sync harnesses: every test calls
+/// this at start-up, so on a fresh cluster a dozen of them see "no such database" at the
+/// same instant and all issue `CREATE DATABASE`; one wins and the rest get `42P04
+/// duplicate_database` (this server reports it as `23505` on
+/// `pg_database_datname_index`). That is success, not failure — so the error is ignored
+/// and the outcome is verified afterwards. Failing on it made a whole-suite run red.
 async fn ensure_test_database() {
     let admin = connect_with_retry(&admin_url()).await;
     let exists: Option<(i32,)> = sqlx::query_as("SELECT 1 FROM pg_database WHERE datname = $1")
@@ -136,10 +143,21 @@ async fn ensure_test_database() {
         .await
         .unwrap_or(None);
     if exists.is_none() {
-        admin
+        if let Err(err) = admin
             .execute(format!("CREATE DATABASE \"{TEST_DATABASE}\"").as_str())
             .await
-            .expect("cannot create the shared test database");
+        {
+            let won_by_someone_else: Option<(i32,)> =
+                sqlx::query_as("SELECT 1 FROM pg_database WHERE datname = $1")
+                    .bind(TEST_DATABASE)
+                    .fetch_optional(&admin)
+                    .await
+                    .unwrap_or(None);
+            assert!(
+                won_by_someone_else.is_some(),
+                "cannot create the shared test database {TEST_DATABASE}: {err}"
+            );
+        }
     }
     admin.close().await;
 }

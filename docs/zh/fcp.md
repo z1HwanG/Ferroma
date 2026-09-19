@@ -52,6 +52,12 @@ X-Ferroma-Server: 0.1.0
 | 头字段缺失 | 视为协议 `1`（为 `curl` 与监控提供的便利） |
 | 高于 `client.protocol_version` | 照常服务，并把 `X-Ferroma-Protocol` 设为服务端版本；客户端必须优雅降级 |
 
+客户端接口上的每一次失败都使用与管理 API 相同的
+`{error:{code,message,details}}` 信封（见`docs/api.md` §1.3），包括匹配不到任何
+路由的路径，以及路径存在但不接受该方法的请求。`code`与语言无关；`message`遵循
+`Accept-Language`：客户端带上账号所用语言，服务端的报错就用该语言返回，不带则
+返回英文。
+
 `GET /api/v1/client/account`返回协商后的取值，
 供客户端记录：
 

@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::ApiError;
 use crate::extract::{AuthUser, SESSION_COOKIE};
-use crate::routes::mail::shapes::{AddressBrief, MeResponse, UserResponse};
+use crate::routes::mail::shapes::{MeResponse, UserResponse};
 use crate::state::AppState;
 
 /// The `POST /api/v1/auth/login` body.
@@ -275,14 +275,12 @@ pub async fn me(
         .await
         .map_err(ApiError::from)?;
 
+    // Full mailbox records, with their usage: the Webmail reads each address's quota and
+    // current size from these, and the reduced `AddressBrief` carries neither.
     let mut mailboxes = Vec::with_capacity(rows.len());
     for row in rows {
         let domain = crate::routes::mail::store::domain_name(&state.repos, row.domain_id).await?;
-        mailboxes.push(AddressBrief {
-            id: row.id,
-            address: row.address(&domain),
-            is_primary: row.is_primary,
-        });
+        mailboxes.push(crate::routes::mail::mailboxes::mailbox_response(&state, &row, &domain).await);
     }
 
     Ok(Json(MeResponse {
@@ -387,6 +385,7 @@ mod tests {
                 used_bytes: 52_428_800,
                 last_login_at: None,
                 created_at: chrono::Utc::now(),
+                mailboxes: None,
             },
         };
         let json = serde_json::to_value(&body).expect("must serialise");

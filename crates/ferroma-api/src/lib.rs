@@ -49,6 +49,7 @@
 
 pub mod error;
 pub mod extract;
+pub mod i18n;
 pub mod logbuf;
 pub mod router;
 pub mod routes;
@@ -58,6 +59,7 @@ pub mod tests_support;
 pub mod ws;
 
 pub use error::{ApiError, ErrorBody, ErrorDetail};
+pub use i18n::Locale;
 pub use extract::{
     AdminUser, AuthUser, ClientAuth, ClientInfo, Page, Pagination, DEFAULT_LIMIT, MAX_LIMIT,
     SESSION_COOKIE,

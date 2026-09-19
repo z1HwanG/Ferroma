@@ -52,6 +52,12 @@ X-Ferroma-Server: 0.1.0
 | header absent | treated as protocol `1` (a courtesy for `curl` and monitoring) |
 | higher than `client.protocol_version` | served, with `X-Ferroma-Protocol` set to the server's version; the client must degrade gracefully |
 
+Every failure across the client surface uses the same `{error:{code,message,details}}`
+envelope as the management API (`docs/api.md` §1.3), including a path that matches no
+route and a route that does not accept the method. `code` is language-neutral; `message`
+follows `Accept-Language`, so a client that sends the account's language shows the
+server's errors in it and one that sends nothing gets English.
+
 `GET /api/v1/client/account` returns the negotiated values so a client can record
 them:
 

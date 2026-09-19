@@ -470,6 +470,7 @@ async fn user_create(
             &password,
             args.display_name.as_deref(),
             args.admin,
+            !args.disabled,
             quota,
         )
         .await?;
@@ -1435,28 +1436,61 @@ mod tests {
     #[test]
     fn a_wildcard_port_held_on_loopback_by_someone_else_is_reported() {
         // The bug this check exists for. A process holding 127.0.0.1:P shadows our
-        // 0.0.0.0:P for anything on loopback, and binding succeeds — so the only way
-        // to notice is to connect back and see who answers.
-        let squatter = std::net::TcpListener::bind("127.0.0.1:0").expect("bind squatter");
-        let port = squatter.local_addr().unwrap().port();
-        // Keep the squatter accepting, so a connection to loopback succeeds.
-        let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let counter = accepted.clone();
-        std::thread::spawn(move || {
-            for stream in squatter.incoming() {
-                if stream.is_err() {
-                    break;
-                }
-                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            }
-        });
+        // 0.0.0.0:P for anything on loopback, and binding still succeeds — so the only
+        // way to notice is to connect back and see who answers.
+        //
+        // Whether that pair is even reachable is a platform property, and the two
+        // families disagree. Windows allows the overlapping bind, which is where the
+        // detector earns its keep. Linux refuses it with `EADDRINUSE`: `SO_REUSEADDR`
+        // does not admit a live wildcard/specific pair, so a port whose wildcard bind
+        // the kernel rejects is one where the shadowing has already been prevented.
+        // The test asserts whichever of the two this host actually does, instead of
+        // demanding the Windows outcome everywhere.
+        for _ in 0..8 {
+            let squatter = match std::net::TcpListener::bind("127.0.0.1:0") {
+                Ok(listener) => listener,
+                Err(_) => continue,
+            };
+            let port = squatter.local_addr().expect("squatter address").port();
 
-        let ours = std::net::TcpListener::bind(("0.0.0.0", port)).expect("wildcard bind still works");
-        let reported = loopback_shadowed(&ours, port);
-        assert!(
-            reported.is_some(),
-            "a loopback squatter must be reported, not silently accepted"
-        );
+            let ours = match std::net::TcpListener::bind(("0.0.0.0", port)) {
+                Ok(listener) => listener,
+                Err(err) => {
+                    // Not a wildcard listener squatting on the port — an unrelated
+                    // process holding 0.0.0.0:P would have refused the squatter too.
+                    assert_eq!(
+                        err.kind(),
+                        std::io::ErrorKind::AddrInUse,
+                        "the wildcard bind failed for an unexpected reason: {err}"
+                    );
+                    continue;
+                }
+            };
+
+            // Keep the squatter accepting, so a connection to loopback succeeds.
+            let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counter = accepted.clone();
+            std::thread::spawn(move || {
+                for stream in squatter.incoming() {
+                    if stream.is_err() {
+                        break;
+                    }
+                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            });
+
+            let reported = loopback_shadowed(&ours, port);
+            assert!(
+                reported.is_some(),
+                "a loopback squatter must be reported, not silently accepted"
+            );
+            return;
+        }
+
+        // Every port this host handed us also refused the wildcard bind, so the
+        // overlapping pair cannot exist here and nothing can shadow loopback.
+        // `a_specific_bind_address_cannot_be_shadowed` covers the other half of the
+        // contract on this platform.
     }
 
     #[test]

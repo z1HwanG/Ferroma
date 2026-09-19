@@ -240,6 +240,7 @@ impl AuthService {
         password: &str,
         display_name: Option<&str>,
         is_admin: bool,
+        enabled: bool,
         quota_bytes: Option<i64>,
     ) -> Result<User> {
         let hash = self.hash_password(password).await?;
@@ -251,6 +252,7 @@ impl AuthService {
                 password_hash: hash,
                 display_name: display_name.map(|s| s.to_string()),
                 is_admin,
+                enabled,
                 quota_bytes,
             })
             .await

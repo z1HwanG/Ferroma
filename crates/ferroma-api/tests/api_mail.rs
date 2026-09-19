@@ -980,3 +980,69 @@ async fn a_message_belonging_to_a_deleted_user_is_gone() {
 
     app.cleanup().await;
 }
+
+#[tokio::test]
+async fn a_message_reports_its_flags_as_booleans_and_its_blind_copies() {
+    require_database!();
+    let (app, _admin, mailbox_id, token) = app_with_address().await;
+
+    let sent = app
+        .json(
+            "POST",
+            "/api/v1/messages",
+            Some(&token),
+            json!({
+                "from": "alice@example.net",
+                "to": ["bob@example.org"],
+                "bcc": ["hidden@example.org"],
+                "subject": "blind copy",
+                "text": "body"
+            }),
+        )
+        .await;
+    let body = sent.expect(StatusCode::OK);
+    let message_id = body["message_id"].as_i64().expect("message id");
+
+    // Both front-ends read `bcc` and the three flag booleans straight off the message
+    // shapes. `flags` stays the canonical spelling; the booleans are derived from it in
+    // the handler, so no consumer has to parse it — parsing it wrongly is how the
+    // Webmail showed every message as unread and hid every star.
+    let sent_folder = folder_id(&app, &token, mailbox_id, "Sent").await;
+    let listed = app
+        .get(
+            &format!("/api/v1/messages?folder_id={sent_folder}"),
+            Some(&token),
+        )
+        .await
+        .expect(StatusCode::OK);
+    let row = &listed["items"][0];
+    assert_eq!(row["bcc"].as_array().map(Vec::len), Some(1), "{row}");
+    assert_eq!(row["bcc"][0]["address"], "hidden@example.org", "{row}");
+    assert_eq!(row["seen"], true, "the sender's own copy is seen: {row}");
+    assert_eq!(row["flagged"], false, "{row}");
+    assert_eq!(row["answered"], false, "{row}");
+
+    let patched = app
+        .json(
+            "PATCH",
+            &format!("/api/v1/messages/{message_id}"),
+            Some(&token),
+            json!({ "seen": true, "flagged": true, "answered": true }),
+        )
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(patched["seen"], true, "{patched}");
+    assert_eq!(patched["flagged"], true, "{patched}");
+    assert_eq!(patched["answered"], true, "{patched}");
+
+    let detail = app
+        .get(&format!("/api/v1/messages/{message_id}"), Some(&token))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(detail["seen"], true, "{detail}");
+    assert_eq!(detail["flagged"], true, "{detail}");
+    assert_eq!(detail["answered"], true, "{detail}");
+    assert_eq!(detail["bcc"].as_array().map(Vec::len), Some(1), "{detail}");
+
+    app.cleanup().await;
+}

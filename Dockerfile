@@ -60,6 +60,7 @@ COPY migrations ./migrations
 COPY config ./config
 COPY web ./web
 COPY admin ./admin
+COPY shared ./shared
 
 # `touch` so cargo notices the placeholder sources changed.
 RUN set -eux; \
@@ -124,6 +125,7 @@ RUN set -eux; \
 COPY --from=builder /build/config/ferroma.toml /etc/ferroma/ferroma.toml
 COPY --from=builder /build/web /usr/share/ferroma/web
 COPY --from=builder /build/admin /usr/share/ferroma/admin
+COPY --from=builder /build/shared /usr/share/ferroma/shared
 
 # State: Maildir, attachments, TLS material, backups.
 RUN set -eux; \
@@ -141,13 +143,16 @@ ENV FERROMA_CONFIG=/etc/ferroma/ferroma.toml \
 
 # Point the API at the baked-in frontends.
 #
-# These two are not optional: the router resolves `api.webmail_dir` / `api.admin_dir`
-# from the configuration, and falls back to *relative* candidates (`web/dist`, `web`)
-# resolved against the process working directory — which here is `/var/lib/ferroma`,
-# not `/usr/share/ferroma`. Without them the container starts healthily and serves a
-# 404 at `/`, which looks like a broken build rather than a missing path.
+# These are not optional: the router resolves `api.webmail_dir` / `api.admin_dir` /
+# `api.shared_dir` from the configuration, and falls back to *relative* candidates
+# (`web/dist`, `web`, `shared`) resolved against the process working directory —
+# which here is `/var/lib/ferroma`, not `/usr/share/ferroma`. Without them the
+# container starts healthily and serves a 404 at `/`, which looks like a broken
+# build rather than a missing path. `shared_dir` is what keeps `/shared/api.js`
+# reachable: both front-ends import their common modules from there.
 ENV FERROMA__API__WEBMAIL_DIR=/usr/share/ferroma/web \
-    FERROMA__API__ADMIN_DIR=/usr/share/ferroma/admin
+    FERROMA__API__ADMIN_DIR=/usr/share/ferroma/admin \
+    FERROMA__API__SHARED_DIR=/usr/share/ferroma/shared
 
 # 25   SMTP (inbound MX)
 # 587  Submission (authenticated, STARTTLS)

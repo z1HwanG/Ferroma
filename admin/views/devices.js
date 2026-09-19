@@ -6,13 +6,14 @@
  * revokes its sessions, which is what makes a live socket for it disconnect.
  */
 
-import { API_BASE, ApiError, query, request } from '../api.js';
-import { listOf, num } from '../data.js';
-import { el } from '../dom.js';
-import { formatLogStamp } from '../format.js';
-import { confirmDialog } from '../modal.js';
+import { API_BASE, ApiError, query, request } from '../../shared/api.js';
+import { listOf, num } from '../../shared/data.js';
+import { el } from '../../shared/dom.js';
+import { formatLogStamp } from '../../shared/format.js';
+import { t, tn } from '../../shared/i18n.js';
+import { confirmDialog } from '../../shared/modal.js';
 import { go } from '../router.js';
-import { toastError, toastSuccess } from '../toast.js';
+import { toastError, toastSuccess } from '../../shared/toast.js';
 import {
   actions,
   adminCard,
@@ -33,6 +34,64 @@ const PAGE_SIZE = 50;
 const PLATFORMS = ['windows', 'linux', 'macos', 'android', 'ios'];
 
 /**
+ * A person-readable label for a reported platform.
+ *
+ * `platform` is API data — it is what the query sends and what the filter compares — so
+ * it is translated only where it is displayed, and each label is a literal inside `t()`
+ * so the catalog stays checkable.
+ *
+ * @param {unknown} platform
+ * @returns {string}
+ */
+function platformLabel(platform) {
+  switch (String(platform || '').toLowerCase()) {
+    case 'windows':
+      return t('Windows');
+    case 'linux':
+      return t('Linux');
+    case 'macos':
+      return t('macOS');
+    case 'android':
+      return t('Android');
+    case 'ios':
+      return t('iOS');
+    default:
+      return t('Unknown');
+  }
+}
+
+/**
+ * A person-readable label for a device's revocation state.
+ *
+ * @param {unknown} state either `revoked` or `active`
+ * @returns {string}
+ */
+function stateLabel(state) {
+  switch (String(state || '').toLowerCase()) {
+    case 'revoked':
+      return t('Revoked');
+    case 'active':
+      return t('Active');
+    default:
+      return t('Unknown');
+  }
+}
+
+/**
+ * The state pill, showing the translated state.
+ *
+ * The raw value still decides the pill's colour; only the text is replaced.
+ *
+ * @param {unknown} state
+ * @returns {Element}
+ */
+function stateBadge(state) {
+  const node = badge(state);
+  node.textContent = stateLabel(state);
+  return node;
+}
+
+/**
  * @param {URLSearchParams} params
  * @returns {Promise<{node: Node, cleanup: () => void}>}
  */
@@ -45,22 +104,22 @@ export async function render(params) {
   };
 
   const card = adminCard({
-    title: 'Client installations',
-    subtitle: 'Sort by a column heading; select rows to revoke several at once.',
+    title: t('Client installations'),
+    subtitle: t('Sort by a column heading; select rows to revoke several at once.'),
     renderEmpty: () =>
       el('div', { class: 'empty-state' }, [
-        el('p', { class: 'empty-title', text: 'No devices' }),
-        el('p', { text: 'No client has signed in yet, or nothing matches the current filters.' }),
+        el('p', { class: 'empty-title', text: t('No devices') }),
+        el('p', { text: t('No client has signed in yet, or nothing matches the current filters.') }),
       ]),
     renderData: (data) => data.node,
   });
 
-  const userId = el('input', { class: 'input', id: 'devices-user', type: 'number', min: '1', placeholder: 'any account' });
+  const userId = el('input', { class: 'input', id: 'devices-user', type: 'number', min: '1', placeholder: t('any account') });
   userId.value = state.userId;
 
   const platform = el('select', { class: 'input', id: 'devices-platform' });
-  platform.append(el('option', { value: '', text: 'Any platform' }));
-  for (const name of PLATFORMS) platform.append(el('option', { value: name, text: name }));
+  platform.append(el('option', { value: '', text: t('Any platform') }));
+  for (const name of PLATFORMS) platform.append(el('option', { value: name, text: platformLabel(name) }));
   platform.value = state.platform;
 
   const includeRevoked = el('input', { type: 'checkbox', id: 'devices-include-revoked' });
@@ -69,13 +128,13 @@ export async function render(params) {
   const bar = filterBar({
     id: 'devices-filter',
     fields: [
-      field('Owner user id', userId, 'The numeric account id; leave empty for every account.'),
-      field('Platform', platform),
+      field(t('Owner user id'), userId, t('The numeric account id; leave empty for every account.')),
+      field(t('Platform'), platform),
       el('label', { class: 'checkbox', for: 'devices-include-revoked' }, [
         includeRevoked,
-        el('span', { text: 'Include revoked devices' }),
+        el('span', { text: t('Include revoked devices') }),
       ]),
-      el('button', { type: 'submit', class: 'btn', text: 'Apply' }),
+      el('button', { type: 'submit', class: 'btn', text: t('Apply') }),
     ],
     actions: [clearButton(() => go('devices', {}))],
   });
@@ -91,11 +150,11 @@ export async function render(params) {
     });
   });
 
-  const refreshButton = el('button', { type: 'button', class: 'btn', text: 'Refresh' });
+  const refreshButton = el('button', { type: 'button', class: 'btn', text: t('Refresh') });
   refreshButton.addEventListener('click', () => refresh());
 
   const root = el('div', {}, [
-    viewHead('Devices', 'Every client installation known to this server', [refreshButton]),
+    viewHead(t('Devices'), t('Every client installation known to this server'), [refreshButton]),
     bar,
     card.node,
   ]);
@@ -121,17 +180,17 @@ export async function render(params) {
   async function revoke(device) {
     const label = deviceLabel(device);
     const confirmed = await confirmDialog({
-      title: 'Revoke this device?',
-      message: `${label} will be marked revoked and every session it holds will be signed out. It cannot be un-revoked; the client signs in again to register a new one.`,
-      confirmLabel: 'Revoke',
+      title: t('Revoke this device?'),
+      message: t('{device} will be marked revoked and every session it holds will be signed out. It cannot be un-revoked; the client signs in again to register a new one.', { device: label }),
+      confirmLabel: t('Revoke'),
     });
     if (!confirmed) return;
     try {
       await request(`${API_BASE}/devices/${device.id}/revoke`, { method: 'POST', toast: false });
-      toastSuccess('Device revoked.');
+      toastSuccess(t('Device revoked.'));
       await refresh();
     } catch (error) {
-      toastError(error instanceof ApiError ? error.message : 'The device could not be revoked.');
+      toastError(error instanceof ApiError ? error.message : t('The device could not be revoked.'));
     }
   }
 
@@ -160,7 +219,7 @@ export async function render(params) {
     } catch (error) {
       card.setState({
         state: 'error',
-        message: error instanceof ApiError ? error.message : 'The device list could not be loaded.',
+        message: error instanceof ApiError ? error.message : t('The device list could not be loaded.'),
       });
     }
   }
@@ -181,18 +240,27 @@ export async function render(params) {
  */
 async function revokeDevices(ids, refresh) {
   const confirmed = await confirmDialog({
-    title: `Revoke ${ids.length} device(s)?`,
-    message:
-      'Each is marked revoked and every session it holds is signed out. This cannot be undone; a client signs in again to register a new install.',
-    confirmLabel: 'Revoke',
+    title: tn(ids.length, 'Revoke {count} device?', 'Revoke {count} devices?', { count: ids.length }),
+    message: t('Each is marked revoked and every session it holds is signed out. This cannot be undone; a client signs in again to register a new install.'),
+    confirmLabel: t('Revoke'),
   });
   if (!confirmed) return;
   const results = await Promise.allSettled(
     ids.map((id) => request(`${API_BASE}/devices/${id}/revoke`, { method: 'POST', toast: false })),
   );
   const failed = results.filter((result) => result.status === 'rejected').length;
-  if (failed > 0) toastError(`${failed} of ${ids.length} device(s) could not be revoked.`);
-  else toastSuccess(`${ids.length} device(s) revoked.`);
+  if (failed > 0) {
+    toastError(
+      tn(
+        failed,
+        '{failed} of {count} device could not be revoked.',
+        '{failed} of {count} devices could not be revoked.',
+        { failed, count: ids.length },
+      ),
+    );
+  } else {
+    toastSuccess(tn(ids.length, '{count} device revoked.', '{count} devices revoked.', { count: ids.length }));
+  }
   refresh();
 }
 
@@ -240,12 +308,12 @@ function renderTable(devices, handlers, total, offset) {
           ? el('div', { class: 'view-sub cell-mono truncate', text: device.deviceUid })
           : null,
       ]),
-      cell(device.email || `user ${device.userId}`, 'cell-mono'),
-      cell(device.platform || '—'),
+      cell(device.email || t('user {id}', { id: device.userId }), 'cell-mono'),
+      cell(device.platform ? platformLabel(device.platform) : '—'),
       cell(device.lastSeenAt ? formatLogStamp(device.lastSeenAt) : '—', 'cell-mono'),
-      badge(device.revoked ? 'revoked' : 'active'),
+      stateBadge(device.revoked ? 'revoked' : 'active'),
       actions(
-        button('Details', () => handlers.onDetails(device)),
+        button(t('Details'), () => handlers.onDetails(device)),
         revokeButton(device, handlers),
       ),
     ],
@@ -253,18 +321,18 @@ function renderTable(devices, handlers, total, offset) {
 
   const grid = dataTable({
     columns: [
-      { key: 'device', label: 'Device', value: (row) => deviceLabel(row.device) },
-      { key: 'owner', label: 'Owner', value: (row) => row.device.email || String(row.device.userId) },
-      { key: 'platform', label: 'Platform', value: (row) => row.device.platform },
+      { key: 'device', label: t('Device'), value: (row) => deviceLabel(row.device) },
+      { key: 'owner', label: t('Owner'), value: (row) => row.device.email || String(row.device.userId) },
+      { key: 'platform', label: t('Platform'), value: (row) => row.device.platform },
       // A date sorts as a date, never as its rendered text.
-      { key: 'seen', label: 'Last seen', value: (row) => stampValue(row.device.lastSeenAt) },
-      { key: 'state', label: 'Status', value: (row) => (row.device.revoked ? 0 : 1) },
-      { key: 'actions', label: 'Actions', sortable: false },
+      { key: 'seen', label: t('Last seen'), value: (row) => stampValue(row.device.lastSeenAt) },
+      { key: 'state', label: t('Status'), value: (row) => (row.device.revoked ? 0 : 1) },
+      { key: 'actions', label: t('Actions'), sortable: false },
     ],
     rows,
     selectable: true,
-    bulkActions: [{ label: 'Revoke selected', tone: 'danger', onClick: (ids) => handlers.onBulkRevoke(ids) }],
-    emptyMessage: 'No devices on this page.',
+    bulkActions: [{ label: t('Revoke selected'), tone: 'danger', onClick: (ids) => handlers.onBulkRevoke(ids) }],
+    emptyMessage: t('No devices on this page.'),
   });
 
   return el('div', {}, [
@@ -289,10 +357,10 @@ function renderTable(devices, handlers, total, offset) {
  * @param {object} handlers
  */
 function openDeviceDrawer(device, handlers) {
-  const revoke = el('button', { type: 'button', class: 'btn btn-danger', text: 'Revoke device' });
+  const revoke = el('button', { type: 'button', class: 'btn btn-danger', text: t('Revoke device') });
   revoke.disabled = device.revoked;
   if (device.revoked) {
-    revoke.title = 'This device is already revoked; a client signs in again to register a new one.';
+    revoke.title = t('This device is already revoked; a client signs in again to register a new one.');
   }
   revoke.addEventListener('click', () => {
     drawer.close();
@@ -301,22 +369,22 @@ function openDeviceDrawer(device, handlers) {
 
   const drawer = openDrawer({
     title: deviceLabel(device),
-    subtitle: device.email || `user ${device.userId}`,
+    subtitle: device.email || t('user {id}', { id: device.userId }),
     body: el('div', {}, [
       definitionList([
-        ['Status', badge(device.revoked ? 'revoked' : 'active')],
-        ['Device UID', cell(device.deviceUid || '—', 'cell-mono')],
-        ['Owner', cell(device.email || '—', 'cell-mono')],
+        [t('Status'), stateBadge(device.revoked ? 'revoked' : 'active')],
+        [t('Device UID'), cell(device.deviceUid || '—', 'cell-mono')],
+        [t('Owner'), cell(device.email || '—', 'cell-mono')],
         // The id is repeated here on purpose: it is the value the list's own
         // `user_id` filter takes, and it is not otherwise recoverable from the row.
-        ['Owner user id', cell(String(device.userId), 'cell-mono')],
-        ['Platform', device.platform || '—'],
-        ['Client version', device.clientVersion || '—'],
-        ['Protocol version', device.protocolVersion || '—'],
-        ['Registered', device.createdAt ? formatLogStamp(device.createdAt) : '—'],
-        ['Last seen', device.lastSeenAt ? formatLogStamp(device.lastSeenAt) : '—'],
-        ['Last IP', cell(device.lastIp || '—', 'cell-mono')],
-        ['Device id', cell(String(device.id), 'cell-mono')],
+        [t('Owner user id'), cell(String(device.userId), 'cell-mono')],
+        [t('Platform'), device.platform ? platformLabel(device.platform) : '—'],
+        [t('Client version'), device.clientVersion || '—'],
+        [t('Protocol version'), device.protocolVersion || '—'],
+        [t('Registered'), device.createdAt ? formatLogStamp(device.createdAt) : '—'],
+        [t('Last seen'), device.lastSeenAt ? formatLogStamp(device.lastSeenAt) : '—'],
+        [t('Last IP'), cell(device.lastIp || '—', 'cell-mono')],
+        [t('Device id'), cell(String(device.id), 'cell-mono')],
       ]),
     ]),
     actions: [revoke],
@@ -327,7 +395,7 @@ function openDeviceDrawer(device, handlers) {
 
 /** What a device is called, in the order that identifies it: name, uid, row id. */
 function deviceLabel(device) {
-  return device.name || device.deviceUid || `Device ${device.id}`;
+  return device.name || device.deviceUid || t('Device {id}', { id: device.id });
 }
 
 /**
@@ -338,9 +406,9 @@ function deviceLabel(device) {
  * that the action exists at all.
  */
 function revokeButton(device, handlers) {
-  const node = button('Revoke', () => handlers.onRevoke(device), 'btn-danger');
+  const node = button(t('Revoke'), () => handlers.onRevoke(device), 'btn-danger');
   node.disabled = device.revoked;
-  node.setAttribute('aria-label', `Revoke ${deviceLabel(device)}`);
+  node.setAttribute('aria-label', t('Revoke {device}', { device: deviceLabel(device) }));
   return node;
 }
 
@@ -363,7 +431,7 @@ function button(label, onClick, className = '') {
 }
 
 function clearButton(onClick) {
-  const node = el('button', { type: 'button', class: 'btn btn-small', text: 'Clear' });
+  const node = el('button', { type: 'button', class: 'btn btn-small', text: t('Clear') });
   node.addEventListener('click', onClick);
   return node;
 }

@@ -57,6 +57,7 @@ async fn fixture(t: &TestDatabase) -> Fixture {
             password_hash: "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA".into(),
             display_name: Some("Alice".into()),
             is_admin: false,
+            enabled: true,
             quota_bytes: None,
         })
         .await
@@ -1310,6 +1311,7 @@ async fn change_log_filters_by_mailbox_and_owner() {
             password_hash: "hash".into(),
             display_name: None,
             is_admin: false,
+            enabled: true,
             quota_bytes: None,
         })
         .await

@@ -4,13 +4,14 @@
  * a localised or renamed "Sent" folder still gets the right icon.
  */
 
-import { API_BASE, ApiError, request } from './api.js';
-import { foldersOf } from './data.js';
-import { byId, clear, el, labelWithTitle, setHidden, svgIcon } from './dom.js';
-import { confirmDialog, promptDialog } from './modal.js';
+import { API_BASE, ApiError, request } from '../shared/api.js';
+import { foldersOf } from '../shared/data.js';
+import { byId, clear, el, labelWithTitle, setHidden, svgIcon } from '../shared/dom.js';
+import { confirmDialog, promptDialog } from '../shared/modal.js';
+import { t } from '../shared/i18n.js';
 import { folderSlug } from './router.js';
 import { getState, mutate } from './store.js';
-import { toastError, toastSuccess } from './toast.js';
+import { toastError, toastSuccess } from '../shared/toast.js';
 
 const ICON_FOR_SPECIAL = {
   inbox: 'inbox',
@@ -20,6 +21,41 @@ const ICON_FOR_SPECIAL = {
   junk: 'junk',
   archive: 'archive',
 };
+
+/**
+ * The name a standard folder is *shown* under.
+ *
+ * `folder.name` is IMAP data — it is what `SELECT`, `RENAME` and `APPEND` must send —
+ * so it is never translated. The display name of a standard folder is a UI string
+ * though, and a Chinese interface listing `INBOX`, `Sent` and `Trash` is half
+ * translated. The special-use slug decides, which is why `data.js` derives `inbox`
+ * from the INBOX name; a folder with no standard meaning keeps its own name.
+ *
+ * Each label is written as a literal inside `t(...)` rather than looked up in a table,
+ * so the coverage rule in `tools/check.mjs` can see it. A label held in a table is
+ * invisible to a static reader, and an untranslated one would pass every check.
+ *
+ * @param {{name: string, specialUse: string|null}} folder
+ */
+/* Exported so the list header names a folder the way the tree beside it does. */
+export function folderLabel(folder) {
+  switch (folder.specialUse) {
+    case 'inbox':
+      return t('Inbox');
+    case 'sent':
+      return t('Sent');
+    case 'drafts':
+      return t('Drafts');
+    case 'trash':
+      return t('Trash');
+    case 'junk':
+      return t('Junk');
+    case 'archive':
+      return t('Archive');
+    default:
+      return folder.name;
+  }
+}
 
 /** @type {{onSelectFolder: (folder: object) => void, onSelectMailbox: (mailboxId: number) => void}|null} */
 let handlers = null;
@@ -42,7 +78,7 @@ export function initFolders(options) {
   newFolder.addEventListener('click', () => {
     const state = getState();
     if (!state.mailboxId) {
-      toastError('Choose a send-from address first.');
+      toastError(t('Choose a send-from address first.'));
       return;
     }
     createFolder(state.mailboxId);
@@ -54,7 +90,7 @@ export function initFolders(options) {
   renameFolder.addEventListener('click', () => {
     const folder = getState().folder;
     if (!folder) {
-      toastError('Open a folder first.');
+      toastError(t('Open a folder first.'));
       return;
     }
     renameFolderTo(folder);
@@ -63,7 +99,7 @@ export function initFolders(options) {
   deleteFolder.addEventListener('click', () => {
     const folder = getState().folder;
     if (!folder) {
-      toastError('Open a folder first.');
+      toastError(t('Open a folder first.'));
       return;
     }
     deleteFolderFrom(folder);
@@ -79,7 +115,7 @@ export function renderMailboxes() {
     select.append(
       el('option', {
         value: String(mailbox.id),
-        text: mailbox.isPrimary ? `${mailbox.address} (primary)` : mailbox.address,
+        text: mailbox.isPrimary ? t('{address} (primary)', { address: mailbox.address }) : mailbox.address,
       }),
     );
   }
@@ -99,7 +135,7 @@ export function renderFolders() {
   clear(list);
 
   if (state.folders.length === 0) {
-    list.append(el('li', { class: 'empty', text: 'No folders yet.' }));
+    list.append(el('li', { class: 'empty', text: t('No folders yet.') }));
     return;
   }
 
@@ -114,7 +150,7 @@ export function renderFolders() {
     const unread = folder.unseenCount;
 
     const name = el('span', { class: 'folder-name' });
-    labelWithTitle(name, folder.name, active ? 'Current folder' : 'Folder');
+    labelWithTitle(name, folderLabel(folder), active ? t('Current folder') : t('Folder'));
 
     const button = el(
       'button',
@@ -122,10 +158,22 @@ export function renderFolders() {
         type: 'button',
         class: 'btn folder-button',
         'aria-current': active ? 'true' : 'false',
-        'aria-label':
-          `${folder.name}, ${folder.messageCount} messages, ${unread} unread` +
-          (active ? ', current folder' : ''),
-        title: `${folder.name} — ${folder.messageCount} messages, ${unread} unread`,
+        'aria-label': active
+          ? t('{name}, {count} messages, {unread} unread, current folder', {
+              name: folderLabel(folder),
+              count: folder.messageCount,
+              unread,
+            })
+          : t('{name}, {count} messages, {unread} unread', {
+              name: folderLabel(folder),
+              count: folder.messageCount,
+              unread,
+            }),
+        title: t('{name} — {count} messages, {unread} unread', {
+          name: folderLabel(folder),
+          count: folder.messageCount,
+          unread,
+        }),
       },
       [svgIcon(iconName), name],
     );
@@ -147,10 +195,10 @@ export function renderFolders() {
 /** Create a folder inside the given address. */
 async function createFolder(mailboxId) {
   const name = await promptDialog({
-    title: 'New folder',
-    label: 'Folder name',
-    confirmLabel: 'Create',
-    hint: 'Nested folders use “Parent/Child”.',
+    title: t('New folder'),
+    label: t('Folder name'),
+    confirmLabel: t('Create'),
+    hint: t('Nested folders use “Parent/Child”.'),
   });
   if (!name) return;
   try {
@@ -163,19 +211,19 @@ async function createFolder(mailboxId) {
     mutate((state) => {
       if (created && created.id > 0) state.folders = state.folders.concat([created]);
     });
-    toastSuccess(`Folder “${name}” created.`);
+    toastSuccess(t('Folder “{name}” created.', { name }));
   } catch (error) {
-    toastError(error instanceof ApiError ? error.message : 'The folder could not be created.');
+    toastError(error instanceof ApiError ? error.message : t('The folder could not be created.'));
   }
 }
 
 /** Rename the folder that is currently open. */
 async function renameFolderTo(folder) {
   const name = await promptDialog({
-    title: 'Rename folder',
-    label: 'Folder name',
-    confirmLabel: 'Rename',
-    hint: 'Nested folders use “Parent/Child”. INBOX cannot be renamed.',
+    title: t('Rename folder'),
+    label: t('Folder name'),
+    confirmLabel: t('Rename'),
+    hint: t('Nested folders use “Parent/Child”. INBOX cannot be renamed.'),
   });
   if (!name || name === folder.name) return;
   const mailboxId = getState().mailboxId;
@@ -185,30 +233,32 @@ async function renameFolderTo(folder) {
       body: { name },
       toast: false,
     });
-    toastSuccess(`Folder renamed to “${name}”.`);
+    toastSuccess(t('Folder renamed to “{name}”.', { name }));
     await reselectAfterChange(mailboxId, folder.id);
   } catch (error) {
-    toastError(error instanceof ApiError ? error.message : 'The folder could not be renamed.');
+    toastError(error instanceof ApiError ? error.message : t('The folder could not be renamed.'));
   }
 }
 
 /** Delete the folder that is currently open, after an explicit confirmation. */
 async function deleteFolderFrom(folder) {
   const confirmed = await confirmDialog({
-    title: 'Delete this folder?',
-    message: `“${folder.name}” and everything filed in it are removed. This cannot be undone.`,
-    confirmLabel: 'Delete folder',
+    title: t('Delete this folder?'),
+    message: t('“{name}” and everything filed in it are removed. This cannot be undone.', {
+      name: folderLabel(folder),
+    }),
+    confirmLabel: t('Delete folder'),
   });
   if (!confirmed) return;
 
   const mailboxId = getState().mailboxId;
   try {
     await request(`${API_BASE}/folders/${folder.id}`, { method: 'DELETE', toast: false });
-    toastSuccess(`Folder “${folder.name}” deleted.`);
+    toastSuccess(t('Folder “{name}” deleted.', { name: folderLabel(folder) }));
     // The folder that was on screen is gone, so the tree falls back to INBOX.
     await reselectAfterChange(mailboxId, 0);
   } catch (error) {
-    toastError(error instanceof ApiError ? error.message : 'The folder could not be deleted.');
+    toastError(error instanceof ApiError ? error.message : t('The folder could not be deleted.'));
   }
 }
 
@@ -275,7 +325,7 @@ export async function loadFolders(mailboxId) {
       setHidden(byId('offline-banner'), false);
       return getState().folders;
     }
-    toastError(error instanceof ApiError ? error.message : 'Folders could not be loaded.');
+    toastError(error instanceof ApiError ? error.message : t('Folders could not be loaded.'));
     return getState().folders;
   }
 }

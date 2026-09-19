@@ -192,12 +192,28 @@ pub struct MessageSummaryResponse {
     pub to: Vec<AddressResponse>,
     /// The `Cc` addresses.
     pub cc: Vec<AddressResponse>,
+    /// The `Bcc` addresses, on mail this account sent.
+    ///
+    /// The front-end reads this key off both message shapes; it was absent, so the
+    /// blind-copy list normalised to empty on every message.
+    pub bcc: Vec<AddressResponse>,
     /// The `Reply-To` addresses.
     pub reply_to: Vec<AddressResponse>,
     /// Body-free preview text.
     pub snippet: Option<String>,
     /// The canonical flag string, e.g. `seen flagged`.
     pub flags: String,
+    /// Whether the message carries the `\Seen` flag.
+    ///
+    /// `flags` is the canonical machine-readable spelling; these three booleans exist
+    /// because the front-ends read `seen`/`flagged`/`answered` directly. Deriving them
+    /// in the handler keeps every consumer from re-parsing the flag string — and from
+    /// getting it wrong, which is how the Webmail showed every message as unread.
+    pub seen: bool,
+    /// Whether it carries `\Flagged`.
+    pub flagged: bool,
+    /// Whether it carries `\Answered`.
+    pub answered: bool,
     /// Size of the stored bytes.
     pub size_bytes: i64,
     /// Whether the message carries attachments.
@@ -233,10 +249,26 @@ pub struct MessageDetailResponse {
     pub to: Vec<AddressResponse>,
     /// The `Cc` addresses.
     pub cc: Vec<AddressResponse>,
+    /// The `Bcc` addresses, on mail this account sent.
+    ///
+    /// The front-end reads this key off both message shapes; it was absent, so the
+    /// blind-copy list normalised to empty on every message.
+    pub bcc: Vec<AddressResponse>,
     /// The `Reply-To` addresses.
     pub reply_to: Vec<AddressResponse>,
     /// The canonical flag string.
     pub flags: String,
+    /// Whether the message carries the `\Seen` flag.
+    ///
+    /// `flags` is the canonical machine-readable spelling; these three booleans exist
+    /// because the front-ends read `seen`/`flagged`/`answered` directly. Deriving them
+    /// in the handler keeps every consumer from re-parsing the flag string — and from
+    /// getting it wrong, which is how the Webmail showed every message as unread.
+    pub seen: bool,
+    /// Whether it carries `\Flagged`.
+    pub flagged: bool,
+    /// Whether it carries `\Answered`.
+    pub answered: bool,
     /// Size of the stored bytes.
     pub size_bytes: i64,
     /// Body-free preview text.
@@ -416,6 +448,14 @@ pub struct UserResponse {
     pub last_login_at: Option<DateTime<Utc>>,
     /// When it was created.
     pub created_at: DateTime<Utc>,
+    /// The addresses the account owns.
+    ///
+    /// `GET /users` fills this in so the console's list can print an address count;
+    /// the single-account responses omit it, because they never read it and the
+    /// addresses would be a second query each. Absent therefore means "not asked for",
+    /// which is exactly what the client's `mailboxesKnown` flag reports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mailboxes: Option<Vec<MailboxResponse>>,
 }
 
 impl UserResponse {
@@ -431,7 +471,15 @@ impl UserResponse {
             used_bytes: row.used_bytes,
             last_login_at: row.last_login_at,
             created_at: row.created_at,
+            mailboxes: None,
         }
+    }
+
+    /// Attach the account's addresses.
+    #[must_use]
+    pub fn with_mailboxes(mut self, mailboxes: Vec<MailboxResponse>) -> Self {
+        self.mailboxes = Some(mailboxes);
+        self
     }
 }
 
@@ -543,6 +591,12 @@ pub struct AuditResponse {
     pub id: i64,
     /// Who acted.
     pub actor_user_id: Option<i64>,
+    /// The acting account's address, when the row names one.
+    ///
+    /// The console's audit table shows an actor, and `docs/api.md` §4.6 documents this
+    /// field; without it every row rendered a bare numeric id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
     /// What they did.
     pub action: String,
     /// The kind of thing acted upon.
@@ -565,6 +619,7 @@ impl AuditResponse {
         AuditResponse {
             id: row.id,
             actor_user_id: row.actor_user_id,
+            actor: None,
             action: row.action.clone(),
             target_type: row.target_type.clone(),
             target_id: row.target_id.clone(),
@@ -573,6 +628,13 @@ impl AuditResponse {
             details: row.details.clone(),
             created_at: row.created_at,
         }
+    }
+
+    /// Attach the acting account's address.
+    #[must_use]
+    pub fn with_actor(mut self, actor: Option<String>) -> Self {
+        self.actor = actor;
+        self
     }
 }
 
@@ -660,7 +722,14 @@ pub struct MeResponse {
     /// Bytes currently stored.
     pub used_bytes: i64,
     /// The addresses it owns.
-    pub mailboxes: Vec<AddressBrief>,
+    ///
+    /// Full mailbox records, not the reduced [`AddressBrief`] the address *list* uses.
+    /// The Webmail normalises each of these into the shape its folder tree, address
+    /// picker and quota readouts consume, and reads `quota_bytes` and `used_bytes` off
+    /// it — which the brief does not carry, so every address it listed reported as
+    /// empty. `AddressBrief` stays for `GET /mailboxes` and the client account blob,
+    /// which genuinely want only the address and its primary flag.
+    pub mailboxes: Vec<MailboxResponse>,
 }
 
 /// One typed-id alias, so handlers can name the owner of a row without importing ids.
@@ -936,10 +1005,16 @@ mod tests {
             is_admin: false,
             quota_bytes: 1_073_741_824,
             used_bytes: 52_428_800,
-            mailboxes: vec![AddressBrief {
+            mailboxes: vec![MailboxResponse {
                 id: 3,
                 address: "alice@example.com".into(),
+                user_id: 7,
+                display_name: Some("Alice".into()),
                 is_primary: true,
+                enabled: true,
+                quota_bytes: Some(2_147_483_648),
+                used_bytes: Some(4096),
+                created_at: Utc::now(),
             }],
         };
         let json = serde_json::to_value(&response).expect("must serialise");
@@ -947,6 +1022,10 @@ mod tests {
         assert_eq!(json["mailboxes"][0]["address"], "alice@example.com");
         assert_eq!(json["mailboxes"][0]["is_primary"], true);
         assert_eq!(json["mailboxes"][0]["id"], 3);
+        // The fields the Webmail's mailbox normaliser reads and the brief did not carry.
+        assert_eq!(json["mailboxes"][0]["quota_bytes"], 2_147_483_648_i64);
+        assert_eq!(json["mailboxes"][0]["used_bytes"], 4096);
+        assert_eq!(json["mailboxes"][0]["enabled"], true);
     }
 
     #[test]

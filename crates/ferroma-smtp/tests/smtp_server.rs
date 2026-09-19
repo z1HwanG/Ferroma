@@ -144,6 +144,7 @@ impl Harness {
                 password_hash: "unused".to_string(),
                 display_name: None,
                 is_admin: false,
+                enabled: true,
                 quota_bytes: None,
             })
             .await

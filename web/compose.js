@@ -9,9 +9,9 @@
  * "Endpoints wired".
  */
 
-import { API_BASE, ApiError, request } from './api.js';
+import { API_BASE, ApiError, request } from '../shared/api.js';
 import { createChipField } from './address.js';
-import { byId, clear, el, setText } from './dom.js';
+import { byId, clear, el, setText } from '../shared/dom.js';
 import {
   forwardSubject,
   fullStamp,
@@ -20,10 +20,11 @@ import {
   replyAllRecipients,
   replySubject,
   textToHtml,
-} from './format.js';
-import { confirmDialog, openModal } from './modal.js';
+} from '../shared/format.js';
+import { t, tn } from '../shared/i18n.js';
+import { confirmDialog, openModal } from '../shared/modal.js';
 import { getPrefs, getState } from './store.js';
-import { toastError, toastSuccess } from './toast.js';
+import { toastError, toastSuccess } from '../shared/toast.js';
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
@@ -84,9 +85,9 @@ export function openCompose(seed) {
   fromSelect.value = String(state.mailboxId || (mailboxes[0] ? mailboxes[0].id : 0));
 
   const onInvalid = (message) => toastError(message);
-  const to = createChipField({ id: 'compose-to', label: 'To', placeholder: 'name@example.com', onInvalid });
-  const cc = createChipField({ id: 'compose-cc', label: 'Cc', placeholder: 'name@example.com', onInvalid });
-  const bcc = createChipField({ id: 'compose-bcc', label: 'Bcc', placeholder: 'name@example.com', onInvalid });
+  const to = createChipField({ id: 'compose-to', label: t('To'), placeholder: 'name@example.com', onInvalid });
+  const cc = createChipField({ id: 'compose-cc', label: t('Cc'), placeholder: 'name@example.com', onInvalid });
+  const bcc = createChipField({ id: 'compose-bcc', label: t('Bcc'), placeholder: 'name@example.com', onInvalid });
 
   const ccRow = el('div', {}, [cc.root]);
   ccRow.hidden = true;
@@ -105,9 +106,9 @@ export function openCompose(seed) {
     spellcheck: 'true',
   });
 
-  const toolbar = el('div', { class: 'editor-toolbar', role: 'toolbar', 'aria-label': 'Formatting' });
+  const toolbar = el('div', { class: 'editor-toolbar', role: 'toolbar', 'aria-label': t('Formatting') });
   const editorWrap = el('div', {}, [
-    el('span', { class: 'field-label', id: 'compose-body-label', text: 'Message' }),
+    el('span', { class: 'field-label', id: 'compose-body-label', text: t('Message') }),
     toolbar,
     editor,
   ]);
@@ -119,10 +120,10 @@ export function openCompose(seed) {
     multiple: true,
   });
   const uploads = el('ul', { class: 'uploads', id: 'compose-uploads', 'aria-live': 'polite' });
-  const attachButton = el('button', { type: 'button', class: 'btn btn-small', text: 'Attach files' });
+  const attachButton = el('button', { type: 'button', class: 'btn btn-small', text: t('Attach files') });
 
-  const plainToggle = el('button', { type: 'button', class: 'btn btn-small', 'aria-pressed': 'false', text: 'Plain text' });
-  const fieldsToggle = el('button', { type: 'button', class: 'btn btn-small', 'aria-pressed': 'false', text: 'Cc / Bcc' });
+  const plainToggle = el('button', { type: 'button', class: 'btn btn-small', 'aria-pressed': 'false', text: t('Plain text') });
+  const fieldsToggle = el('button', { type: 'button', class: 'btn btn-small', 'aria-pressed': 'false', text: t('Cc / Bcc') });
   const status = el('p', { class: 'field-error', id: 'compose-status', role: 'alert' });
   status.hidden = true;
 
@@ -151,12 +152,15 @@ export function openCompose(seed) {
   if (seed.subject !== undefined) subject.value = seed.subject;
 
   if (mode === 'forward' && source) {
-    const header =
-      '---------- Forwarded message ----------\n' +
-      `From: ${source.from}\n` +
-      `Date: ${fullStamp(source.date)}\n` +
-      `Subject: ${source.subject}\n` +
-      `To: ${source.to.join(', ')}\n\n`;
+    const header = t(
+      '---------- Forwarded message ----------\nFrom: {from}\nDate: {date}\nSubject: {subject}\nTo: {to}\n\n',
+      {
+        from: source.from,
+        date: fullStamp(source.date),
+        subject: source.subject,
+        to: source.to.join(', '),
+      },
+    );
     editor.innerHTML =
       textToHtml(header) + (source.html && source.html.trim() ? source.html : textToHtml(source.text));
   } else if ((mode === 'reply' || mode === 'reply-all') && source) {
@@ -187,7 +191,7 @@ export function openCompose(seed) {
     try {
       document.execCommand(command, false, value);
     } catch {
-      toastError('This browser refused that formatting command.');
+      toastError(t('This browser refused that formatting command.'));
       return;
     }
     richHtml = editor.innerHTML;
@@ -195,13 +199,13 @@ export function openCompose(seed) {
   };
 
   const toolbarSpec = [
-    { label: 'Bold', command: 'bold', text: 'B' },
-    { label: 'Italic', command: 'italic', text: 'I' },
-    { label: 'Underline', command: 'underline', text: 'U' },
-    { label: 'Bulleted list', command: 'insertUnorderedList', text: '• List' },
-    { label: 'Numbered list', command: 'insertOrderedList', text: '1. List' },
-    { label: 'Quote', command: 'formatBlock', value: 'blockquote', text: 'Quote' },
-    { label: 'Remove formatting', command: 'removeFormat', text: 'Clear' },
+    { label: t('Bold'), command: 'bold', text: 'B' },
+    { label: t('Italic'), command: 'italic', text: 'I' },
+    { label: t('Underline'), command: 'underline', text: 'U' },
+    { label: t('Bulleted list'), command: 'insertUnorderedList', text: t('• List') },
+    { label: t('Numbered list'), command: 'insertOrderedList', text: t('1. List') },
+    { label: t('Quote'), command: 'formatBlock', value: 'blockquote', text: t('Quote') },
+    { label: t('Remove formatting'), command: 'removeFormat', text: t('Clear') },
   ];
   for (const item of toolbarSpec) {
     const button = el('button', {
@@ -219,15 +223,15 @@ export function openCompose(seed) {
   const linkButton = el('button', {
     type: 'button',
     class: 'btn btn-small',
-    text: 'Link',
-    'aria-label': 'Insert link',
+    text: t('Link'),
+    'aria-label': t('Insert link'),
   });
   linkButton.addEventListener('mousedown', (event) => event.preventDefault());
   linkButton.addEventListener('click', () => {
-    const url = window.prompt('Link address (https://…)');
+    const url = window.prompt(t('Link address (https://…)'));
     if (!url) return;
     if (!/^https?:\/\//i.test(url)) {
-      toastError('Links must start with http:// or https://.');
+      toastError(t('Links must start with http:// or https://.'));
       return;
     }
     exec('createLink', url);
@@ -246,8 +250,8 @@ export function openCompose(seed) {
     const remove = el('button', {
       type: 'button',
       class: 'btn btn-small',
-      text: 'Remove',
-      'aria-label': `Remove ${file.name}`,
+      text: t('Remove'),
+      'aria-label': t('Remove {name}', { name: file.name }),
     });
     const row = el('li', { class: 'upload-row' }, [
       el('span', { class: 'upload-name', title: file.name, text: file.name }),
@@ -264,9 +268,9 @@ export function openCompose(seed) {
     };
 
     if (file.size > MAX_UPLOAD_BYTES) {
-      stateText.textContent = 'too large';
+      stateText.textContent = t('too large');
       remove.addEventListener('click', detach);
-      toastError(`${file.name} is larger than the 25 MB this form accepts.`);
+      toastError(t('{name} is larger than the 25 MB this form accepts.', { name: file.name }));
       return;
     }
 
@@ -299,24 +303,24 @@ export function openCompose(seed) {
       }
       if (xhr.status >= 200 && xhr.status < 300 && payload && payload.id) {
         bar.style.width = '100%';
-        stateText.textContent = 'uploaded';
+        stateText.textContent = t('uploaded');
         uploadedAttachments.push({ id: Number(payload.id), filename: String(payload.filename || file.name) });
-        remove.textContent = 'Detach';
+        remove.textContent = t('Detach');
         remove.addEventListener('click', detach);
         return;
       }
-      stateText.textContent = 'failed';
+      stateText.textContent = t('failed');
       const message =
         payload && payload.error && payload.error.message
           ? payload.error.message
-          : `Upload failed (HTTP ${xhr.status}).`;
+          : t('Upload failed (HTTP {status}).', { status: xhr.status });
       toastError(`${file.name}: ${message}`);
       remove.addEventListener('click', detach);
     });
 
     xhr.addEventListener('error', () => {
-      stateText.textContent = 'failed';
-      toastError(`${file.name} could not be uploaded — the server was unreachable.`);
+      stateText.textContent = t('failed');
+      toastError(t('{name} could not be uploaded — the server was unreachable.', { name: file.name }));
       remove.addEventListener('click', detach);
     });
 
@@ -344,7 +348,7 @@ export function openCompose(seed) {
     plainMode = !plainMode;
     toolbar.hidden = plainMode;
     plainToggle.setAttribute('aria-pressed', plainMode ? 'true' : 'false');
-    plainToggle.textContent = plainMode ? 'Rich text' : 'Plain text';
+    plainToggle.textContent = plainMode ? t('Rich text') : t('Plain text');
     syncEditorHeight();
   });
 
@@ -364,7 +368,7 @@ export function openCompose(seed) {
 
   const form = el('form', { id: 'compose-form', novalidate: true }, [
     el('div', { class: 'field' }, [
-      el('label', { class: 'field-label', for: 'compose-from', text: 'From' }),
+      el('label', { class: 'field-label', for: 'compose-from', text: t('From') }),
       fromSelect,
     ]),
     to.root,
@@ -372,7 +376,7 @@ export function openCompose(seed) {
     ccRow,
     bccRow,
     el('div', { class: 'field' }, [
-      el('label', { class: 'field-label', for: 'compose-subject', text: 'Subject' }),
+      el('label', { class: 'field-label', for: 'compose-subject', text: t('Subject') }),
       subject,
     ]),
     editorWrap,
@@ -391,10 +395,10 @@ export function openCompose(seed) {
     type: 'submit',
     form: 'compose-form',
     class: 'btn btn-primary',
-    text: 'Send',
+    text: t('Send'),
   });
-  const saveDraft = el('button', { type: 'button', class: 'btn', text: 'Save draft' });
-  const discard = el('button', { type: 'button', class: 'btn', text: 'Discard' });
+  const saveDraft = el('button', { type: 'button', class: 'btn', text: t('Save draft') });
+  const discard = el('button', { type: 'button', class: 'btn', text: t('Discard') });
 
   let dirty = false;
   editor.addEventListener('input', () => {
@@ -491,13 +495,13 @@ export function openCompose(seed) {
     event.preventDefault();
     showStatus('');
     if (!to.commitPending() || !cc.commitPending() || !bcc.commitPending()) {
-      showStatus('One of the addresses is not valid.');
+      showStatus(t('One of the addresses is not valid.'));
       return;
     }
     const values = collect();
     if (values.to.length === 0) {
       to.focus();
-      showStatus('Add at least one recipient in To.');
+      showStatus(t('Add at least one recipient in To.'));
       return;
     }
 
@@ -505,7 +509,7 @@ export function openCompose(seed) {
 
     send.disabled = true;
     saveDraft.disabled = true;
-    setText(send, 'Sending…');
+    setText(send, t('Sending…'));
     try {
       const payload = await request(`${API_BASE}/messages`, {
         method: 'POST',
@@ -516,65 +520,70 @@ export function openCompose(seed) {
       const recipients = payload && Array.isArray(payload.recipients) ? payload.recipients : values.to;
       toastSuccess(
         queued > 0
-          ? `Queued for ${queued} recipient${queued === 1 ? '' : 's'}: ${recipients.join(', ')}`
-          : 'Message sent.',
+          ? tn(
+              queued,
+              'Queued for {count} recipient: {recipients}',
+              'Queued for {count} recipients: {recipients}',
+              { count: queued, recipients: recipients.join(', ') },
+            )
+          : t('Message sent.'),
       );
       dirty = false;
       closeCompose('sent');
       if (onSent) onSent();
     } catch (error) {
-      const message = error instanceof ApiError ? error.message : 'The message could not be sent.';
+      const message = error instanceof ApiError ? error.message : t('The message could not be sent.');
       showStatus(message);
       toastError(message);
     } finally {
       send.disabled = false;
       saveDraft.disabled = false;
-      setText(send, 'Send');
+      setText(send, t('Send'));
     }
   });
 
   saveDraft.addEventListener('click', async () => {
     showStatus('');
     if (!to.commitPending()) {
-      showStatus('One of the addresses is not valid.');
+      showStatus(t('One of the addresses is not valid.'));
       return;
     }
     const values = collect();
     if (values.subject === '' && values.text === '' && values.to.length === 0) {
-      showStatus('Write something before saving a draft.');
+      showStatus(t('Write something before saving a draft.'));
       return;
     }
     saveDraft.disabled = true;
-    setText(saveDraft, 'Saving…');
+    setText(saveDraft, t('Saving…'));
     try {
       await request(`${API_BASE}/drafts`, {
         method: 'POST',
         body: buildDraftPayload(values, threadingExtra()),
         toast: false,
       });
-      toastSuccess('Draft saved to the Drafts folder.');
+      toastSuccess(t('Draft saved to the Drafts folder.'));
       dirty = false;
       closeCompose('draft');
       if (onSent) onSent();
     } catch (error) {
-      const message = error instanceof ApiError ? error.message : 'The draft could not be saved.';
+      const message = error instanceof ApiError ? error.message : t('The draft could not be saved.');
       showStatus(message);
       toastError(message);
     } finally {
       saveDraft.disabled = false;
-      setText(saveDraft, 'Save draft');
+      setText(saveDraft, t('Save draft'));
     }
   });
 
-  const title = mode === 'new' ? 'New message' : mode === 'forward' ? 'Forward' : 'Reply';
+  const title = mode === 'new' ? t('New message') : mode === 'forward' ? t('Forward') : t('Reply');
 
   /** Ask before throwing away unsaved text; `reason` is informational. */
   const requestClose = async (reason) => {
     if (dirty) {
       const confirmed = await confirmDialog({
-        title: 'Discard this message?',
-        message: 'What you have written will be lost.',
-        confirmLabel: 'Discard',
+        title: t('Discard this message?'),
+        message: t('What you have written will be lost.'),
+        confirmLabel: t('Discard'),
       });
       if (!confirmed) return;
     }
@@ -585,7 +594,7 @@ export function openCompose(seed) {
   discard.addEventListener('click', () => requestClose('discard'));
 
   if (standalone()) {
-    const back = el('button', { type: 'button', class: 'btn btn-small', text: 'Back to list' });
+    const back = el('button', { type: 'button', class: 'btn btn-small', text: t('Back to list') });
     const panel = el('section', { class: 'reader', id: 'compose-panel' }, [
       el('header', { class: 'reader-head' }, [back, el('h2', { class: 'reader-subject', text: title })]),
       el('div', { class: 'reader-body' }, [form]),
@@ -623,9 +632,9 @@ export function openCompose(seed) {
     beforeClose: (reason) =>
       reason === 'escape'
         ? confirmDialog({
-            title: 'Discard this message?',
-            message: 'What you have written will be lost.',
-            confirmLabel: 'Discard',
+            title: t('Discard this message?'),
+            message: t('What you have written will be lost.'),
+            confirmLabel: t('Discard'),
           })
         : true,
     onClose: () => {

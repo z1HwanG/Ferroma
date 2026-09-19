@@ -15,6 +15,8 @@
 //! filesystem, then the folders. A filesystem failure after the row exists is reported
 //! honestly rather than leaving the caller thinking the address is usable.
 
+use std::collections::HashMap;
+
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
@@ -51,8 +53,20 @@ pub struct CreateUserRequest {
     /// Whether the account may use the Admin API.
     #[serde(default)]
     pub is_admin: bool,
+    /// Whether the account may log in.
+    ///
+    /// The Admin console's New-account dialog offers this; without the field serde
+    /// dropped it and every account was created enabled however the box was set.
+    #[serde(default = "enabled_by_default")]
+    pub enabled: bool,
     /// The storage allowance in bytes.
     pub quota_bytes: Option<i64>,
+}
+
+/// The serde default for [`CreateUserRequest::enabled`]: an account is usable
+/// unless the caller says otherwise.
+fn enabled_by_default() -> bool {
+    true
 }
 
 /// The `PATCH /api/v1/users/:id` body.
@@ -130,7 +144,7 @@ pub async fn list_users(
 
     // The repository pages but does not filter; a bounded fetch plus an in-memory
     // filter keeps `total` honest for the `?query=` case without a second SQL path.
-    let rows = match query.query.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+    let (rows, total) = match query.query.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
         Some(needle) => {
             let all = state.repos.users.list(i64::MAX, 0).await?;
             let needle = needle.to_ascii_lowercase();
@@ -152,18 +166,39 @@ pub async fn list_users(
                 .skip(start)
                 .take(pagination.limit.max(0) as usize)
                 .collect();
-            return Ok(Json(UserListResponse {
-                items: items.iter().map(UserResponse::from_row).collect(),
-                total,
-                limit: pagination.limit,
-                offset: pagination.offset,
-            }));
+            (items, total)
         }
-        None => state.repos.users.list(pagination.limit, pagination.offset).await?,
+        None => (
+            state
+                .repos
+                .users
+                .list(pagination.limit, pagination.offset)
+                .await?,
+            total,
+        ),
     };
 
+    // The console's user table prints each account's address count, so the addresses
+    // for the whole page are fetched in one query rather than one query per row. The
+    // rows that come back are grouped by owner; an account with none gets an empty
+    // list, which is a different answer from "this response did not say".
+    let ids: Vec<UserId> = rows.iter().map(|user| UserId::new(user.id)).collect();
+    let mut by_owner: HashMap<i64, Vec<MailboxResponse>> = HashMap::new();
+    for row in state.repos.mailboxes.list_by_users_with_domain(&ids).await? {
+        by_owner
+            .entry(row.mailbox.user_id)
+            .or_default()
+            .push(MailboxResponse::from_row(&row.mailbox, &row.domain));
+    }
+
     Ok(Json(UserListResponse {
-        items: rows.iter().map(UserResponse::from_row).collect(),
+        items: rows
+            .iter()
+            .map(|user| {
+                UserResponse::from_row(user)
+                    .with_mailboxes(by_owner.remove(&user.id).unwrap_or_default())
+            })
+            .collect(),
         total,
         limit: pagination.limit,
         offset: pagination.offset,
@@ -183,6 +218,7 @@ pub async fn create_user(
             &request.password,
             request.display_name.as_deref(),
             request.is_admin,
+            request.enabled,
             request.quota_bytes,
         )
         .await?;

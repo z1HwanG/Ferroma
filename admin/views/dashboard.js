@@ -13,10 +13,11 @@
  * Values the API does not report render as “—” rather than as a misleading zero.
  */
 
-import { API_BASE, ApiError, request } from '../api.js';
-import { dashboardStats, num } from '../data.js';
-import { el, clear } from '../dom.js';
-import { formatBytes, formatLogStamp } from '../format.js';
+import { API_BASE, ApiError, request } from '../../shared/api.js';
+import { dashboardStats, num } from '../../shared/data.js';
+import { el, clear } from '../../shared/dom.js';
+import { formatBytes, formatLogStamp } from '../../shared/format.js';
+import { t, tn } from '../../shared/i18n.js';
 import { getState, setState } from '../store.js';
 import { adminCard, attentionList, badge, cell, statTile, table, viewHead } from '../ui.js';
 
@@ -44,37 +45,52 @@ export async function render(params) {
   const statsHost = el('div', { class: 'stat-grid' });
 
   const attentionCard = adminCard({
-    title: 'Needs attention',
-    subtitle: 'problems derived from the figures below; silent when there are none',
+    title: t('Needs attention'),
+    subtitle: t('problems derived from the figures below; silent when there are none'),
     renderData: (node) => node,
   });
 
   const root = el('div', {}, [
-    viewHead('Dashboard', `Signed in as ${(user && user.email) || 'administrator'}`),
+    viewHead(
+      t('Dashboard'),
+      t('Signed in as {email}', { email: (user && user.email) || t('administrator') }),
+    ),
     attentionCard.node,
     heroHost,
     statsHost,
   ]);
 
   const stateCard = adminCard({
-    title: 'System health',
-    renderData: (data) => data.node,
+    title: t('System health'),
+    // The five cards below hand `adminCard` a finished node, as `attentionCard`
+    // already did. Declaring `data.node` here destructured a property no call site
+    // sets, so these four cards rendered the string "undefined" and nothing else.
+    renderData: (node) => node,
   });
 
   const queueCard = adminCard({
-    title: 'Mail queue by state',
-    renderData: (data) => data.node,
+    title: t('Mail queue by state'),
+    // The five cards below hand `adminCard` a finished node, as `attentionCard`
+    // already did. Declaring `data.node` here destructured a property no call site
+    // sets, so these four cards rendered the string "undefined" and nothing else.
+    renderData: (node) => node,
   });
 
   const storageCard = adminCard({
-    title: 'Storage',
-    renderData: (data) => data.node,
+    title: t('Storage'),
+    // The five cards below hand `adminCard` a finished node, as `attentionCard`
+    // already did. Declaring `data.node` here destructured a property no call site
+    // sets, so these four cards rendered the string "undefined" and nothing else.
+    renderData: (node) => node,
   });
 
   const historyCard = adminCard({
-    title: 'Queue depth',
-    subtitle: 'sampled in this browser, one point every 30 s while the console is open',
-    renderData: (data) => data.node,
+    title: t('Queue depth'),
+    subtitle: t('sampled in this browser, one point every 30 s while the console is open'),
+    // The five cards below hand `adminCard` a finished node, as `attentionCard`
+    // already did. Declaring `data.node` here destructured a property no call site
+    // sets, so these four cards rendered the string "undefined" and nothing else.
+    renderData: (node) => node,
   });
 
   root.append(historyCard.node, queueCard.node, stateCard.node, storageCard.node);
@@ -115,8 +131,15 @@ async function fetchHealth() {
     setState({ health });
     return { ok: true, data: health };
   } catch (error) {
+    // A degraded server answers `503` with the health document itself, not the error
+    // envelope. Reading only the status threw away the one thing worth showing — which
+    // subsystem is down — and left two of this view's findings unreachable.
+    if (error instanceof ApiError && error.payload && typeof error.payload === 'object') {
+      setState({ health: error.payload });
+      return { ok: true, data: error.payload };
+    }
     if (error instanceof ApiError) return { ok: false, message: error.message, network: error.network };
-    return { ok: false, message: 'Health could not be read.' };
+    return { ok: false, message: t('Health could not be read.') };
   }
 }
 
@@ -125,7 +148,7 @@ async function fetchQueueStats() {
     return { ok: true, data: await request(`${API_BASE}/queue/stats`, { toast: false }) };
   } catch (error) {
     if (error instanceof ApiError) return { ok: false, message: error.message, network: error.network };
-    return { ok: false, message: 'Queue statistics could not be read.' };
+    return { ok: false, message: t('Queue statistics could not be read.') };
   }
 }
 
@@ -134,7 +157,7 @@ async function fetchStorage() {
     return { ok: true, data: await request(`${API_BASE}/storage`, { toast: false }) };
   } catch (error) {
     if (error instanceof ApiError) return { ok: false, message: error.message, network: error.network };
-    return { ok: false, message: 'Storage figures could not be read.' };
+    return { ok: false, message: t('Storage figures could not be read.') };
   }
 }
 
@@ -153,19 +176,19 @@ function findings(health, queueStats) {
   const h = health.ok ? health.data || {} : null;
 
   if (!health.ok) {
-    issues.push({ tone: 'danger', title: 'System health could not be read', detail: health.message });
+    issues.push({ tone: 'danger', title: t('System health could not be read'), detail: health.message });
   }
   if (h && h.database && h.database.ok === false) {
-    issues.push({ tone: 'danger', title: 'The database is not reachable', detail: 'Mail cannot be stored or read until it recovers.' });
+    issues.push({ tone: 'danger', title: t('The database is not reachable'), detail: t('Mail cannot be stored or read until it recovers.') });
   }
   if (h && h.smtp && h.smtp.enabled === false) {
-    issues.push({ tone: 'warn', title: 'SMTP is disabled', detail: 'No inbound mail is being accepted.' });
+    issues.push({ tone: 'warn', title: t('SMTP is disabled'), detail: t('No inbound mail is being accepted.') });
   }
   if (h && h.imap && h.imap.enabled === false) {
-    issues.push({ tone: 'warn', title: 'IMAP is disabled', detail: 'Mail clients cannot connect.' });
+    issues.push({ tone: 'warn', title: t('IMAP is disabled'), detail: t('Mail clients cannot connect.') });
   }
   if (h && h.status && String(h.status).toLowerCase() === 'degraded') {
-    issues.push({ tone: 'warn', title: 'The server reports itself as degraded' });
+    issues.push({ tone: 'warn', title: t('The server reports itself as degraded') });
   }
 
   const counts = queueStats.ok ? queueCounts(queueStats) : {};
@@ -174,15 +197,15 @@ function findings(health, queueStats) {
   if (failed > 0) {
     issues.push({
       tone: 'danger',
-      title: `${failed} delivery attempt(s) have failed permanently`,
-      detail: 'Failed entries are kept in the queue; open Mail queue and filter by “failed”.',
+      title: tn(failed, '{count} delivery attempt has failed permanently', '{count} delivery attempts have failed permanently', { count: failed }),
+      detail: t('Failed entries are kept in the queue; open Mail queue and filter by “failed”.'),
     });
   }
   if (retry > 0) {
-    issues.push({ tone: 'warn', title: `${retry} message(s) are waiting to be retried`, detail: 'Delivery is retrying with backoff.' });
+    issues.push({ tone: 'warn', title: tn(retry, '{count} message is waiting to be retried', '{count} messages are waiting to be retried', { count: retry }), detail: t('Delivery is retrying with backoff.') });
   }
   if (!queueStats.ok) {
-    issues.push({ tone: 'warn', title: 'Queue statistics could not be read', detail: queueStats.message });
+    issues.push({ tone: 'warn', title: t('Queue statistics could not be read'), detail: queueStats.message });
   }
 
   return issues;
@@ -220,61 +243,61 @@ function renderStats(heroHost, statsHost, health, queueStats, storage) {
 
   heroHost.append(
     statTile({
-      label: 'Queue pending',
+      label: t('Queue pending'),
       value: stats.queuePending,
-      note: 'waiting to be delivered',
+      note: t('waiting to be delivered'),
       hero: true,
     }),
     statTile({
-      label: 'Failed deliveries',
+      label: t('Failed deliveries'),
       value: failed,
-      note: num(failed) > 0 ? 'need a decision' : 'none',
+      note: num(failed) > 0 ? t('need a decision') : t('none'),
       hero: true,
       tone: num(failed) > 0 ? 'danger' : 'ok',
     }),
-    statTile({ label: 'Mailboxes', value: stats.users, note: 'accounts', hero: true }),
+    statTile({ label: t('Mailboxes'), value: stats.users, note: t('accounts'), hero: true }),
     statTile({
-      label: 'Mailbox storage',
+      label: t('Mailbox storage'),
       value: stats.maildirBytes === undefined ? undefined : formatBytes(num(stats.maildirBytes)),
-      note: 'Maildir on disk',
+      note: t('Maildir on disk'),
       hero: true,
     }),
   );
 
   statsHost.append(
-    statTile({ label: 'Domains', value: stats.domains, note: 'hosted here' }),
-    statTile({ label: 'Received today', value: stats.receivedToday }),
-    statTile({ label: 'Sent today', value: stats.sentToday }),
+    statTile({ label: t('Domains'), value: stats.domains, note: t('hosted here') }),
+    statTile({ label: t('Received today'), value: stats.receivedToday }),
+    statTile({ label: t('Sent today'), value: stats.sentToday }),
     statTile({
-      label: 'Queue retry',
+      label: t('Queue retry'),
       value: stats.queueRetry,
       tone: num(stats.queueRetry) > 0 ? 'warn' : undefined,
     }),
     statTile({
-      label: 'Attachments',
+      label: t('Attachments'),
       value: stats.attachmentBytes === undefined ? undefined : formatBytes(num(stats.attachmentBytes)),
-      note: 'blob store',
+      note: t('blob store'),
     }),
     statTile({
-      label: 'Database size',
+      label: t('Database size'),
       value: stats.databaseBytes === undefined ? undefined : formatBytes(num(stats.databaseBytes)),
       note: database.server_version ? String(database.server_version) : '',
     }),
     statTile({
-      label: 'Active client sessions',
+      label: t('Active client sessions'),
       value: stats.activeClientSessions,
     }),
     statTile({
-      label: 'Uptime',
+      label: t('Uptime'),
       value: stats.uptimeSecs === undefined ? undefined : formatUptime(num(stats.uptimeSecs)),
     }),
     statTile({
-      label: 'Connection pool',
+      label: t('Connection pool'),
       value:
         pool.size === undefined && pool.idle === undefined
           ? undefined
           : `${num(pick(pool, ['size'], 0))} / ${num(pick(pool, ['max'], 0))}`,
-      note: 'in use of max',
+      note: t('in use of max'),
     }),
   );
 }
@@ -284,9 +307,9 @@ function formatUptime(seconds) {
   const days = Math.floor(seconds / 86400);
   const hours = Math.floor((seconds % 86400) / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
-  if (days > 0) return `${days} d ${hours} h`;
-  if (hours > 0) return `${hours} h ${minutes} min`;
-  return `${minutes} min`;
+  if (days > 0) return t('{days} d {hours} h', { days, hours });
+  if (hours > 0) return t('{hours} h {minutes} min', { hours, minutes });
+  return t('{minutes} min', { minutes });
 }
 
 function renderQueue(card, queueStats) {
@@ -297,15 +320,15 @@ function renderQueue(card, queueStats) {
   const counts = queueCounts(queueStats);
   const rows = Object.keys(counts)
     .filter((key) => typeof counts[key] === 'number' || typeof counts[key] === 'string')
-    .map((key) => [cell(key), cell(String(counts[key]))]);
+    .map((key) => [cell(stateLabel(key)), cell(String(counts[key]))]);
   const nextDue = queueStats.data ? queueStats.data.next_due_at : null;
   if (rows.length === 0) {
     card.setState({ state: 'empty' });
     return;
   }
   const node = el('div', {}, [
-    table({ columns: [{ label: 'State' }, { label: 'Messages' }], rows }),
-    nextDue ? el('p', { class: 'view-sub', text: `Next attempt scheduled for ${formatLogStamp(nextDue)}.` }) : null,
+    table({ columns: [{ label: t('State') }, { label: t('Messages') }], rows }),
+    nextDue ? el('p', { class: 'view-sub', text: t('Next attempt scheduled for {when}.', { when: formatLogStamp(nextDue) }) }) : null,
   ]);
   card.setState({ state: 'ready', data: node });
 }
@@ -317,31 +340,62 @@ function renderHealth(card, health) {
   }
   const h = health.data || {};
   const rows = [
-    [cell('Status'), badge(h.status || 'unknown')],
-    [cell('Version'), cell(h.version || '—')],
-    [cell('Protocol'), cell(h.protocol_version === undefined ? '—' : String(h.protocol_version))],
-    [cell('Database'), badge(h.database && h.database.ok ? 'ok' : 'fail')],
-    [cell('Server'), cell((h.database && h.database.server_version) || '—')],
+    [cell(t('Status')), badge(h.status || 'unknown')],
+    [cell(t('Version')), cell(h.version || '—')],
+    [cell(t('Protocol')), cell(h.protocol_version === undefined ? '—' : String(h.protocol_version))],
+    [cell(t('Database')), badge(h.database && h.database.ok ? 'ok' : 'fail')],
+    [cell(t('Server')), cell((h.database && h.database.server_version) || '—')],
     [
-      cell('SMTP'),
+      cell(t('SMTP')),
       el('span', {}, [
         badge(h.smtp && h.smtp.enabled ? 'enabled' : 'disabled'),
-        el('span', { class: 'view-sub', text: h.smtp && h.smtp.connections !== undefined ? ` ${h.smtp.connections} connections` : '' }),
+        el('span', { class: 'view-sub', text: h.smtp && h.smtp.connections !== undefined ? ` ${tn(h.smtp.connections, '{count} connection', '{count} connections', { count: h.smtp.connections })}` : '' }),
       ]),
     ],
     [
-      cell('IMAP'),
+      cell(t('IMAP')),
       el('span', {}, [
         badge(h.imap && h.imap.enabled ? 'enabled' : 'disabled'),
-        el('span', { class: 'view-sub', text: h.imap && h.imap.connections !== undefined ? ` ${h.imap.connections} connections` : '' }),
+        el('span', { class: 'view-sub', text: h.imap && h.imap.connections !== undefined ? ` ${tn(h.imap.connections, '{count} connection', '{count} connections', { count: h.imap.connections })}` : '' }),
       ]),
     ],
-    [cell('Queue'), cell(formatQueueLine(h.queue))],
+    [cell(t('Queue')), cell(formatQueueLine(h.queue))],
   ];
   card.setState({
     state: 'ready',
-    data: table({ columns: [{ label: 'Check' }, { label: 'Value' }], rows }),
+    data: table({ columns: [{ label: t('Check') }, { label: t('Value') }], rows }),
   });
+}
+
+/**
+ * The label for one row of the by-state table.
+ *
+ * The keys come from `/queue/stats`, so they are data — but the table shows them as
+ * labels, and a Chinese console must not print `pending`. A key this build does not
+ * know keeps its own name: `outstanding` is a derived total rather than a state, and
+ * calling it "Unknown" would be a lie about the data.
+ *
+ * @param {string} state
+ */
+function stateLabel(state) {
+  switch (String(state).toLowerCase()) {
+    case 'pending':
+      return t('Pending');
+    case 'delivering':
+      return t('Delivering');
+    case 'delivered':
+      return t('Delivered');
+    case 'retry':
+      return t('Retry');
+    case 'failed':
+      return t('Failed');
+    case 'cancelled':
+      return t('Cancelled');
+    case 'outstanding':
+      return t('Outstanding');
+    default:
+      return String(state);
+  }
 }
 
 function formatQueueLine(queue) {
@@ -359,15 +413,15 @@ function renderStorage(card, storage) {
   }
   const s = storage.data || {};
   const rows = [
-    [cell('Maildir'), cell(formatBytes(num(pick(s, ['maildir_bytes'], 0))), 'cell-mono')],
-    [cell('Attachment blobs'), cell(formatBytes(num(pick(s, ['attachment_bytes'], 0))), 'cell-mono')],
-    [cell('Database'), cell(formatBytes(num(pick(s, ['database_bytes'], 0))), 'cell-mono')],
-    [cell('Mailboxes'), cell(String(pick(s, ['mailboxes'], '—')))],
-    [cell('Messages'), cell(String(pick(s, ['messages'], '—')))],
+    [cell(t('Maildir')), cell(formatBytes(num(pick(s, ['maildir_bytes'], 0))), 'cell-mono')],
+    [cell(t('Attachment blobs')), cell(formatBytes(num(pick(s, ['attachment_bytes'], 0))), 'cell-mono')],
+    [cell(t('Database')), cell(formatBytes(num(pick(s, ['database_bytes'], 0))), 'cell-mono')],
+    [cell(t('Mailboxes')), cell(String(pick(s, ['mailboxes'], '—')))],
+    [cell(t('Messages')), cell(String(pick(s, ['messages'], '—')))],
   ];
   card.setState({
     state: 'ready',
-    data: table({ columns: [{ label: 'Store' }, { label: 'Size' }], rows }),
+    data: table({ columns: [{ label: t('Store') }, { label: t('Size') }], rows }),
   });
 }
 
@@ -387,8 +441,8 @@ function renderHistory(card, queueStats) {
       class: 'view-sub',
       text:
         history.length < 2
-          ? `First sample: depth ${latest.depth}, failed ${latest.failed}. The line fills in as the console stays open.`
-          : `Now: depth ${latest.depth}, failed ${latest.failed} — ${history.length} samples.`,
+          ? t('First sample: depth {depth}, failed {failed}. The line fills in as the console stays open.', { depth: latest.depth, failed: latest.failed })
+          : t('Now: depth {depth}, failed {failed} — {count} samples.', { depth: latest.depth, failed: latest.failed, count: history.length }),
     }),
   ]);
   card.setState({ state: 'ready', data: node });
@@ -418,7 +472,7 @@ export function sparkline(history) {
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
   svg.setAttribute('preserveAspectRatio', 'none');
   svg.setAttribute('role', 'img');
-  svg.setAttribute('aria-label', `Queue depth over the last ${history.length} samples`);
+  svg.setAttribute('aria-label', t('Queue depth over the last {count} samples', { count: history.length }));
 
   if (history.length === 0) return svg;
   const max = Math.max(1, ...history.map((point) => point.depth));

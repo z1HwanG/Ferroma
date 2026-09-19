@@ -226,6 +226,31 @@ impl MailboxesRepository {
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
+    /// [`MailboxesRepository::list_by_user_with_domain`] for several accounts at once.
+    ///
+    /// `GET /users` prints an address count on every row, so the alternative was one
+    /// query per account on the page.
+    pub async fn list_by_users_with_domain(
+        &self,
+        user_ids: &[UserId],
+    ) -> Result<Vec<MailboxWithDomain>> {
+        if user_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let raw: Vec<i64> = user_ids.iter().map(|id| id.get()).collect();
+        let rows = sqlx::query_as::<_, MailboxWithDomainRow>(
+            "SELECT m.*, d.name AS domain
+               FROM mailboxes m
+               JOIN domains d ON d.id = m.domain_id
+              WHERE m.user_id = ANY($1)
+              ORDER BY m.user_id ASC, m.is_primary DESC, d.name ASC, m.local_part ASC, m.id ASC",
+        )
+        .bind(&raw)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
     /// Every address in one domain, alphabetical.
     pub async fn list_by_domain(&self, domain_id: DomainId) -> Result<Vec<Mailbox>> {
         Ok(sqlx::query_as::<_, Mailbox>(

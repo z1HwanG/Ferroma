@@ -15,6 +15,7 @@
 
 import { toastError } from './toast.js';
 import { timeoutSignal } from './net.js';
+import { currentLocale, t } from './i18n.js';
 
 export const API_BASE = '/api/v1';
 export const REQUEST_TIMEOUT_MS = 20000;
@@ -108,6 +109,13 @@ export class ApiError extends Error {
     this.status = info.status ?? 0;
     this.code = info.code ?? (info.network ? 'network_error' : 'internal_error');
     this.details = info.details;
+    /**
+     * The parsed response body, when a failing response carried one that is not the
+     * error envelope. `/health` answers `503` with the health document itself, so the
+     * status and the explanation both survive.
+     * @type {unknown}
+     */
+    this.payload = info.payload ?? null;
     this.network = Boolean(info.network);
   }
 }
@@ -116,11 +124,11 @@ function envelopeError(status, payload) {
   const envelope = payload && typeof payload === 'object' ? payload.error : null;
   if (envelope && typeof envelope === 'object') {
     return new ApiError(
-      typeof envelope.message === 'string' ? envelope.message : `Request failed (HTTP ${status})`,
+      typeof envelope.message === 'string' ? envelope.message : t('Request failed (HTTP {status})', { status }),
       { status, code: envelope.code, details: envelope.details },
     );
   }
-  return new ApiError(`Request failed (HTTP ${status})`, { status });
+  return new ApiError(t('Request failed (HTTP {status})', { status }), { status });
 }
 
 /* ----------------------------------------------------------------- requests */
@@ -137,6 +145,10 @@ export async function request(path, options = {}) {
 
   const headers = Object.assign({ Accept: 'application/json' }, options.headers || {});
   if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+  // The server localises its error messages from this header. Sending the locale the
+  // user picked keeps the toasts in the same language as the interface around them —
+  // the browser's own `Accept-Language` would ignore that choice.
+  headers['Accept-Language'] = currentLocale();
 
   /** @type {RequestInit} */
   const init = {
@@ -159,7 +171,7 @@ export async function request(path, options = {}) {
   } catch (error) {
     if (error && error.name === 'AbortError') throw error;
     setOnline(false);
-    const failure = new ApiError('The server could not be reached.', { network: true });
+    const failure = new ApiError(t('The server could not be reached.'), { network: true });
     if (options.toast !== false) toastError(failure.message);
     throw failure;
   }
@@ -170,10 +182,15 @@ export async function request(path, options = {}) {
     const refreshed = await tryRefresh(options.signal);
     if (refreshed) return request(path, Object.assign({}, options, { retryOn401: false }));
     if (onUnauthorized) onUnauthorized();
-    throw new ApiError('Your session has expired. Sign in again.', { status: 401, code: 'unauthorized' });
+    throw new ApiError(t('Your session has expired. Sign in again.'), { status: 401, code: 'unauthorized' });
   }
 
   if (response.status === 204) return null;
+
+  // `304 Not Modified` means the caller's copy is current, which is a success for a
+  // conditional request. `Response.ok` is false for it, so without this an attachment
+  // download that hit the browser cache threw "Request failed (HTTP 304)".
+  if (response.status === 304) return options.raw ? response : null;
 
   if (!response.ok) {
     let payload = null;
@@ -183,10 +200,12 @@ export async function request(path, options = {}) {
       payload = null;
     }
     const failure = envelopeError(response.status, payload);
+    // Keep the body even when it is not the envelope: see `ApiError.payload`.
+    failure.payload = payload;
     if (response.status === 429) {
       const retryAfter = Number(response.headers.get('Retry-After'));
       if (Number.isFinite(retryAfter) && retryAfter > 0) {
-        failure.message = `${failure.message} Try again in ${retryAfter}s.`;
+        failure.message = t('{message} Try again in {seconds}s.', { message: failure.message, seconds: retryAfter });
       }
     }
     if (options.toast !== false) toastError(failure.message);
@@ -200,7 +219,7 @@ export async function request(path, options = {}) {
   try {
     return JSON.parse(text);
   } catch {
-    throw new ApiError('The server returned a response that is not JSON.', { status: response.status });
+    throw new ApiError(t('The server returned a response that is not JSON.'), { status: response.status });
   }
 }
 
@@ -212,7 +231,11 @@ async function tryRefresh(signal) {
     try {
       const response = await fetch(new URL(`${API_BASE}/auth/refresh`, window.location.origin).toString(), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          'Accept-Language': currentLocale(),
+        },
         credentials: 'same-origin',
         body: JSON.stringify({ refresh_token: refreshToken }),
         signal,

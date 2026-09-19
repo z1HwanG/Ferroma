@@ -128,10 +128,18 @@ pub struct SettingsListResponse {
 }
 
 /// The `GET /api/v1/setup` body.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetupStatusResponse {
     /// Whether the wizard still has work to do.
     pub required: bool,
+    /// The hostname the running configuration advertises.
+    ///
+    /// `POST /setup` takes a `hostname`, and the running configuration cannot be
+    /// rewritten underneath the process — so the wizard is handed the value the server
+    /// already answers on, and a submission that disagrees is refused rather than
+    /// silently dropped. Without this the operator typed a hostname that went nowhere
+    /// and the DNS panel contradicted them on the next screen.
+    pub hostname: String,
 }
 
 /// The `POST /api/v1/setup` body.
@@ -297,10 +305,35 @@ pub async fn list_audit(
     let rows = state.repos.audit.list(filter.clone()).await?;
     let total = state.repos.audit.count(filter).await?;
 
-    Ok(Json(pagination.page(
-        rows.iter().map(AuditResponse::from_row).collect(),
-        total,
-    )))
+    // The console's audit table has an Actor column, and it reads an address. The rows
+    // only carry the id, so the ids are resolved here — once for the whole page.
+    let mut distinct = std::collections::BTreeSet::new();
+    let actor_ids: Vec<UserId> = rows
+        .iter()
+        .filter_map(|row| row.actor_user_id)
+        .filter(|id| distinct.insert(*id))
+        .map(UserId::new)
+        .collect();
+    let actors: std::collections::HashMap<i64, String> = state
+        .repos
+        .users
+        .find_by_ids(&actor_ids)
+        .await?
+        .into_iter()
+        .map(|user| (user.id, user.email))
+        .collect();
+
+    let items = rows
+        .iter()
+        .map(|row| {
+            AuditResponse::from_row(row).with_actor(
+                row.actor_user_id
+                    .and_then(|id| actors.get(&id).cloned()),
+            )
+        })
+        .collect();
+
+    Ok(Json(pagination.page(items, total)))
 }
 
 /// `GET /api/v1/settings`
@@ -375,11 +408,22 @@ pub async fn put_setting(
 }
 
 /// `GET /api/v1/setup`
+///
+/// Answers `404` when `api.enable_setup_wizard` is off, which is what "disabled
+/// entirely" means to a client: the endpoint does not exist. Answering `200
+/// {required:false}` instead made the console tell an operator with no administrator
+/// that one already existed.
 pub async fn setup_status(
     State(state): State<AppState>,
 ) -> Result<Json<SetupStatusResponse>, ApiError> {
+    if !state.config.api.enable_setup_wizard {
+        return Err(ApiError::new(FerromaError::NotFound(
+            "the setup wizard is disabled by api.enable_setup_wizard".to_string(),
+        )));
+    }
     Ok(Json(SetupStatusResponse {
         required: setup_required(&state).await?,
+        hostname: state.config.server.hostname.clone(),
     }))
 }
 
@@ -397,7 +441,10 @@ pub async fn setup(
     Json(request): Json<SetupRequest>,
 ) -> Result<(StatusCode, Json<TokenResponse>), ApiError> {
     if !state.config.api.enable_setup_wizard {
-        return Err(ApiError::new(FerromaError::Conflict(
+        // `404`, matching `GET /setup`: a disabled wizard is an endpoint that is not
+        // there, and the console already renders that as "disabled" rather than as the
+        // "an administrator already exists" a `409` means.
+        return Err(ApiError::new(FerromaError::NotFound(
             "the setup wizard is disabled by api.enable_setup_wizard".to_string(),
         )));
     }
@@ -422,6 +469,25 @@ pub async fn setup(
         ))));
     }
 
+    // The running configuration cannot be rewritten underneath the process, so a
+    // hostname that disagrees with `server.hostname` is refused instead of being
+    // silently discarded. The wizard prefills the field from `GET /setup`, so the
+    // ordinary path is an agreement; the error names the setting to change.
+    if let Some(hostname) = request
+        .hostname
+        .as_deref()
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+    {
+        let configured = state.config.server.hostname.trim();
+        if !hostname.eq_ignore_ascii_case(configured) {
+            return Err(ApiError::new(FerromaError::Invalid(format!(
+                "this server advertises {configured}; set `server.hostname` in the \
+                 configuration and restart to change it, rather than {hostname}"
+            ))));
+        }
+    }
+
     // The account first: it is the only step that can fail for a reason the operator
     // can act on (a weak password, a duplicate address).
     let user = state
@@ -430,6 +496,7 @@ pub async fn setup(
             request.email.trim(),
             &request.password,
             Some("Administrator"),
+            true,
             true,
             None,
         )
@@ -462,14 +529,6 @@ pub async fn setup(
         .folders
         .ensure_standard(mailbox.mailbox_id())
         .await?;
-
-    if let Some(hostname) = request.hostname.as_deref().filter(|h| !h.trim().is_empty()) {
-        tracing::info!(
-            requested_hostname = hostname,
-            configured_hostname = %state.config.server.hostname,
-            "setup wizard hostname: the running configuration is unchanged"
-        );
-    }
 
     let outcome = state
         .auth
@@ -765,9 +824,18 @@ mod tests {
 
     #[test]
     fn the_setup_status_shape_is_the_documented_one() {
-        let json = serde_json::to_value(SetupStatusResponse { required: true })
-            .expect("must serialise");
-        assert_eq!(json, serde_json::json!({ "required": true }));
+        // `hostname` is part of the shape so the wizard can prefill the field with the
+        // value the running configuration actually advertises; `POST /setup` refuses a
+        // submission that disagrees with it.
+        let json = serde_json::to_value(SetupStatusResponse {
+            required: true,
+            hostname: "mail.example.com".to_string(),
+        })
+        .expect("must serialise");
+        assert_eq!(
+            json,
+            serde_json::json!({ "required": true, "hostname": "mail.example.com" })
+        );
     }
 
     #[test]

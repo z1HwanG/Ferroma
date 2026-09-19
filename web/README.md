@@ -10,33 +10,36 @@ CDN**. Vanilla ES modules, hand-written CSS, relative asset paths only.
 
 ```text
 web/
-  index.html          230 lines  app shell: three panes, login card, modal + toast hosts
-  styles.css         1320 lines  tokens, light/dark themes, responsive panes, prefers-reduced-motion
-  main.js             598 lines  boot, auth, routing, keyboard map, bulk-action bar
-  api.js              262 lines  fetch wrapper: bearer token, error envelope, 401 refresh, offline flag
-  data.js             492 lines  normalisation of every API payload the app reads
-  dom.js              187 lines  createElement/textContent helpers (never assigns innerHTML)
-  format.js           243 lines  RFC 3339 dates, relative stamps, sizes, quote/text↔HTML
-  modal.js            254 lines  dialogs: focus trap, Escape, click-outside, focus restore
-  toast.js             45 lines  polite + assertive live regions
-  theme.js             73 lines  prefers-color-scheme with a localStorage override
-  net.js               19 lines  AbortSignal timeout helper
-  store.js             98 lines  observable state + localStorage preferences
-  router.js           114 lines  `#/f/<folder>[/m/<id>]` and `#/search/<query>`
-  login.js             98 lines  `POST /auth/login` panel
-  address.js          181 lines  the address-chip field compose uses for To / Cc / Bcc
-  folders.js          281 lines  address picker, folder tree (create / rename / delete)
-  list.js             431 lines  paginated list, infinite scroll, selection, bulk bar glue
-  reader.js           570 lines  reading pane, sandboxed HTML frame, raw source dialog, 2 s auto-mark-read
-  compose.js          623 lines  compose modal: chips, rich text, uploads, reply/forward, drafts
-  settings.js         218 lines  settings dialog: preferences and the account password
-  tools/check.mjs      462 lines  the static regression check (see §4)
+  index.html            230 lines  app shell: three panes, login card, modal + toast hosts
+  styles.css            1326 lines  tokens, light/dark themes, responsive panes, prefers-reduced-motion
+  main.js               605 lines  boot, auth, routing, keyboard map, bulk-action bar
+  store.js              98 lines  observable state + localStorage preferences
+  router.js             114 lines  `#/f/<folder>[/m/<id>]` and `#/search/<query>`
+  login.js              99 lines  `POST /auth/login` panel
+  address.js            182 lines  the address-chip field compose uses for To / Cc / Bcc
+  folders.js            296 lines  address picker, folder tree (create / rename / delete)
+  list.js               434 lines  paginated list, infinite scroll, selection, bulk bar glue
+  reader.js             579 lines  reading pane, sandboxed HTML frame, raw source dialog, 2 s auto-mark-read
+  compose.js            655 lines  compose modal: chips, rich text, uploads, reply/forward, drafts
+  settings.js           248 lines  settings dialog: preferences and the account password
+  tools/check.mjs       782 lines  the static regression check (see §4)
 ```
 
-`api.js`, `data.js`, `dom.js`, `format.js`, `modal.js`, `net.js`, `theme.js` and
-`toast.js` are duplicated verbatim in `admin/`. That is deliberate: the server
-serves `web/` at `/` and `admin/` at `/admin` as two independent directories, so a
-shared parent path would not be reachable from either app.
+Eight modules the two apps share — `api.js`, `data.js`, `dom.js`, `format.js`,
+`modal.js`, `net.js`, `theme.js` and `toast.js` — live one directory up in `shared/`.
+The server mounts that directory at `/shared`, so the same relative import
+(`../shared/api.js`) resolves to the same URL from `/main.js` and from
+`/admin/main.js`, and there is exactly one copy of each. `api.shared_dir` says where
+the directory is; the container image sets it.
+
+```text
+shared/
+  i18n.js               locale registry, `t()` / `tn()`, the language picker's rules
+  locales/zh-CN.js      the Simplified Chinese catalog (English is its own catalog)
+  api.js data.js dom.js format.js modal.js net.js theme.js toast.js
+                        imported by both apps
+```
+
 
 ## 2. Serving it
 
@@ -51,6 +54,15 @@ Webmail assets. Open:
 ```text
 http://127.0.0.1:8080/            Webmail
 http://127.0.0.1:8080/admin       Admin console (see admin/README.md)
+```
+
+For front-end work you do not need the server or a database. `tools/serve-frontends.mjs`
+reproduces the three mounts the router creates — `web/` at `/`, `admin/` at `/admin`,
+and the shared modules at `/shared` — and answers `/api/v1` with a `503` envelope so a
+screen that needs the API fails visibly instead of parsing `index.html` as JSON:
+
+```text
+node tools/serve-frontends.mjs --port 8099
 ```
 
 In the production image the same files are baked in at
@@ -150,23 +162,33 @@ suite. Run it from this directory:
 node tools/check.mjs
 ```
 
-It parses every HTML and JS file and asserts, with **629 assertions** over this
-app: no inline `<script>` bodies, no `on*=` attributes, no absolute `/…` asset
+It parses this app's HTML and JS plus the modules it imports from `shared/`, and
+asserts: no inline `<script>` bodies, no `on*=` attributes, no absolute `/…` asset
 paths, every `byId('x')` / `getElementById('x')` / `querySelector('#x')` target
 declared in `index.html` or created by that module, every `fetch(` confined to
 `api.js`, every `request(...)` / `download(...)` call starting with `${API_BASE}`
 or `/api/v1`, every local `src`/`href`/`url()` present on disk, every ES-module
 import resolvable, no `console.log`/`eval`, `innerHTML` touched only on the
 compose editor, every import naming a real export, every export actually used,
-and — rule 10 — **every payload envelope the server sends surviving the app's own
-normalisers**. It exits non-zero and prints a `[rule] file: message` list on
-violation. A second copy lives in `admin/tools/check.mjs` (**795 assertions**) and
-takes the app profile from `<html data-app="…">`; the two files are byte-identical.
+and then the three rules the others cannot replace:
 
-Rule 10 is the one the other nine cannot replace. Every other rule proves the
-modules *link*; none of them can see whether the JSON the Rust handler serialises is
-the JSON the app expects. A renamed collection key used to be invisible to the whole
-suite — which is how the folder tree shipped empty (see §6).
+* **rule 10** — every payload envelope the server sends survives the app's own
+  normalisers, and the folder and flag normalisers agree with the API (INBOX is
+  recognised by name; `flags` is the canonical lower-case string);
+* **rule 11** — every `t('…')` key exists in the Simplified Chinese catalog. A
+  missing translation is not a crash, which is exactly why it needs a rule: a screen
+  nobody translated looks finished to anyone who reads only English.
+
+It exits non-zero and prints a `[rule] file: message` list on violation. The final
+line of a passing run reports the assertion count. A second copy lives in
+`admin/tools/check.mjs` and takes both the app directory and the app profile
+(`<html data-app="…">`) into account; the two files are byte-identical, and a change
+to one that is not made to the other is the drift this arrangement invites.
+
+Rule 10 is the one the earlier nine cannot replace. Those prove the modules *link*;
+none of them can see whether the JSON the Rust handler serialises is the JSON the app
+expects. A renamed collection key used to be invisible to the whole suite — which is
+how the folder tree shipped empty (see §6).
 
 ## 5. Keyboard and accessibility
 
@@ -209,3 +231,44 @@ names truncate with an ellipsis and carry the full value in `title` and
 * Compose allows attachments up to 25 MB in this UI
   (`client.attachment_chunk_size` chunked uploads in `docs/fcp.md` §6 are a client
   protocol feature and are not used by Webmail).
+
+
+## 7. Languages
+
+The interface ships in **English** and **Simplified Chinese**.
+
+English is the source language, so its text *is* the lookup key: `t('Sign out')` reads
+the catalog entry for that exact string and falls back to the English text when there
+is none. Adding a string to the interface is therefore just typing it, a gap is
+readable rather than fatal, and the coverage rule below is what stops a gap from
+shipping unnoticed.
+
+```js
+import { t, tn } from '../shared/i18n.js';
+
+el('button', { text: t('Sign out') });
+el('p', { text: t('Delete {count} folders?', { count }) });
+el('p', { text: tn(n, '{count} message', '{count} messages', { count: n }) });
+```
+
+| Where | What it holds |
+|---|---|
+| `shared/i18n.js` | the locale registry, `t()` / `tn()`, persistence, the shell pass |
+| `shared/locales/zh-CN.js` | the Simplified Chinese catalog |
+| Settings → Language | the picker |
+| `tools/serve-frontends.mjs` | serves `web/`, `admin/` and `shared/` without building the server |
+
+Details worth knowing:
+
+* **The picker reloads the page.** Every view here builds its DOM once and keeps the
+  reference, so re-rendering from the settings dialog would leave the text already on
+  screen — including the dialog itself — in the old language. The choice is kept in
+  `localStorage` under `ferroma.locale`.
+* **The first visit follows the browser.** `navigator.languages` is matched against the
+  shipped tags; any Chinese region selects Simplified, and anything else gets English.
+* **`Accept-Language` follows the picker.** `api.js` sends the chosen locale, so a
+  server error arrives in the same language as the interface around it rather than in
+  the browser's language.
+* **`index.html` needs no markers.** `translateDocument()` walks the shell's text nodes
+  and its `placeholder` / `title` / `aria-label` attributes at load and translates any
+  whose content is a catalog key.

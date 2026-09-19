@@ -3,13 +3,14 @@
  * several, and inspect the per-entry delivery log from `GET /api/v1/queue/:id`.
  */
 
-import { API_BASE, ApiError, query, request } from '../api.js';
-import { attemptLogOf, normalizeQueueEntry, num, queueEntriesOf, totalOf } from '../data.js';
-import { el } from '../dom.js';
-import { formatLogStamp } from '../format.js';
-import { confirmDialog } from '../modal.js';
+import { API_BASE, ApiError, query, request } from '../../shared/api.js';
+import { attemptLogOf, normalizeQueueEntry, num, queueEntriesOf, totalOf } from '../../shared/data.js';
+import { el } from '../../shared/dom.js';
+import { formatLogStamp } from '../../shared/format.js';
+import { t, tn } from '../../shared/i18n.js';
+import { confirmDialog } from '../../shared/modal.js';
 import { go } from '../router.js';
-import { toastError, toastSuccess } from '../toast.js';
+import { toastError, toastSuccess } from '../../shared/toast.js';
 import {
   actions,
   adminCard,
@@ -28,6 +29,51 @@ const PAGE_SIZE = 50;
 const STATUSES = ['', 'pending', 'delivering', 'delivered', 'retry', 'failed', 'cancelled'];
 
 /**
+ * A person-readable label for a queue status.
+ *
+ * `status` is API data — it is compared against `failed`, `pending` and the rest — so it
+ * is never translated where it is read. It is translated here instead, where it is
+ * displayed, and every label is a literal inside `t()` so the catalog stays checkable.
+ *
+ * @param {unknown} status
+ * @returns {string}
+ */
+function statusLabel(status) {
+  switch (String(status || '').toLowerCase()) {
+    case 'pending':
+      return t('Pending');
+    case 'delivering':
+      return t('Delivering');
+    case 'delivered':
+      return t('Delivered');
+    case 'retry':
+      return t('Retry');
+    case 'failed':
+      return t('Failed');
+    case 'cancelled':
+      return t('Cancelled');
+    default:
+      return t('Unknown');
+  }
+}
+
+/**
+ * The status pill, showing the translated status.
+ *
+ * `badge()` picks its colour from the raw value, so the raw value is what it is given;
+ * only the visible text is replaced. Translating the value before the call would leave
+ * every pill the same grey.
+ *
+ * @param {unknown} status
+ * @returns {Element}
+ */
+function statusBadge(status) {
+  const node = badge(status);
+  node.textContent = statusLabel(status);
+  return node;
+}
+
+/**
  * @param {URLSearchParams} params
  * @returns {Promise<{node: Node, cleanup: () => void}>}
  */
@@ -38,15 +84,15 @@ export async function render(params) {
   };
 
   const card = adminCard({
-    title: 'Queue entries',
-    subtitle: 'Newest first; sort by a column heading, or select rows to retry or cancel several at once.',
+    title: t('Queue entries'),
+    subtitle: t('Newest first; sort by a column heading, or select rows to retry or cancel several at once.'),
     renderEmpty: () =>
       el('div', { class: 'empty-state' }, [
-        el('p', { class: 'empty-title', text: 'Nothing queued' }),
+        el('p', { class: 'empty-title', text: t('Nothing queued') }),
         el('p', {
           text: state.status
-            ? `No entries with status “${state.status}”.`
-            : 'No outbound mail is waiting right now.',
+            ? t('No entries with status “{status}”.', { status: statusLabel(state.status) })
+            : t('No outbound mail is waiting right now.'),
         }),
       ]),
     renderData: (data) => data.node,
@@ -54,15 +100,17 @@ export async function render(params) {
 
   const statusSelect = el('select', { class: 'input', id: 'queue-status' });
   for (const status of STATUSES) {
-    statusSelect.append(el('option', { value: status, text: status === '' ? 'all statuses' : status }));
+    statusSelect.append(
+      el('option', { value: status, text: status === '' ? t('All statuses') : statusLabel(status) }),
+    );
   }
   statusSelect.value = state.status;
 
   const bar = filterBar({
     id: 'queue-filter',
     fields: [
-      field('Status', statusSelect, 'Only entries in this state.'),
-      el('button', { type: 'submit', class: 'btn', text: 'Apply' }),
+      field(t('Status'), statusSelect, t('Only entries in this state.')),
+      el('button', { type: 'submit', class: 'btn', text: t('Apply') }),
     ],
   });
   // `submit` bubbles, so the listener belongs on the bar rather than on the <form>
@@ -77,11 +125,11 @@ export async function render(params) {
     go('queue', { status: statusSelect.value, offset: 0 });
   });
 
-  const refreshButton = el('button', { type: 'button', class: 'btn', text: 'Refresh' });
+  const refreshButton = el('button', { type: 'button', class: 'btn', text: t('Refresh') });
   refreshButton.addEventListener('click', () => refresh());
 
   const root = el('div', {}, [
-    viewHead('Mail queue', 'Outbound delivery, attempt by attempt', [refreshButton]),
+    viewHead(t('Mail queue'), t('Outbound delivery, attempt by attempt'), [refreshButton]),
     bar,
     card.node,
   ]);
@@ -91,25 +139,26 @@ export async function render(params) {
     onRetry: async (entry) => {
       try {
         await request(`${API_BASE}/queue/${entry.id}/retry`, { method: 'POST', toast: false });
-        toastSuccess(`Entry ${entry.id} requeued.`);
+        toastSuccess(t('Entry {id} requeued.', { id: entry.id }));
         refresh();
       } catch (error) {
-        toastError(messageOf(error, 'The entry could not be retried.'));
+        toastError(messageOf(error, t('The entry could not be retried.')));
       }
     },
     onCancel: async (entry) => {
+      const target = entry.recipient || t('entry {id}', { id: entry.id });
       const confirmed = await confirmDialog({
-        title: 'Cancel delivery',
-        message: `Cancel the delivery to ${entry.recipient || `entry ${entry.id}`}?`,
-        confirmLabel: 'Cancel delivery',
+        title: t('Cancel delivery'),
+        message: t('Cancel the delivery to {target}?', { target }),
+        confirmLabel: t('Cancel delivery'),
       });
       if (!confirmed) return;
       try {
         await request(`${API_BASE}/queue/${entry.id}`, { method: 'DELETE', toast: false });
-        toastSuccess(`Entry ${entry.id} cancelled.`);
+        toastSuccess(t('Entry {id} cancelled.', { id: entry.id }));
         refresh();
       } catch (error) {
-        toastError(messageOf(error, 'The entry could not be cancelled.'));
+        toastError(messageOf(error, t('The entry could not be cancelled.')));
       }
     },
     onBulkRetry: (ids) => retryEntries(ids, () => refresh()),
@@ -131,7 +180,7 @@ export async function render(params) {
       }
       card.setState({ state: 'ready', data: { node: renderTable(entries, handlers, totalOf(payload), state.offset) } });
     } catch (error) {
-      card.setState({ state: 'error', message: messageOf(error, 'The queue could not be loaded.') });
+      card.setState({ state: 'error', message: messageOf(error, t('The queue could not be loaded.')) });
     }
   }
 
@@ -153,8 +202,16 @@ async function retryEntries(ids, refresh) {
     ids.map((id) => request(`${API_BASE}/queue/${id}/retry`, { method: 'POST', toast: false })),
   );
   const failed = results.filter((result) => result.status === 'rejected').length;
-  if (failed > 0) toastError(`${failed} of ${ids.length} entry(s) could not be retried.`);
-  else toastSuccess(`${ids.length} entry(s) requeued.`);
+  if (failed > 0) {
+    toastError(
+      tn(failed, '{failed} of {count} entry could not be retried.', '{failed} of {count} entries could not be retried.', {
+        failed,
+        count: ids.length,
+      }),
+    );
+  } else {
+    toastSuccess(tn(ids.length, '{count} entry requeued.', '{count} entries requeued.', { count: ids.length }));
+  }
   refresh();
 }
 
@@ -166,17 +223,27 @@ async function retryEntries(ids, refresh) {
  */
 async function cancelEntries(ids, refresh) {
   const confirmed = await confirmDialog({
-    title: `Cancel ${ids.length} entry(s)?`,
-    message: 'Every entry still pending, retrying or in flight is withdrawn; nothing is sent for it.',
-    confirmLabel: 'Cancel entries',
+    title: tn(ids.length, 'Cancel {count} entry?', 'Cancel {count} entries?', { count: ids.length }),
+    message: t('Every entry still pending, retrying or in flight is withdrawn; nothing is sent for it.'),
+    confirmLabel: t('Cancel entries'),
   });
   if (!confirmed) return;
   const results = await Promise.allSettled(
     ids.map((id) => request(`${API_BASE}/queue/${id}`, { method: 'DELETE', toast: false })),
   );
   const failed = results.filter((result) => result.status === 'rejected').length;
-  if (failed > 0) toastError(`${failed} of ${ids.length} entry(s) could not be cancelled.`);
-  else toastSuccess(`${ids.length} entry(s) cancelled.`);
+  if (failed > 0) {
+    toastError(
+      tn(
+        failed,
+        '{failed} of {count} entry could not be cancelled.',
+        '{failed} of {count} entries could not be cancelled.',
+        { failed, count: ids.length },
+      ),
+    );
+  } else {
+    toastSuccess(tn(ids.length, '{count} entry cancelled.', '{count} entries cancelled.', { count: ids.length }));
+  }
   refresh();
 }
 
@@ -188,7 +255,7 @@ function renderTable(entries, handlers, total, offset) {
     entry,
     cells: [
       cell(`#${entry.id}`, 'cell-mono'),
-      badge(entry.status),
+      statusBadge(entry.status),
       truncateCell(entry.recipient),
       cell(String(entry.attempts)),
       cell(
@@ -201,9 +268,9 @@ function renderTable(entries, handlers, total, offset) {
       ),
       truncateCell(entry.lastError),
       actions(
-        button('Details', () => handlers.onDetails(entry)),
-        retryable(entry) ? button('Retry', () => handlers.onRetry(entry)) : null,
-        cancelable(entry) ? button('Cancel', () => handlers.onCancel(entry), 'btn-danger') : null,
+        button(t('Details'), () => handlers.onDetails(entry)),
+        retryable(entry) ? button(t('Retry'), () => handlers.onRetry(entry)) : null,
+        cancelable(entry) ? button(t('Cancel'), () => handlers.onCancel(entry), 'btn-danger') : null,
       ),
     ],
   }));
@@ -213,27 +280,27 @@ function renderTable(entries, handlers, total, offset) {
   // it, where the value actually exists. See `normalizeQueueEntry`'s `subjectKnown`.
   const grid = dataTable({
     columns: [
-      { key: 'id', label: 'Id', value: (row) => row.entry.id },
-      { key: 'status', label: 'Status', value: (row) => row.entry.status },
-      { key: 'recipient', label: 'Recipient', value: (row) => row.entry.recipient },
-      { key: 'attempts', label: 'Attempts', value: (row) => row.entry.attempts },
+      { key: 'id', label: t('Id'), value: (row) => row.entry.id },
+      { key: 'status', label: t('Status'), value: (row) => row.entry.status },
+      { key: 'recipient', label: t('Recipient'), value: (row) => row.entry.recipient },
+      { key: 'attempts', label: t('Attempts'), value: (row) => row.entry.attempts },
       // The column shows a date, so it must sort on one: as text, “2026-09-18” would
       // order by day-of-month before year.
       {
         key: 'due',
-        label: 'Next / queued',
+        label: t('Next / queued'),
         value: (row) => stampValue(row.entry.nextAttemptAt || row.entry.createdAt),
       },
-      { key: 'error', label: 'Last error', value: (row) => row.entry.lastError || '' },
-      { key: 'actions', label: 'Actions', sortable: false },
+      { key: 'error', label: t('Last error'), value: (row) => row.entry.lastError || '' },
+      { key: 'actions', label: t('Actions'), sortable: false },
     ],
     rows,
     selectable: true,
     bulkActions: [
-      { label: 'Retry selected', onClick: (ids) => handlers.onBulkRetry(ids) },
-      { label: 'Cancel selected', tone: 'danger', onClick: (ids) => handlers.onBulkCancel(ids) },
+      { label: t('Retry selected'), onClick: (ids) => handlers.onBulkRetry(ids) },
+      { label: t('Cancel selected'), tone: 'danger', onClick: (ids) => handlers.onBulkCancel(ids) },
     ],
-    emptyMessage: 'No queue entries on this page.',
+    emptyMessage: t('No queue entries on this page.'),
   });
 
   return el('div', {}, [
@@ -281,24 +348,24 @@ function cancelable(entry) {
  * @param {object} handlers
  */
 function openEntryDrawer(entry, handlers) {
-  const summary = el('div', {}, [el('p', { class: 'loading-state', text: 'Loading the entry…' })]);
-  const log = el('div', {}, [el('p', { class: 'loading-state', text: 'Loading the delivery log…' })]);
+  const summary = el('div', {}, [el('p', { class: 'loading-state', text: t('Loading the entry…') })]);
+  const log = el('div', {}, [el('p', { class: 'loading-state', text: t('Loading the delivery log…') })]);
 
   const body = el('div', {}, [
     summary,
-    el('h3', { class: 'drawer-section', text: 'Delivery attempts' }),
+    el('h3', { class: 'drawer-section', text: t('Delivery attempts') }),
     log,
   ]);
 
   // Acting from the drawer closes it first: the action reloads the list, and a panel
   // still showing the entry's old state would be lying about what just happened.
-  const retry = el('button', { type: 'button', class: 'btn', text: 'Retry' });
+  const retry = el('button', { type: 'button', class: 'btn', text: t('Retry') });
   retry.addEventListener('click', () => {
     drawer.close();
     handlers.onRetry(entry);
   });
 
-  const cancel = el('button', { type: 'button', class: 'btn btn-danger', text: 'Cancel delivery' });
+  const cancel = el('button', { type: 'button', class: 'btn btn-danger', text: t('Cancel delivery') });
   cancel.addEventListener('click', () => {
     drawer.close();
     handlers.onCancel(entry);
@@ -311,16 +378,19 @@ function openEntryDrawer(entry, handlers) {
   function syncActions(current) {
     retry.disabled = !retryable(current);
     cancel.disabled = !cancelable(current);
-    retry.title = retry.disabled ? 'Only a failed or retrying entry can be requeued.' : '';
+    retry.title = retry.disabled ? t('Only a failed or retrying entry can be requeued.') : '';
     cancel.title = cancel.disabled
-      ? 'Only an entry still pending, retrying or in flight can be cancelled.'
+      ? t('Only an entry still pending, retrying or in flight can be cancelled.')
       : '';
   }
   syncActions(entry);
 
   const drawer = openDrawer({
-    title: `Queue entry ${entry.id}`,
-    subtitle: `${entry.sender || 'unknown sender'} → ${entry.recipient || 'unknown recipient'}`,
+    title: t('Queue entry {id}', { id: entry.id }),
+    subtitle: t('{sender} → {recipient}', {
+      sender: entry.sender || t('unknown sender'),
+      recipient: entry.recipient || t('unknown recipient'),
+    }),
     body,
     actions: [retry, cancel],
   });
@@ -348,7 +418,7 @@ function openEntryDrawer(entry, handlers) {
       // out of reach, so it stands in rather than leaving an empty panel.
       summary.replaceChildren(entryFields(entry, entry.subjectKnown ? entry.subject : null, null));
       log.replaceChildren(
-        el('p', { class: 'field-error', text: messageOf(error, 'The delivery log could not be loaded.') }),
+        el('p', { class: 'field-error', text: messageOf(error, t('The delivery log could not be loaded.')) }),
       );
     });
 }
@@ -367,16 +437,16 @@ function openEntryDrawer(entry, handlers) {
  */
 function entryFields(entry, subject, recipientCount) {
   return definitionList([
-    ['Status', badge(entry.status)],
-    ['Sender', cell(entry.sender || '—', 'cell-mono')],
-    ['Recipient', cell(entry.recipient || '—', 'cell-mono')],
-    ['Subject', subject === null ? 'not reported' : subject || '(no subject)'],
-    ['Message recipients', recipientCount === null ? 'not reported' : String(recipientCount)],
-    ['Attempts', String(entry.attempts)],
-    ['Next attempt', entry.nextAttemptAt ? formatLogStamp(entry.nextAttemptAt) : '—'],
-    ['Last error', entry.lastError || '—'],
-    ['Queued', entry.createdAt ? formatLogStamp(entry.createdAt) : '—'],
-    ['Updated', entry.updatedAt ? formatLogStamp(entry.updatedAt) : '—'],
+    [t('Status'), statusBadge(entry.status)],
+    [t('Sender'), cell(entry.sender || '—', 'cell-mono')],
+    [t('Recipient'), cell(entry.recipient || '—', 'cell-mono')],
+    [t('Subject'), subject === null ? t('not reported') : subject || t('(no subject)')],
+    [t('Message recipients'), recipientCount === null ? t('not reported') : String(recipientCount)],
+    [t('Attempts'), String(entry.attempts)],
+    [t('Next attempt'), entry.nextAttemptAt ? formatLogStamp(entry.nextAttemptAt) : '—'],
+    [t('Last error'), entry.lastError || '—'],
+    [t('Queued'), entry.createdAt ? formatLogStamp(entry.createdAt) : '—'],
+    [t('Last updated'), entry.updatedAt ? formatLogStamp(entry.updatedAt) : '—'],
   ]);
 }
 
@@ -390,17 +460,17 @@ function entryFields(entry, subject, recipientCount) {
  */
 function attemptTable(attempts) {
   if (attempts.length === 0) {
-    return el('p', { class: 'view-sub', text: 'This entry has no recorded attempt yet.' });
+    return el('p', { class: 'view-sub', text: t('This entry has no recorded attempt yet.') });
   }
   return dataTable({
     columns: [
       { key: 'attempt', label: '#', sortable: false },
-      { key: 'at', label: 'When', sortable: false },
-      { key: 'outcome', label: 'Outcome', sortable: false },
-      { key: 'code', label: 'SMTP', sortable: false },
-      { key: 'host', label: 'MX host', sortable: false },
-      { key: 'duration', label: 'Duration', sortable: false },
-      { key: 'detail', label: 'Detail', sortable: false },
+      { key: 'at', label: t('When'), sortable: false },
+      { key: 'outcome', label: t('Outcome'), sortable: false },
+      { key: 'code', label: t('SMTP'), sortable: false },
+      { key: 'host', label: t('MX host'), sortable: false },
+      { key: 'duration', label: t('Duration'), sortable: false },
+      { key: 'detail', label: t('Detail'), sortable: false },
     ],
     rows: attempts.map((attempt, index) => {
       // `error` on a failed attempt, the SMTP status text on a successful one — the
@@ -413,7 +483,7 @@ function attemptTable(attempts) {
           // `truncate` here is about keeping the timestamp on one line: at the drawer's
           // width a wrapped “2026-09-18 19:30:20” turns one attempt into three rows.
           cell(attempt.at ? formatLogStamp(attempt.at) : '—', 'cell-mono truncate'),
-          badge(outcomeOf(attempt)),
+          outcomeBadge(outcomeOf(attempt)),
           cell(attempt.smtpCode === null || attempt.smtpCode === undefined ? '—' : String(attempt.smtpCode), 'cell-mono'),
           truncateCell(attempt.host),
           cell(attempt.durationMs === null || attempt.durationMs === undefined ? '—' : `${attempt.durationMs} ms`, 'cell-mono'),
@@ -421,8 +491,25 @@ function attemptTable(attempts) {
         ],
       };
     }),
-    emptyMessage: 'No attempts recorded.',
+    emptyMessage: t('No attempts recorded.'),
   }).node;
+}
+
+/**
+ * The outcome pill for one attempt, with the outcome word translated.
+ *
+ * The raw outcome still decides the pill's colour, so only the text is replaced here.
+ *
+ * @param {string} outcome as `outcomeOf` returns it
+ * @returns {Element}
+ */
+function outcomeBadge(outcome) {
+  const node = badge(outcome);
+  if (outcome === 'ok') node.textContent = t('OK');
+  else if (outcome === 'retry') node.textContent = t('Retry');
+  else if (outcome === 'failed') node.textContent = t('Failed');
+  else node.textContent = t('Unknown');
+  return node;
 }
 
 /**

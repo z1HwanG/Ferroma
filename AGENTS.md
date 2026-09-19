@@ -141,6 +141,7 @@ client/              the official desktop client (core + UI shell)
 migrations/          PostgreSQL DDL, embedded into the binary at compile time
 config/              ferroma.toml — also embedded as the default configuration
 web/, admin/         Webmail and Admin single-page apps
+shared/              the ES modules both apps import (served at /shared)
 docs/                architecture, protocol and operations documentation
 scripts/             development and deployment helpers
 tools/               the crates proxy and the HTTPS fetcher

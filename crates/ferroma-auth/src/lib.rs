@@ -22,7 +22,7 @@
 //! )?;
 //! let auth = AuthService::with_defaults(repos, tokens, Limits::default());
 //!
-//! auth.create_user("alice@example.com", "correct horse battery", Some("Alice"), false, None)
+//! auth.create_user("alice@example.com", "correct horse battery", Some("Alice"), false, true, None)
 //!     .await?;
 //!
 //! let outcome = auth

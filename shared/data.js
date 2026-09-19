@@ -8,6 +8,8 @@
  * cannot produce `undefined` in the interface.
  */
 
+import { t } from './i18n.js';
+
 /** First defined value among the candidate keys. */
 function pick(source, keys, fallback) {
   if (source && typeof source === 'object') {
@@ -34,6 +36,26 @@ export function bool(value) {
     return normalised === 'true' || normalised === '1' || normalised === 'yes';
   }
   return false;
+}
+
+/**
+ * Whether a normalised flag string carries a flag.
+ *
+ * The server sends the canonical space-separated lower-case form (`seen flagged`,
+ * frozen by `docs/fcp.md` §4 and `docs/api.md` §5.2), while an IMAP-shaped source
+ * spells the same thing `\Seen`. Both are accepted here: the leading backslash is
+ * optional and the comparison is case-insensitive. Matching only `\Seen` is what left
+ * every Webmail row unread and every star hidden, because the API never sends one.
+ *
+ * @param {string} flagText a lower-cased flag string
+ * @param {string} name the flag name, with or without its backslash
+ */
+export function hasFlag(flagText, name) {
+  const wanted = name.replace(/^\\+/, '').toLowerCase();
+  return flagText
+    .split(/[\s,]+/)
+    .filter(Boolean)
+    .some((token) => token.replace(/^\\+/, '').toLowerCase() === wanted);
 }
 
 /**
@@ -154,7 +176,14 @@ const FOLDER_ORDER = ['inbox', 'drafts', 'sent', 'archive', 'junk', 'trash'];
 export function normalizeFolder(value) {
   const source = value && typeof value === 'object' ? value : {};
   const name = String(pick(source, ['name', 'display_name', 'path'], ''));
-  const special = specialUseOf(pick(source, ['special_use', 'specialUse', 'special', 'attributes'], null));
+  // The inbox is identified by its name, not by `special_use`: RFC 6154 defines no
+  // `\Inbox` attribute, so the server stores and sends `null` for INBOX (frozen by
+  // `docs/fcp.md` §4) — and `docs/api.md` §5.1 says the same. RFC 3501 defines the name
+  // case-insensitively, so that is what is matched. Without this the inbox sorted last,
+  // after Trash and every custom folder, and had no `/inbox` slug.
+  const special =
+    specialUseOf(pick(source, ['special_use', 'specialUse', 'special', 'attributes'], null)) ||
+    (name.trim().toUpperCase() === 'INBOX' ? 'inbox' : null);
   return {
     id: num(pick(source, ['id', 'folder_id'], 0), 0),
     name,
@@ -231,7 +260,7 @@ export function normalizeMessage(value) {
 
   return {
     id: num(pick(source, ['id', 'message_id'], 0), 0),
-    subject: String(pick(source, ['subject'], '(no subject)')),
+    subject: String(pick(source, ['subject'], t('(no subject)'))),
     from,
     fromName: displayName(from),
     fromAddress: addressOnly(from),
@@ -240,10 +269,10 @@ export function normalizeMessage(value) {
     bcc,
     date: pick(source, ['date', 'internal_date', 'received_at', 'sent_at', 'created_at'], null),
     snippet: String(pick(source, ['snippet', 'preview', 'summary'], '')),
-    seen: bool(pick(source, ['seen', 'is_seen', 'read'], false)) || flagText.includes('\\seen'),
-    flagged: bool(pick(source, ['flagged', 'is_flagged', 'starred'], false)) || flagText.includes('\\flagged'),
-    answered: bool(pick(source, ['answered'], false)) || flagText.includes('\\answered'),
-    draft: bool(pick(source, ['draft', 'is_draft'], false)) || flagText.includes('\\draft'),
+    seen: bool(pick(source, ['seen', 'is_seen', 'read'], false)) || hasFlag(flagText, 'seen'),
+    flagged: bool(pick(source, ['flagged', 'is_flagged', 'starred'], false)) || hasFlag(flagText, 'flagged'),
+    answered: bool(pick(source, ['answered'], false)) || hasFlag(flagText, 'answered'),
+    draft: bool(pick(source, ['draft', 'is_draft'], false)) || hasFlag(flagText, 'draft'),
     sizeBytes: num(pick(source, ['size_bytes', 'size'], 0), 0),
     text: pick(source, ['text', 'text_body', 'body_text', 'plain'], ''),
     html: pick(source, ['html', 'html_body', 'body_html'], ''),

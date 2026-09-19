@@ -499,6 +499,13 @@ pub struct ApiConfig {
     pub webmail_dir: Option<PathBuf>,
     /// Directory holding the built Admin assets.
     pub admin_dir: Option<PathBuf>,
+    /// Directory holding the ES modules the Webmail and the Admin app share.
+    ///
+    /// Each app is served from its own root, so a module they have in common cannot
+    /// live inside either one. It is served at `/shared` instead, and both apps
+    /// import it as `../shared/…`, which resolves to that same URL from `/` and
+    /// from `/admin/`.
+    pub shared_dir: Option<PathBuf>,
     /// Allowed CORS origins. Empty means same-origin only.
     pub cors_origins: Vec<String>,
     /// HMAC secret for access/refresh tokens. `None` generates an ephemeral one,
@@ -534,6 +541,7 @@ impl Default for ApiConfig {
             public_url: "http://localhost:8080".into(),
             webmail_dir: None,
             admin_dir: None,
+            shared_dir: None,
             cors_origins: Vec::new(),
             jwt_secret: None,
             access_token_ttl_secs: 3600,

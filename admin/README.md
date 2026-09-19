@@ -11,39 +11,42 @@ matters here because this app is served from `/admin`, so `/styles.css` would mi
 
 ```text
 admin/
-  index.html             107 lines  shell: sidebar navigation, topbar, login card, modal + toast hosts
-  styles.css             903 lines  tokens, light/dark themes, tables, stat grid, badges, responsive
-  main.js                399 lines  boot, sign-in, health poll, section navigation, view dispatcher
-  ui.js                  213 lines  view heads, state-driven cards, tables, pagers, badges, clipboard
-  api.js                 262 lines  fetch wrapper: bearer token, error envelope, 401 refresh, offline flag
-  data.js                492 lines  normalisation of every API payload the console reads
-  dom.js                 187 lines  createElement/textContent helpers (never assigns innerHTML)
-  format.js              243 lines  RFC 3339 → local time, byte sizes, log stamps
-  modal.js               254 lines  dialogs: focus trap, Escape, click-outside, focus restore
-  toast.js                45 lines  polite + assertive live regions
-  theme.js                73 lines  prefers-color-scheme with a localStorage override
-  net.js                  19 lines  AbortSignal timeout helper
-  router.js               66 lines  `#/<section>?<params>` sections
-  store.js                29 lines  signed-in operator, health snapshot, queue-depth history
-  views/dashboard.js     368 lines  health / queue stats / storage + browser-sampled SVG sparkline
-  views/domains.js       390 lines  domain CRUD + DNS Health panel + DKIM record with copy button
-  views/users.js         449 lines  user list/search/paging, create/edit/delete, per-user addresses
-  views/aliases.js       252 lines  aliases per domain
-  views/queue.js         230 lines  queue filter, retry, cancel, per-attempt delivery log
-  views/logs.js          188 lines  System Logs: the in-process ring, with level/target/message filters
-  views/storage.js       203 lines  Storage: bytes on disk, row counts, garbage collection
-  views/devices.js       229 lines  Devices: every installation, filter by owner, revoke
-  views/tls.js           243 lines  TLS: configured PEM files as the host sees them, and the ports
-  views/audit.js         153 lines  audit log with actor/action/since filters
-  views/settings.js      207 lines  DB-backed settings
-  views/setup.js         164 lines  first-run setup wizard
-  tools/check.mjs        462 lines  the static regression check (see §4)
+  index.html            107 lines  shell: sidebar navigation, topbar, login card, modal + toast hosts
+  styles.css            1471 lines  tokens, light/dark themes, tables, stat grid, badges, responsive
+  main.js               438 lines  boot, sign-in, health poll, section navigation, view dispatcher
+  ui.js                 595 lines  view heads, state-driven cards, tables, pagers, badges, clipboard
+  router.js             73 lines  `#/<section>?<params>` sections
+  store.js              29 lines  signed-in operator, health snapshot, queue-depth history
+  views/dashboard.js    453 lines  health / queue stats / storage + browser-sampled SVG sparkline
+  views/domains.js      595 lines  domain CRUD + DNS Health panel + DKIM record with copy button
+  views/users.js        619 lines  user list/search/paging, create/edit/delete, per-user addresses
+  views/aliases.js      428 lines  aliases per domain
+  views/queue.js        565 lines  queue filter, retry, cancel, per-attempt delivery log
+  views/logs.js         376 lines  System Logs: the in-process ring, with level/target/message filters
+  views/storage.js      210 lines  Storage: bytes on disk, row counts, garbage collection
+  views/devices.js      437 lines  Devices: every installation, filter by owner, revoke
+  views/tls.js          295 lines  TLS: configured PEM files as the host sees them, and the ports
+  views/audit.js        332 lines  audit log with actor/action/since filters
+  views/settings.js     241 lines  DB-backed settings
+  views/setup.js        183 lines  first-run setup wizard
+  tools/check.mjs       782 lines  the static regression check (see §4)
 ```
 
-Eight modules — `api.js`, `data.js`, `dom.js`, `format.js`, `modal.js`, `net.js`,
-`theme.js`, `toast.js` — are duplicated verbatim from `web/`. That is deliberate:
-the two apps are separate directories served independently, so a shared parent
-path would be reachable from neither.
+Eight modules the two apps share — `api.js`, `data.js`, `dom.js`, `format.js`,
+`modal.js`, `net.js`, `theme.js` and `toast.js` — live one directory up in `shared/`.
+The server mounts that directory at `/shared`, so the same relative import
+(`../shared/api.js`) resolves to the same URL from `/main.js` and from
+`/admin/main.js`, and there is exactly one copy of each. `api.shared_dir` says where
+the directory is; the container image sets it.
+
+```text
+shared/
+  i18n.js               locale registry, `t()` / `tn()`, the language picker's rules
+  locales/zh-CN.js      the Simplified Chinese catalog (English is its own catalog)
+  api.js data.js dom.js format.js modal.js net.js theme.js toast.js
+                        imported by both apps
+```
+
 
 ## 2. Serving it
 
@@ -57,6 +60,15 @@ With `config/ferroma.toml` defaults (`[api] host = "0.0.0.0"`, `port = 8080`):
 ```text
 http://127.0.0.1:8080/admin       Admin console
 http://127.0.0.1:8080/            Webmail
+```
+
+For front-end work you do not need the server or a database. `tools/serve-frontends.mjs`
+reproduces the three mounts the router creates — `web/` at `/`, `admin/` at `/admin`,
+and the shared modules at `/shared` — and answers `/api/v1` with a `503` envelope so a
+screen that needs the API fails visibly instead of parsing `index.html` as JSON:
+
+```text
+node tools/serve-frontends.mjs --port 8099
 ```
 
 In the production image the files are baked in at `/usr/share/ferroma/admin` and
@@ -180,14 +192,15 @@ node tools/check.mjs
 ```
 
 Same rules as the Webmail copy (see `web/README.md` §4), minus the Webmail-only
-`srcdoc` assertion; the app profile comes from `<html data-app="admin">` and this
-run makes **795 assertions**. The checker also fails on an import that names a
-non-existent export, on an unused export, on a `byId('…')` target that neither the
-HTML nor the module itself declares, on any `fetch` outside `api.js`, on any
-`request(...)` path that does not start with `${API_BASE}` — which is how the
-wiring in §3 stays honest — and, in rule 10, on any collection envelope the server
-sends that the app's own normalisers do not unwrap. The two `check.mjs` files are
-byte-identical.
+`srcdoc` assertion; the app profile comes from `<html data-app="admin">`. The checker
+also fails on an import that names a non-existent export, on an unused export, on a
+`byId('…')` target that neither the HTML nor the module itself declares, on any
+`fetch` outside `api.js`, on any `request(...)` path that does not start with
+`${API_BASE}` — which is how the wiring in §3 stays honest — in rule 10, on any
+collection envelope the server sends that the app's own normalisers do not unwrap,
+and in rule 11, on any `t('…')` key the Simplified Chinese catalog does not cover. A
+passing run prints its assertion count on the last line. The two `check.mjs` files
+are byte-identical.
 
 ## 5. Accessibility
 
@@ -219,3 +232,46 @@ below 860 px. Animations are disabled under `prefers-reduced-motion: reduce`.
   which is what keeps the panel from being permanently blank on a healthy host. The
   `Severity` filter is a floor *within* what was captured; it cannot recover events the
   ring never held.
+
+
+## 7. Languages
+
+The console ships in **English** and **Simplified Chinese** — the same two locales as
+the Webmail, sharing one catalog.
+
+English is the source language, so its text *is* the lookup key: `t('Sign out')` reads
+the catalog entry for that exact string and falls back to the English text when there
+is none. Adding a string is therefore just typing it, a gap is readable rather than
+fatal, and the coverage rule below is what stops a gap from shipping unnoticed.
+
+```js
+import { t, tn } from '../../shared/i18n.js';   // admin/views/ is two levels deep
+
+el('button', { text: t('Sign out') });
+el('p', { text: t('Delete {count} aliases?', { count }) });
+```
+
+| Where | What it holds |
+|---|---|
+| `shared/i18n.js` | the locale registry, `t()` / `tn()`, persistence, the shell pass |
+| `shared/locales/zh-CN.js` | the Simplified Chinese catalog, shared with the Webmail |
+| Settings → Language | the picker |
+| `tools/serve-frontends.mjs` | serves `web/`, `admin/` and `shared/` without building the server |
+
+Details worth knowing:
+
+* **The picker reloads the page.** Every view here builds its DOM once and keeps the
+  reference, so re-rendering from the settings section would leave the text already on
+  screen in the old language. The choice is kept in `localStorage` under
+  `ferroma.locale`.
+* **The first visit follows the browser.** `navigator.languages` is matched against the
+  shipped tags; any Chinese region selects Simplified, and anything else gets English.
+* **`Accept-Language` follows the picker**, so an API error — the message in a toast, or
+  the text under a form — arrives in the chosen language. `code` never changes with the
+  locale, so the console's own branching is language-independent.
+* **Values that are data are not translated at the normaliser.** A queue `status`, a log
+  `level` and an audit `action` are compared against the server's own vocabulary; the
+  views translate them where they are *displayed*, not where they are parsed.
+* **`index.html` needs no markers.** `translateDocument()` walks the shell's text nodes
+  and its `placeholder` / `title` / `aria-label` attributes at load and translates any
+  whose content is a catalog key.

@@ -4,7 +4,8 @@
  * end with a hyphen and that carries a TLD of at least two characters.
  */
 
-import { el, focusable } from './dom.js';
+import { el, focusable } from '../shared/dom.js';
+import { t } from '../shared/i18n.js';
 
 const LOCAL_RE = /^[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]+$/;
 const DOMAIN_RE = /^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)(?:\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*\.[A-Za-z]{2,63}$/;
@@ -16,19 +17,19 @@ const DOMAIN_RE = /^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)(?:\.(?!-)[A-Za-z0
  */
 export function validateAddress(value) {
   const address = String(value || '').trim();
-  if (address === '') return { ok: false, reason: 'address is empty' };
+  if (address === '') return { ok: false, reason: t('address is empty') };
   const at = address.lastIndexOf('@');
-  if (at <= 0) return { ok: false, reason: 'an address needs a local part and an @domain' };
-  if (address.indexOf('@') !== at) return { ok: false, reason: 'an address may contain only one @' };
+  if (at <= 0) return { ok: false, reason: t('an address needs a local part and an @domain') };
+  if (address.indexOf('@') !== at) return { ok: false, reason: t('an address may contain only one @') };
   const local = address.slice(0, at);
   const domain = address.slice(at + 1);
-  if (local.length > 64) return { ok: false, reason: 'the local part is longer than 64 characters' };
+  if (local.length > 64) return { ok: false, reason: t('the local part is longer than 64 characters') };
   if (local.startsWith('.') || local.endsWith('.') || local.includes('..')) {
-    return { ok: false, reason: 'the local part may not start, end or double a dot' };
+    return { ok: false, reason: t('the local part may not start, end or double a dot') };
   }
-  if (!LOCAL_RE.test(local)) return { ok: false, reason: 'the local part contains invalid characters' };
-  if (domain === '') return { ok: false, reason: 'the domain is missing' };
-  if (!DOMAIN_RE.test(domain)) return { ok: false, reason: `“${domain}” is not a valid domain` };
+  if (!LOCAL_RE.test(local)) return { ok: false, reason: t('the local part contains invalid characters') };
+  if (domain === '') return { ok: false, reason: t('the domain is missing') };
+  if (!DOMAIN_RE.test(domain)) return { ok: false, reason: t('“{domain}” is not a valid domain', { domain }) };
   return { ok: true, address };
 }
 
@@ -92,7 +93,7 @@ export function createChipField(options) {
       const remove = el('button', {
         type: 'button',
         class: 'chip-remove',
-        'aria-label': `Remove ${value}`,
+        'aria-label': t('Remove {name}', { name: value }),
         text: '\u00d7',
       });
       remove.addEventListener('click', () => {
@@ -114,7 +115,7 @@ export function createChipField(options) {
     if (trimmed === '') return true;
     const result = validateAddress(trimmed);
     if (!result.ok) {
-      showError(`“${trimmed}” is not a valid address — ${result.reason}.`);
+      showError(t('“{value}” is not a valid address — {reason}.', { value: trimmed, reason: result.reason }));
       report(error.textContent);
       return false;
     }

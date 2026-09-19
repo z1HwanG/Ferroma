@@ -3,13 +3,14 @@
  * that feeds the sidebar, and the view dispatcher.
  */
 
-import { API_BASE, ApiError, clearTokens, onConnectionChange, request, setTokens, setUnauthorizedHandler } from './api.js';
-import { byId, clear, el, setHidden, setText } from './dom.js';
+import { API_BASE, ApiError, clearTokens, onConnectionChange, request, setTokens, setUnauthorizedHandler } from '../shared/api.js';
+import { byId, clear, el, setHidden, setText } from '../shared/dom.js';
+import { t } from '../shared/i18n.js';
 import { icon } from './icons.js';
 import { parseHash, go, onRouteChange, SECTIONS } from './router.js';
 import { getState, setState } from './store.js';
-import { initTheme, setTheme, currentTheme } from './theme.js';
-import { toastSuccess } from './toast.js';
+import { initTheme, setTheme, currentTheme } from '../shared/theme.js';
+import { toastSuccess } from '../shared/toast.js';
 import { errorState, loadingState } from './ui.js';
 
 const HEALTH_POLL_MS = 30000;
@@ -48,13 +49,13 @@ async function mountView(section, params) {
   if (!loader) {
     clear(host);
     host.append(
-      errorState(`The section “${section}” is not part of this console.`, []),
+      errorState(t('The section “{section}” is not part of this console.', { section }), []),
     );
     return;
   }
 
   clear(host);
-  host.append(loadingState(`Loading ${section}…`));
+  host.append(loadingState(t('Loading {section}…', { section })));
 
   try {
     const view = await loader();
@@ -70,7 +71,7 @@ async function mountView(section, params) {
         ? error.message
         : error instanceof Error
           ? error.message
-          : 'This section could not be loaded.';
+          : t('This section could not be loaded.');
     host.append(errorState(message));
   }
 }
@@ -102,7 +103,7 @@ function start() {
     stopHealthPoll();
     clearTokens();
     setState({ user: null });
-    showLogin('Your session ended. Sign in again.');
+    showLogin(t('Your session ended. Sign in again.'));
   });
 
   onConnectionChange((online) => {
@@ -134,7 +135,7 @@ async function boot() {
     ]);
     setState({ user: me, health, version });
     if (me && me.is_admin === false) {
-      showLogin('This account is not an administrator.');
+      showLogin(t('This account is not an administrator.'));
       return false;
     }
     setHidden(byId('login-view'), true);
@@ -145,7 +146,7 @@ async function boot() {
   } catch (error) {
     if (error instanceof ApiError && error.network) {
       setHidden(byId('offline-banner'), false);
-      showLogin('The management API could not be reached.');
+      showLogin(t('The management API could not be reached.'));
     } else {
       showLogin('');
     }
@@ -242,7 +243,7 @@ function watchNavBreakpoint() {
 
 function renderAccountMenu() {
   const user = getState().user;
-  setText(byId('account-menu-name'), (user && user.display_name) || 'Administrator');
+  setText(byId('account-menu-name'), (user && user.display_name) || t('Administrator'));
   setText(byId('account-menu-email'), (user && user.email) || '');
 }
 
@@ -251,7 +252,7 @@ function renderSidebarMeta() {
   const parts = [];
   if (version && version.version) parts.push(`Ferroma ${version.version}`);
   if (version && version.git_sha) parts.push(version.git_sha.slice(0, 7));
-  if (version && version.protocol_version !== undefined) parts.push(`protocol ${version.protocol_version}`);
+  if (version && version.protocol_version !== undefined) parts.push(t('protocol {version}', { version: version.protocol_version }));
   setText(byId('sidebar-version'), parts.join(' · ') || 'Ferroma');
 }
 
@@ -267,13 +268,13 @@ function wireChrome() {
     setHidden(byId('login-email-error'), true);
     setHidden(byId('login-password-error'), true);
     if (email === '') {
-      setText(byId('login-email-error'), 'Enter your email address.');
+      setText(byId('login-email-error'), t('Enter your email address.'));
       setHidden(byId('login-email-error'), false);
       byId('login-email').focus();
       return;
     }
     if (password === '') {
-      setText(byId('login-password-error'), 'Enter your password.');
+      setText(byId('login-password-error'), t('Enter your password.'));
       setHidden(byId('login-password-error'), false);
       byId('login-password').focus();
       return;
@@ -281,7 +282,7 @@ function wireChrome() {
 
     const submit = byId('login-submit');
     submit.disabled = true;
-    setText(submit, 'Signing in…');
+    setText(submit, t('Signing in…'));
     try {
       const payload = await request(`${API_BASE}/auth/login`, {
         method: 'POST',
@@ -290,12 +291,12 @@ function wireChrome() {
         retryOn401: false,
       });
       if (!payload || !payload.user || payload.user.is_admin === false) {
-        showLogin('That account is not an administrator.');
+        showLogin(t('That account is not an administrator.'));
         return;
       }
       setTokens(payload);
       byId('login-password').value = '';
-      toastSuccess('Signed in.');
+      toastSuccess(t('Signed in.'));
       const ok = await boot();
       if (ok) {
         await mountView(parseHash().section, parseHash().params);
@@ -304,16 +305,16 @@ function wireChrome() {
     } catch (error) {
       const message =
         error instanceof ApiError && error.status === 401
-          ? 'Wrong address or password.'
+          ? t('Wrong address or password.')
           : error instanceof ApiError && error.status === 429
             ? error.message
             : error instanceof ApiError && error.network
-              ? 'The management API could not be reached.'
-              : 'Sign-in failed.';
+              ? t('The management API could not be reached.')
+              : t('Sign-in failed.');
       showLogin(message);
     } finally {
       submit.disabled = false;
-      setText(submit, 'Sign in');
+      setText(submit, t('Sign in'));
     }
   });
 
@@ -354,7 +355,7 @@ function wireChrome() {
     stopHealthPoll();
     setState({ user: null });
     showLogin('');
-    toastSuccess('Signed out.');
+    toastSuccess(t('Signed out.'));
   });
 
   document.addEventListener('click', (event) => {
@@ -398,7 +399,7 @@ function startHealthPoll() {
       renderHealthStatus(health);
     } catch (error) {
       if (error instanceof ApiError && error.network) setHidden(byId('offline-banner'), false);
-      setText(byId('topbar-status'), 'health unavailable');
+      setText(byId('topbar-status'), t('health unavailable'));
     }
   };
   tick();
@@ -419,10 +420,11 @@ function renderHealthStatus(health) {
   const queue = health.queue || {};
   const depth = Number(queue.pending || 0) + Number(queue.retry || 0);
   const failed = Number(queue.failed || 0);
-  setText(
-    byId('topbar-status'),
-    `${health.status || 'unknown'} · queue ${depth}${failed ? ` · ${failed} failed` : ''}`,
-  );
+  // The server's own token, translated for display: printing it raw left an English
+  // `ok` in the corner of a Chinese console.
+  const status = health.status ? t(String(health.status)) : t('unknown');
+  const failedNote = failed ? ` · ${t('{failed} failed', { failed })}` : '';
+  setText(byId('topbar-status'), `${status} · ${t('queue {depth}', { depth })}${failedNote}`);
   if (queueBadge) {
     queueBadge.hidden = failed === 0;
     queueBadge.textContent = failed > 999 ? '999+' : String(failed);

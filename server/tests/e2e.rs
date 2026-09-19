@@ -192,6 +192,7 @@ impl Server {
             .to_path_buf();
         let webmail = workspace.join("web");
         let admin = workspace.join("admin");
+        let shared = workspace.join("shared");
 
         let toml = format!(
             r#"
@@ -267,6 +268,7 @@ base_path = "/api/v1"
 public_url = {public:?}
 webmail_dir = {webmail:?}
 admin_dir = {admin:?}
+shared_dir = {shared:?}
 jwt_secret = "acceptance-run-secret-that-is-at-least-32-bytes"
 secure_cookies = false
 serve_frontend = true
@@ -293,6 +295,7 @@ max_failed_logins = 5
             public = format!("http://127.0.0.1:{API_PORT}"),
             webmail = webmail.display().to_string(),
             admin = admin.display().to_string(),
+            shared = shared.display().to_string(),
         );
         std::fs::write(&config, toml).expect("write the configuration");
 

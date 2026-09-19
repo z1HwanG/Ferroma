@@ -32,7 +32,7 @@ use axum::http::{header, HeaderName, HeaderValue, Method};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{delete, get, patch, post, put};
-use axum::{Json, Router};
+use axum::Router;
 use ferroma_core::config::Config;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -53,6 +53,15 @@ pub fn build(state: AppState) -> Router {
         .merge(discovery)
         .nest("/api/v1", api)
         .nest("/api/v1/client", client)
+        // `/api/v1/health` and `/api/v1/version` live on this router, not inside the
+        // `/api/v1` nest, so a wrong method on them is refused here. The nested
+        // management and client routers carry the same fallback for their own paths.
+        .method_not_allowed_fallback(|| async {
+            crate::error::method_not_allowed("this endpoint does not accept that method")
+        })
+        // Reads `Accept-Language` once for the request. It sits outside the handlers,
+        // so nothing below has to thread a locale through its signature.
+        .layer(middleware::from_fn(crate::i18n::negotiate))
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .layer(cors_layer(&state.config))
@@ -251,6 +260,13 @@ pub fn management_api() -> Router<AppState> {
         .merge(queue)
         .merge(system)
         .merge(mail)
+        // A path under `/api/v1` that matches nothing answers with the documented
+        // envelope. Without this it fell through to the Webmail's SPA fallback, so
+        // `GET /api/v1/typo` returned `index.html` with a 200.
+        .fallback(|| async { crate::error::not_found("no such endpoint") })
+        .method_not_allowed_fallback(|| async {
+            crate::error::method_not_allowed("this endpoint does not accept that method")
+        })
 }
 
 /// The values the client-API header layer carries.
@@ -349,13 +365,12 @@ pub fn client_api(config: &Config) -> Router<AppState> {
         .merge(attachments)
         .merge(devices)
         .route("/events", get(ws::events_socket))
-        .fallback(Json(crate::error::ErrorBody {
-            error: crate::error::ErrorDetail {
-                code: "not_found".to_string(),
-                message: "no such client endpoint".to_string(),
-                details: None,
-            },
-        }))
+        // The envelope, and with the status to match: the previous `Json(…)` fallback
+        // answered `200 OK` for a path that does not exist.
+        .fallback(|| async { crate::error::not_found("no such client endpoint") })
+        .method_not_allowed_fallback(|| async {
+            crate::error::method_not_allowed("this client endpoint does not accept that method")
+        })
         .layer(headers)
 }
 
@@ -461,14 +476,23 @@ pub fn apply_negotiation_headers(
     }
 }
 
-/// Serve `web/` at `/` and `admin/` at `/admin/`, each with an SPA fallback.
+/// Serve `web/` at `/` and `admin/` at `/admin/`, each with an SPA fallback, plus
+/// the modules they share at `/shared`.
 ///
 /// The two directories come from `api.webmail_dir` / `api.admin_dir`, or from the
 /// conventional `web/dist` and `admin/dist` under the working directory — the layout
 /// `AGENTS.md` §3 describes. A directory that does not exist is skipped, so a
 /// backend-only deployment still boots.
+///
+/// `/shared` is what lets the two apps keep one copy of the modules they have in
+/// common. Each app is served from its own root, so `../shared/api.js` from
+/// `/main.js` and from `/admin/main.js` both resolve to `/shared/api.js`.
 pub fn with_frontends(router: Router<AppState>, config: &Config) -> Router<AppState> {
     let mut router = router;
+
+    if let Some(shared) = resolve_asset_dir(config.api.shared_dir.as_ref(), &["shared"]) {
+        router = router.nest_service("/shared", ServeDir::new(&shared));
+    }
 
     if let Some(webmail) = resolve_dir(config.api.webmail_dir.as_ref(), &["web/dist", "web"]) {
         router = router.fallback_service(
@@ -520,6 +544,22 @@ pub fn resolve_dir(configured: Option<&std::path::PathBuf>, candidates: &[&str])
         .iter()
         .map(std::path::PathBuf::from)
         .find(|path| path.join("index.html").is_file())
+}
+
+/// Resolve a directory of static assets that holds no `index.html` of its own.
+///
+/// The shared module directory is imported by the apps rather than opened as a
+/// page, so it has no entry document and [`resolve_dir`] would reject it.
+pub fn resolve_asset_dir(configured: Option<&std::path::PathBuf>, candidates: &[&str]) -> Option<std::path::PathBuf> {
+    if let Some(path) = configured {
+        if path.is_dir() {
+            return Some(path.clone());
+        }
+    }
+    candidates
+        .iter()
+        .map(std::path::PathBuf::from)
+        .find(|path| path.is_dir())
 }
 
 /// Every route this router exposes, as `(method, path)` pairs.
@@ -803,6 +843,59 @@ mod tests {
         assert!(resolve_dir(None, &["definitely/not/here"]).is_none());
         let missing = std::path::PathBuf::from("definitely/not/here");
         assert!(resolve_dir(Some(&missing), &[]).is_none());
+    }
+
+    #[test]
+    fn an_asset_directory_needs_no_index_html() {
+        // The shared module directory is imported, never opened, so it carries no
+        // entry document and `resolve_dir` would refuse it.
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(dir.path().join("api.js"), b"export const x = 1;\n").expect("write");
+        assert!(resolve_dir(Some(&dir.path().to_path_buf()), &[]).is_none());
+        assert_eq!(
+            resolve_asset_dir(Some(&dir.path().to_path_buf()), &[]),
+            Some(dir.path().to_path_buf())
+        );
+        let missing = std::path::PathBuf::from("definitely/not/here");
+        assert!(resolve_asset_dir(Some(&missing), &[]).is_none());
+        assert!(resolve_asset_dir(None, &["definitely/not/here"]).is_none());
+    }
+
+    #[tokio::test]
+    async fn the_shared_modules_are_served_at_the_root() {
+        use axum::body::Body;
+        use axum::http::{Request as HttpRequest, StatusCode};
+        use tower::ServiceExt;
+
+        // Both apps import their common modules as `../shared/…`, which a browser
+        // resolves to `/shared/…` from `/main.js` and from `/admin/main.js`. Serving
+        // that URL is what lets the two apps keep one copy of those modules; without
+        // it every import they share is a 404 and neither app starts.
+        let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut config = Config::default();
+        config.api.shared_dir = Some(
+            repository
+                .join("shared")
+                .canonicalize()
+                .expect("the shared directory is in the repository"),
+        );
+
+        let app = with_frontends(Router::new(), &config).with_state(test_state());
+
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/shared/api.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("the router answers");
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "the modules both apps import must be reachable at /shared"
+        );
     }
 
     #[test]

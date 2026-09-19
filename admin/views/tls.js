@@ -13,12 +13,60 @@
  * parsed; see `docs/api.md` §4.9.
  */
 
-import { API_BASE, ApiError, request } from '../api.js';
-import { num } from '../data.js';
-import { el } from '../dom.js';
-import { formatBytes, formatLogStamp } from '../format.js';
+import { API_BASE, ApiError, request } from '../../shared/api.js';
+import { num } from '../../shared/data.js';
+import { el } from '../../shared/dom.js';
+import { formatBytes, formatLogStamp } from '../../shared/format.js';
+import { t } from '../../shared/i18n.js';
 import { actions, adminCard, badge, cell, copyToClipboard, table, viewHead } from '../ui.js';
-import { toastSuccess } from '../toast.js';
+import { toastSuccess } from '../../shared/toast.js';
+
+/**
+ * A person-readable label for an on/off state.
+ *
+ * The state word is a value this view derives, not one the API sends, but it is still
+ * data where the badge's colour is decided — so it is translated only at the point of
+ * display, and each label is a literal inside `t()` so the catalog stays checkable.
+ *
+ * @param {unknown} state either `enabled` or `disabled`
+ * @returns {string}
+ */
+function onOffLabel(state) {
+  switch (String(state || '').toLowerCase()) {
+    case 'enabled':
+      return t('Enabled');
+    case 'disabled':
+      return t('Disabled');
+    default:
+      return t('Unknown');
+  }
+}
+
+/**
+ * The on/off pill, showing the translated state.
+ *
+ * The raw value still decides the pill's colour; only the text is replaced.
+ *
+ * @param {unknown} state
+ * @returns {Element}
+ */
+function onOffBadge(state) {
+  const node = badge(state);
+  node.textContent = onOffLabel(state);
+  return node;
+}
+
+/**
+ * The presence pill, translated. The raw `yes` / `no` still decides the colour.
+ *
+ * @param {unknown} present
+ * @returns {Element}
+ */
+function yesNoBadge(present) {
+  const node = badge(present ? 'yes' : 'no');
+  node.textContent = present ? t('Yes') : t('No');
+  return node;
+}
 
 /**
  * @returns {Promise<{node: Node, cleanup: () => void}>}
@@ -27,35 +75,39 @@ export async function render() {
   const summary = el('div', { class: 'stat-grid', id: 'tls-summary' });
   const hint = el('p', { class: 'view-sub', id: 'tls-hint' });
 
-  const refreshButton = el('button', { type: 'button', class: 'btn', text: 'Refresh' });
+  const refreshButton = el('button', { type: 'button', class: 'btn', text: t('Refresh') });
   refreshButton.addEventListener('click', () => refresh());
 
   const configCard = adminCard({
-    title: 'Configuration',
-    subtitle: '[tls] in the server configuration',
+    title: t('Configuration'),
+    subtitle: t('[tls] in the server configuration'),
     renderData: (data) => data.node,
   });
 
   const certificateCard = adminCard({
-    title: 'Certificate',
-    subtitle: 'the PEM bundle: leaf certificate followed by intermediates',
+    title: t('Certificate'),
+    subtitle: t('the PEM bundle: leaf certificate followed by intermediates'),
     renderData: (data) => data.node,
   });
 
   const keyCard = adminCard({
-    title: 'Private key',
-    subtitle: 'never read, only stat-ed',
+    title: t('Private key'),
+    subtitle: t('never read, only stat-ed'),
     renderData: (data) => data.node,
   });
 
   const listenersCard = adminCard({
-    title: 'Where TLS is offered',
-    subtitle: 'implicit-TLS ports and the published URL',
+    title: t('Where TLS is offered'),
+    subtitle: t('implicit-TLS ports and the published URL'),
     renderData: (data) => data.node,
   });
 
   const root = el('div', {}, [
-    viewHead('TLS', 'The certificates this server loads, and the ports that use them', [refreshButton]),
+    viewHead(
+      t('TLS certificates'),
+      t('The certificates this server loads, and the ports that use them'),
+      [refreshButton],
+    ),
     summary,
     hint,
     configCard.node,
@@ -67,34 +119,34 @@ export async function render() {
   function renderSummary(status) {
     const listeners = status.listeners || {};
     summary.replaceChildren(
-      stat({ label: 'TLS enabled', value: typeof status.enabled === 'boolean' ? (status.enabled ? 'enabled' : 'disabled') : undefined }),
-      stat({ label: 'Minimum version', value: status.min_version }),
+      stat({ label: t('TLS enabled'), value: typeof status.enabled === 'boolean' ? (status.enabled ? t('Enabled') : t('Disabled')) : undefined }),
+      stat({ label: t('Minimum version'), value: status.min_version }),
       stat({
-        label: 'Certificate readable',
-        value: status.certificate ? (status.certificate.readable ? 'readable' : 'unreadable') : undefined,
+        label: t('Certificate readable'),
+        value: status.certificate ? (status.certificate.readable ? t('Readable') : t('Unreadable')) : undefined,
       }),
       stat({
-        label: 'Private key readable',
-        value: status.private_key ? (status.private_key.readable ? 'readable' : 'unreadable') : undefined,
+        label: t('Private key readable'),
+        value: status.private_key ? (status.private_key.readable ? t('Readable') : t('Unreadable')) : undefined,
       }),
-      stat({ label: 'SMTPS port', value: listeners.smtps_port ? String(listeners.smtps_port) : 'off', note: 'implicit TLS' }),
-      stat({ label: 'IMAPS port', value: listeners.imaps_port ? String(listeners.imaps_port) : 'off', note: 'implicit TLS' }),
+      stat({ label: t('SMTPS port'), value: listeners.smtps_port ? String(listeners.smtps_port) : t('Off'), note: t('implicit TLS') }),
+      stat({ label: t('IMAPS port'), value: listeners.imaps_port ? String(listeners.imaps_port) : t('Off'), note: t('implicit TLS') }),
       stat({
-        label: 'HTTPS port',
-        value: listeners.https_port ? String(listeners.https_port) : 'off',
-        note: 'off means the reverse proxy terminates TLS',
+        label: t('HTTPS port'),
+        value: listeners.https_port ? String(listeners.https_port) : t('Off'),
+        note: t('off means the reverse proxy terminates TLS'),
       }),
     );
 
     const problems = [];
-    if (status.enabled === false) problems.push('TLS is disabled: STARTTLS, SMTPS, IMAPS and HTTPS are all unavailable.');
-    if (status.self_signed_fallback) problems.push('A self-signed certificate is generated when none is configured — development only.');
-    if (status.certificate && status.certificate.present && !status.certificate.readable) problems.push('The certificate file cannot be read by this process.');
-    if (status.private_key && status.private_key.present && !status.private_key.readable) problems.push('The private key cannot be read by this process; every handshake will fail.');
-    if (!status.certificate || !status.certificate.present) problems.push('No certificate is configured (or the path does not exist).');
+    if (status.enabled === false) problems.push(t('TLS is disabled: STARTTLS, SMTPS, IMAPS and HTTPS are all unavailable.'));
+    if (status.self_signed_fallback) problems.push(t('A self-signed certificate is generated when none is configured — development only.'));
+    if (status.certificate && status.certificate.present && !status.certificate.readable) problems.push(t('The certificate file cannot be read by this process.'));
+    if (status.private_key && status.private_key.present && !status.private_key.readable) problems.push(t('The private key cannot be read by this process; every handshake will fail.'));
+    if (!status.certificate || !status.certificate.present) problems.push(t('No certificate is configured (or the path does not exist).'));
     hint.textContent = problems.length
       ? problems.join(' ')
-      : 'The certificate and key are both present and readable by this process.';
+      : t('The certificate and key are both present and readable by this process.');
   }
 
   function renderConfiguration(status, certificate, key) {
@@ -102,15 +154,15 @@ export async function render() {
       state: 'ready',
       data: {
         node: table({
-          columns: [{ label: 'Setting' }, { label: 'Value' }],
+          columns: [{ label: t('Setting') }, { label: t('Value') }],
           rows: [
-            [cell('Enabled'), badge(status.enabled ? 'enabled' : 'disabled')],
-            [cell('Minimum version'), cell(status.min_version || '—', 'cell-mono')],
-            [cell('Self-signed fallback'), badge(status.self_signed_fallback ? 'enabled' : 'disabled')],
-            [cell('Platform roots'), badge(status.use_platform_roots ? 'enabled' : 'disabled')],
-            [cell('Allow insecure dev mode'), badge(status.allow_insecure_dev_mode ? 'enabled' : 'disabled')],
-            [cell('Certificate path'), cell(certificate.path || 'not configured', 'cell-mono')],
-            [cell('Key path'), cell(key.path || 'not configured', 'cell-mono')],
+            [cell(t('Enabled')), onOffBadge(status.enabled ? 'enabled' : 'disabled')],
+            [cell(t('Minimum version')), cell(status.min_version || '—', 'cell-mono')],
+            [cell(t('Self-signed fallback')), onOffBadge(status.self_signed_fallback ? 'enabled' : 'disabled')],
+            [cell(t('Platform roots')), onOffBadge(status.use_platform_roots ? 'enabled' : 'disabled')],
+            [cell(t('Allow insecure dev mode')), onOffBadge(status.allow_insecure_dev_mode ? 'enabled' : 'disabled')],
+            [cell(t('Certificate path')), cell(certificate.path || t('not configured'), 'cell-mono')],
+            [cell(t('Key path')), cell(key.path || t('not configured'), 'cell-mono')],
           ],
         }),
       },
@@ -119,15 +171,15 @@ export async function render() {
 
   function renderFile(card, file, options) {
     const rows = [
-      [cell('Path'), cell(file.path || 'not configured', 'cell-mono')],
-      [cell('Present'), badge(file.present ? 'yes' : 'no')],
-      [cell('Readable'), badge(file.readable ? 'yes' : 'no')],
-      [cell('Size'), cell(file.size_bytes === null || file.size_bytes === undefined ? '—' : formatBytes(num(file.size_bytes)), 'cell-mono')],
-      [cell('Modified'), cell(file.modified_at ? formatLogStamp(file.modified_at) : '—')],
+      [cell(t('Path')), cell(file.path || t('not configured'), 'cell-mono')],
+      [cell(t('Present')), yesNoBadge(file.present)],
+      [cell(t('Readable')), yesNoBadge(file.readable)],
+      [cell(t('Size')), cell(file.size_bytes === null || file.size_bytes === undefined ? '—' : formatBytes(num(file.size_bytes)), 'cell-mono')],
+      [cell(t('Modified')), cell(file.modified_at ? formatLogStamp(file.modified_at) : '—')],
     ];
 
     const children = [
-      table({ columns: [{ label: 'Check' }, { label: 'Value' }], rows }),
+      table({ columns: [{ label: t('Check') }, { label: t('Value') }], rows }),
     ];
 
     if (file.error) {
@@ -136,26 +188,26 @@ export async function render() {
 
     if (options.fingerprint) {
       const valueNode = el('p', { class: 'code-block', id: options.fingerprintId, text: file.sha256 || '—' });
-      const copy = el('button', { type: 'button', class: 'btn btn-small', text: 'Copy fingerprint' });
+      const copy = el('button', { type: 'button', class: 'btn btn-small', text: t('Copy fingerprint') });
       copy.disabled = !file.sha256;
       copy.addEventListener('click', async () => {
         const copied = await copyToClipboard(file.sha256 || '', () => selectNode(valueNode));
-        toastSuccess(copied ? 'Fingerprint copied.' : 'The fingerprint is selected — press Ctrl/Cmd+C to copy it.');
+        toastSuccess(copied ? t('Fingerprint copied.') : t('The fingerprint is selected — press Ctrl/Cmd+C to copy it.'));
       });
       children.push(
-        el('h3', { class: 'card-title', text: 'SHA-256 fingerprint' }),
+        el('h3', { class: 'card-title', text: t('SHA-256 fingerprint') }),
         valueNode,
         actions(copy),
         el('p', {
           class: 'view-sub',
-          text: 'Compare this with `openssl x509 -fingerprint -sha256 -noout -in <path>` on the host. Expiry is not parsed by this build.',
+          text: t('Compare this with `openssl x509 -fingerprint -sha256 -noout -in <path>` on the host. Expiry is not parsed by this build.'),
         }),
       );
     } else {
       children.push(
         el('p', {
           class: 'view-sub',
-          text: 'The key is never read or fingerprinted: presence, size, mtime and readability are enough to catch a permissions mistake.',
+          text: t('The key is never read or fingerprinted: presence, size, mtime and readability are enough to catch a permissions mistake.'),
         }),
       );
     }
@@ -168,14 +220,14 @@ export async function render() {
       state: 'ready',
       data: {
         node: table({
-          columns: [{ label: 'Endpoint' }, { label: 'TLS' }, { label: 'Address' }],
+          columns: [{ label: t('Endpoint') }, { label: t('TLS') }, { label: t('Address') }],
           rows: [
-            [cell('SMTP (SMTPS)'), badge(listeners.smtps_port ? 'enabled' : 'disabled'), cell(String(listeners.smtps_port || 'off'), 'cell-mono')],
-            [cell('IMAP (IMAPS)'), badge(listeners.imaps_port ? 'enabled' : 'disabled'), cell(String(listeners.imaps_port || 'off'), 'cell-mono')],
-            [cell('HTTP API'), badge(listeners.https_port ? 'enabled' : 'disabled'), cell(String(listeners.https_port || 'off'), 'cell-mono')],
+            [cell(t('SMTP (SMTPS)')), onOffBadge(listeners.smtps_port ? 'enabled' : 'disabled'), cell(listeners.smtps_port ? String(listeners.smtps_port) : t('Off'), 'cell-mono')],
+            [cell(t('IMAP (IMAPS)')), onOffBadge(listeners.imaps_port ? 'enabled' : 'disabled'), cell(listeners.imaps_port ? String(listeners.imaps_port) : t('Off'), 'cell-mono')],
+            [cell(t('HTTP API')), onOffBadge(listeners.https_port ? 'enabled' : 'disabled'), cell(listeners.https_port ? String(listeners.https_port) : t('Off'), 'cell-mono')],
             [
-              cell('Public URL'),
-              badge(listeners.public_url_is_tls ? 'enabled' : 'disabled'),
+              cell(t('Public URL')),
+              onOffBadge(listeners.public_url_is_tls ? 'enabled' : 'disabled'),
               cell(listeners.public_url || '—', 'cell-mono'),
             ],
           ],
@@ -205,7 +257,7 @@ export async function render() {
       renderFile(keyCard, key, { fingerprint: false, errorId: 'tls-key-error' });
       renderListeners(status.listeners || {});
     } catch (error) {
-      const message = error instanceof ApiError ? error.message : 'The TLS status could not be loaded.';
+      const message = error instanceof ApiError ? error.message : t('The TLS status could not be loaded.');
       configCard.setState({ state: 'error', message });
       certificateCard.setState({ state: 'error', message });
       keyCard.setState({ state: 'error', message });
@@ -238,6 +290,6 @@ function stat(options) {
   return el('div', { class: 'stat' }, [
     el('p', { class: 'stat-label', text: options.label }),
     el('p', { class: 'stat-value', text: missing ? '—' : String(raw) }),
-    el('p', { class: 'stat-note', text: missing ? options.note || 'not reported' : options.note || '' }),
+    el('p', { class: 'stat-note', text: missing ? options.note || t('not reported') : options.note || '' }),
   ]);
 }

@@ -55,6 +55,24 @@ Admin 端点额外要求用户具有`is_admin`。
 `FerromaError::code()`）；`message`供人阅读，可能变化。`details`是可选的，
 仅当确有结构化内容要表达时才出现。
 
+`message`遵循`Accept-Language`（RFC 9110）：任何地区的`zh`都选择简体中文
+词表，其余情况（包括完全没有该请求头）一律返回英文；尚未提供译文的
+消息按英文原样返回，而不是被丢掉。`code`不随语言变化，因此客户端的
+分支逻辑与语言无关：
+
+```http
+GET /api/v1/domains/9999 HTTP/1.1
+Authorization: Bearer …
+Accept-Language: zh-CN,zh;q=0.9,en;q=0.8
+```
+
+```json
+{ "error": { "code": "not_found", "message": "未找到：域名 9999" } }
+```
+
+路径匹配不到任何路由、或路径存在但不接受该方法的请求，同样返回这个
+信封，而不是空响应体。
+
 | HTTP | `code` | 含义 |
 |---|---|---|
 | 400 | `invalid_input`, `parse_error`, `protocol_error` | 请求格式错误 |
@@ -214,7 +232,11 @@ UTC 下的 RFC 3339 / ISO 8601，例如`2026-09-16T12:00:00Z`。除
 {
   "id": 7, "email": "alice@example.com", "display_name": "Alice",
   "is_admin": false, "quota_bytes": 1073741824, "used_bytes": 52428800,
-  "mailboxes": [ { "id": 3, "address": "alice@example.com", "is_primary": true } ]
+  "mailboxes": [
+    { "id": 3, "address": "alice@example.com", "user_id": 7, "display_name": "Alice",
+      "is_primary": true, "enabled": true, "quota_bytes": null,
+      "used_bytes": 4096, "created_at": "2026-01-01T00:00:00Z" }
+  ]
 }
 ```
 
@@ -335,10 +357,20 @@ UTC 下的 RFC 3339 / ISO 8601，例如`2026-09-16T12:00:00Z`。除
 
 ### 4.7 首次运行设置
 
-`GET /api/v1/setup` → `{ "required": true }`（在尚无管理员存在期间）。
+`GET /api/v1/setup` → `{ "required": true, "hostname": "mail.example.com" }`
+（在尚无管理员存在期间）。`hostname`是运行中的配置所对外声明的值，客户端
+可以直接拿它给操作者确认，而不必猜测。
+
 `POST /api/v1/setup` → `{email, password, hostname, domain}`创建第一个
-管理员、域名及其主地址，然后返回一对普通令牌。管理员一旦存在，两个
-端点都返回`409 conflict`；把`api.enable_setup_wizard = false`会完全禁用它们。
+管理员、域名及其主地址，然后返回一对普通令牌。`hostname`可省略；一旦提供
+且与`server.hostname`不一致，请求返回`400 invalid_input`并指出该改哪个配置
+项——运行中的配置无法在进程底下被改写，而悄悄忽略这个值会让操作者刚填完
+就在 DNS 面板上看到自相矛盾的结论。
+
+管理员一旦存在，`POST /api/v1/setup`返回`409 conflict`。把
+`api.enable_setup_wizard = false`则两个端点都返回`404 not_found`：被停用的
+向导就是一个不存在的端点，客户端也正靠这一点把「已停用」与「已完成」区分
+开来。
 
 ### 4.8 系统日志与设备
 

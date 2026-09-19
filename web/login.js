@@ -3,9 +3,10 @@
  * hands control back to the shell once the session cookie / token pair exists.
  */
 
-import { API_BASE, ApiError, request, setTokens } from './api.js';
-import { byId, setHidden, setText } from './dom.js';
-import { toastSuccess } from './toast.js';
+import { API_BASE, ApiError, request, setTokens } from '../shared/api.js';
+import { byId, setHidden, setText } from '../shared/dom.js';
+import { t } from '../shared/i18n.js';
+import { toastSuccess } from '../shared/toast.js';
 
 /** @type {null | (() => void | Promise<void>)} */
 let onSignedIn = null;
@@ -44,14 +45,14 @@ export function initLogin() {
     let invalid = false;
 
     if (address === '') {
-      showFieldError('login-email-error', 'Enter your email address.');
+      showFieldError('login-email-error', t('Enter your email address.'));
       invalid = true;
     } else if (!EMAIL_RE.test(address)) {
-      showFieldError('login-email-error', 'That does not look like an email address.');
+      showFieldError('login-email-error', t('That does not look like an email address.'));
       invalid = true;
     }
     if (secret === '') {
-      showFieldError('login-password-error', 'Enter your password.');
+      showFieldError('login-password-error', t('Enter your password.'));
       invalid = true;
     }
     if (invalid) {
@@ -60,7 +61,7 @@ export function initLogin() {
     }
 
     submit.disabled = true;
-    submit.textContent = 'Signing in…';
+    submit.textContent = t('Signing in…');
     try {
       const payload = await request(`${API_BASE}/auth/login`, {
         method: 'POST',
@@ -70,23 +71,23 @@ export function initLogin() {
       });
       setTokens(payload);
       password.value = '';
-      toastSuccess('Signed in.');
+      toastSuccess(t('Signed in.'));
       if (onSignedIn) await onSignedIn();
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
-        showFieldError('login-error', 'Wrong address or password.');
+        showFieldError('login-error', t('Wrong address or password.'));
       } else if (error instanceof ApiError && error.status === 429) {
         showFieldError('login-error', error.message);
       } else if (error instanceof ApiError && error.network) {
-        showFieldError('login-error', 'The server could not be reached. Check that Ferroma is running.');
+        showFieldError('login-error', t('The server could not be reached. Check that Ferroma is running.'));
       } else {
-        showFieldError('login-error', error instanceof Error ? error.message : 'Sign-in failed.');
+        showFieldError('login-error', error instanceof Error ? error.message : t('Sign-in failed.'));
       }
       password.focus();
       password.select();
     } finally {
       submit.disabled = false;
-      submit.textContent = 'Sign in';
+      submit.textContent = t('Sign in');
     }
   });
 

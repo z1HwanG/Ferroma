@@ -14,10 +14,11 @@
  *   Esc        close the account menu, leave the reader
  */
 
-import { API_BASE, ApiError, clearTokens, onConnectionChange, request, setUnauthorizedHandler } from './api.js';
-import { mailboxesOf } from './data.js';
-import { byId, el, setHidden, setText } from './dom.js';
-import { initFolders, loadFolders, renderFolders, renderMailboxes } from './folders.js';
+import { API_BASE, ApiError, clearTokens, onConnectionChange, request, setUnauthorizedHandler } from '../shared/api.js';
+import { mailboxesOf } from '../shared/data.js';
+import { byId, el, setHidden, setText } from '../shared/dom.js';
+import { folderLabel, initFolders, loadFolders, renderFolders, renderMailboxes } from './folders.js';
+import { t, tn } from '../shared/i18n.js';
 import {
   applySeen,
   clearChecked,
@@ -30,13 +31,13 @@ import {
 } from './list.js';
 import { initLogin, setSignedInHandler } from './login.js';
 import { isOpen as composeIsOpen, openCompose, setSentHandler } from './compose.js';
-import { confirmDialog, openModal } from './modal.js';
+import { confirmDialog, openModal } from '../shared/modal.js';
 import { closeReader, initReader, openMessage, renderChrome, renderReader } from './reader.js';
 import { folderBySlug, folderSlug, goFolder, goSearch, onRouteChange, parseHash } from './router.js';
 import { openSettings } from './settings.js';
 import { getPrefs, getState, mutate, subscribe } from './store.js';
-import { initTheme } from './theme.js';
-import { toastError, toastInfo, toastSuccess } from './toast.js';
+import { initTheme } from '../shared/theme.js';
+import { toastError, toastInfo, toastSuccess } from '../shared/toast.js';
 
 const MOVE_DIALOG_ID = 'bulk-move-select';
 
@@ -82,7 +83,7 @@ function start() {
   });
 
   setSentHandler(() => {
-    toastInfo('Sent messages appear in the Sent folder.');
+    toastInfo(t('Sent messages appear in the Sent folder.'));
     refreshFoldersQuietly();
   });
 
@@ -100,7 +101,7 @@ function start() {
   setUnauthorizedHandler(() => {
     clearSession();
     showLogin();
-    toastError('Your session ended. Sign in again.');
+    toastError(t('Your session ended. Sign in again.'));
   });
 
   onConnectionChange((online) => {
@@ -139,7 +140,7 @@ function boot() {
     } catch (error) {
       if (error instanceof ApiError && error.network) {
         setHidden(byId('offline-banner'), false);
-        toastError('Ferroma could not be reached. Showing the sign-in panel.');
+        toastError(t('Ferroma could not be reached. Showing the sign-in panel.'));
       }
       showLogin();
     } finally {
@@ -184,7 +185,7 @@ function applyRoute(route) {
   if (route.name === 'search') {
     const wanted = route.search;
     setText(byId('search-input'), wanted);
-    setText(byId('list-title'), `Search: ${wanted}`);
+    setText(byId('list-title'), t('Search: {query}', { query: wanted }));
     if (!sameRoute || state.search !== wanted) {
       mutate((draft) => {
         draft.search = wanted;
@@ -217,7 +218,7 @@ function applyRoute(route) {
       draft.checked = new Set();
     }
   });
-  setText(byId('list-title'), folder.name);
+  setText(byId('list-title'), folderLabel(folder));
   setText(byId('search-input'), '');
 
   // Reloading on every repaint would fight the reading pane, so the list is
@@ -301,7 +302,7 @@ function wireChrome() {
     }
     clearSession();
     showLogin();
-    toastSuccess('Signed out.');
+    toastSuccess(t('Signed out.'));
   });
 
   document.addEventListener('click', (event) => {
@@ -343,7 +344,7 @@ function closeAccountMenu() {
 function renderAccountMenu() {
   const state = getState();
   const name = state.user && state.user.display_name ? state.user.display_name : getPrefs().displayName;
-  setText(byId('account-menu-name'), name || 'Signed in');
+  setText(byId('account-menu-name'), name || t('Signed in'));
   setText(byId('account-menu-email'), (state.user && state.user.email) || '');
 }
 
@@ -454,17 +455,20 @@ async function runBatch(operation, ids, folderId) {
     if (operation === 'move' || operation === 'delete') removeFromList(ids);
     clearChecked();
     const labels = {
-      read: 'Marked read',
-      unread: 'Marked unread',
-      flag: 'Starred',
-      unflag: 'Stars removed',
-      move: 'Moved',
-      delete: 'Moved to Trash',
+      read: t('Marked read'),
+      unread: t('Marked unread'),
+      flag: t('Starred'),
+      unflag: t('Stars removed'),
+      move: t('Moved'),
+      delete: t('Moved to Trash'),
     };
-    toastSuccess(`${labels[operation] || 'Updated'}: ${ids.length} message${ids.length === 1 ? '' : 's'}.`);
+    const label = labels[operation] || t('Updated');
+    toastSuccess(
+      `${label}: ${tn(ids.length, '{count} message.', '{count} messages.', { count: ids.length })}`,
+    );
     refreshFoldersQuietly();
   } catch (error) {
-    toastError(error instanceof ApiError ? error.message : 'The action could not be completed.');
+    toastError(error instanceof ApiError ? error.message : t('The action could not be completed.'));
   }
 }
 
@@ -473,11 +477,11 @@ async function bulkDelete(ids) {
   const trash = state.folders.find((folder) => folder.specialUse === 'trash');
   const inTrash = Boolean(state.folder && trash && state.folder.id === trash.id);
   const confirmed = await confirmDialog({
-    title: inTrash ? 'Delete permanently' : 'Move to Trash',
+    title: inTrash ? t('Delete permanently') : t('Move to Trash'),
     message: inTrash
-      ? `${ids.length} messages will be removed for good. This cannot be undone.`
-      : `${ids.length} messages will be moved to Trash.`,
-    confirmLabel: inTrash ? 'Delete permanently' : 'Move to Trash',
+      ? t('{count} messages will be removed for good. This cannot be undone.', { count: ids.length })
+      : t('{count} messages will be moved to Trash.', { count: ids.length }),
+    confirmLabel: inTrash ? t('Delete permanently') : t('Move to Trash'),
   });
   if (!confirmed) return;
 
@@ -492,10 +496,10 @@ async function bulkDelete(ids) {
     );
     removeFromList(ids);
     clearChecked();
-    toastSuccess(`${ids.length} messages deleted permanently.`);
+    toastSuccess(t('{count} messages deleted permanently.', { count: ids.length }));
     refreshFoldersQuietly();
   } catch (error) {
-    toastError(error instanceof ApiError ? error.message : 'The messages could not be deleted.');
+    toastError(error instanceof ApiError ? error.message : t('The messages could not be deleted.'));
   }
 }
 
@@ -503,7 +507,7 @@ async function openBulkMoveDialog(ids) {
   const state = getState();
   const others = state.folders.filter((folder) => !state.folder || folder.id !== state.folder.id);
   if (others.length === 0) {
-    toastError('There is no other folder to move these messages to.');
+    toastError(t('There is no other folder to move these messages to.'));
     return;
   }
   const select = el('select', { class: 'input', id: MOVE_DIALOG_ID, size: String(Math.min(others.length, 8)) });
@@ -511,14 +515,17 @@ async function openBulkMoveDialog(ids) {
     select.append(el('option', { value: String(folder.id), text: folder.name }));
   }
   const body = el('div', {}, [
-    el('p', { class: 'modal-message', text: `Move ${ids.length} selected messages to:` }),
-    el('label', { class: 'visually-hidden', for: MOVE_DIALOG_ID, text: 'Destination folder' }),
+    el('p', {
+      class: 'modal-message',
+      text: t('Move {count} selected messages to:', { count: ids.length }),
+    }),
+    el('label', { class: 'visually-hidden', for: MOVE_DIALOG_ID, text: t('Destination folder') }),
     select,
   ]);
-  const cancel = el('button', { type: 'button', class: 'btn', text: 'Cancel' });
-  const move = el('button', { type: 'button', class: 'btn btn-primary', text: 'Move' });
+  const cancel = el('button', { type: 'button', class: 'btn', text: t('Cancel') });
+  const move = el('button', { type: 'button', class: 'btn btn-primary', text: t('Move') });
   const modal = openModal({
-    title: 'Move messages',
+    title: t('Move messages'),
     body,
     footer: [cancel, move],
     onMount: () => {
@@ -568,7 +575,7 @@ async function selectMailbox(mailboxId, options = {}) {
   });
   renderFolders();
   if (!options.silent) {
-    setText(byId('list-title'), wanted ? wanted.name : 'Messages');
+    setText(byId('list-title'), wanted ? folderLabel(wanted) : t('Messages'));
     loadMessages({ reset: true });
   }
 }

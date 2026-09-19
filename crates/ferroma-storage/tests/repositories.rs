@@ -75,6 +75,7 @@ async fn fixture(t: &TestDatabase) -> Fixture {
             password_hash: "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA".into(),
             display_name: Some("Alice".into()),
             is_admin: false,
+            enabled: true,
             quota_bytes: None,
         })
         .await
@@ -168,6 +169,7 @@ async fn user_create_lowercases_and_finds_case_insensitively() {
             password_hash: "hash".into(),
             display_name: Some("Alice".into()),
             is_admin: false,
+            enabled: true,
             quota_bytes: Some(2048),
         })
         .await
@@ -209,6 +211,7 @@ async fn user_default_quota_is_one_gib() {
             password_hash: "hash".into(),
             display_name: None,
             is_admin: false,
+            enabled: true,
             quota_bytes: None,
         })
         .await
@@ -233,6 +236,7 @@ async fn user_duplicate_email_is_conflict() {
         password_hash: "hash".into(),
         display_name: None,
         is_admin: false,
+        enabled: true,
         quota_bytes: None,
     };
 
@@ -284,6 +288,7 @@ async fn user_list_counts_and_paging() {
                 password_hash: "hash".into(),
                 display_name: None,
                 is_admin: name == "a",
+                enabled: true,
                 quota_bytes: None,
             })
             .await

@@ -10,8 +10,8 @@
  * A message is marked seen once it has been visible for two seconds.
  */
 
-import { API_BASE, ApiError, download, request } from './api.js';
-import { normalizeMessage } from './data.js';
+import { API_BASE, ApiError, download, request } from '../shared/api.js';
+import { normalizeMessage } from '../shared/data.js';
 import {
   byId,
   clear,
@@ -20,11 +20,12 @@ import {
   setHidden,
   setText,
   svgIcon,
-} from './dom.js';
-import { fileKind, formatBytes, fullStamp, timeElement } from './format.js';
-import { confirmDialog, openModal } from './modal.js';
+} from '../shared/dom.js';
+import { fileKind, formatBytes, fullStamp, timeElement } from '../shared/format.js';
+import { t } from '../shared/i18n.js';
+import { confirmDialog, openModal } from '../shared/modal.js';
 import { getPrefs, getState, mutate } from './store.js';
-import { toastError, toastSuccess } from './toast.js';
+import { toastError, toastSuccess } from '../shared/toast.js';
 
 const SEEN_DELAY_MS = 2000;
 const MAX_IFRAME_HEIGHT = 4000;
@@ -140,7 +141,7 @@ export async function openMessage(id) {
     });
     setText(
       byId('reader-error'),
-      error instanceof ApiError ? error.message : 'This message could not be loaded.',
+      error instanceof ApiError ? error.message : t('This message could not be loaded.'),
     );
     setHidden(byId('reader-error'), false);
     renderChrome();
@@ -181,17 +182,17 @@ export function renderReader() {
 
   const message = state.selected;
   const subject = byId('reader-subject');
-  labelWithTitle(subject, message.subject || '(no subject)', 'Subject');
+  labelWithTitle(subject, message.subject || t('(no subject)'), t('Subject'));
 
   const from = byId('reader-from');
-  labelWithTitle(from, message.from || '(unknown sender)', 'From');
+  labelWithTitle(from, message.from || t('(unknown sender)'), t('From'));
 
   const to = byId('reader-to');
-  labelWithTitle(to, message.to.join(', ') || '(no recipients)', 'To');
+  labelWithTitle(to, message.to.join(', ') || t('(no recipients)'), t('To'));
 
   const ccLine = byId('reader-cc-line');
   setHidden(ccLine, message.cc.length === 0);
-  if (message.cc.length) labelWithTitle(byId('reader-cc'), message.cc.join(', '), 'Cc');
+  if (message.cc.length) labelWithTitle(byId('reader-cc'), message.cc.join(', '), t('Cc'));
 
   const date = byId('reader-date');
   clear(date);
@@ -214,8 +215,14 @@ function renderAttachments(message) {
     const chip = el('button', {
       type: 'button',
       class: 'attachment-chip',
-      'aria-label': `Download ${attachment.filename}, ${formatBytes(attachment.sizeBytes)}`,
-      title: `${attachment.filename} — ${formatBytes(attachment.sizeBytes)}`,
+      'aria-label': t('Download {filename}, {size}', {
+        filename: attachment.filename,
+        size: formatBytes(attachment.sizeBytes),
+      }),
+      title: t('{filename} — {size}', {
+        filename: attachment.filename,
+        size: formatBytes(attachment.sizeBytes),
+      }),
     });
     const icon = svgIcon('clip');
     icon.setAttribute('class', 'attachment-icon');
@@ -242,8 +249,8 @@ function renderBody() {
   setHidden(tabs, !(hasHtml && hasText));
 
   const showHtml = hasHtml && (preferredPart === 'html' || !hasText);
-  setText(byId('tab-html'), 'Rich text');
-  setText(byId('tab-text'), 'Plain text');
+  setText(byId('tab-html'), t('Rich text'));
+  setText(byId('tab-text'), t('Plain text'));
   byId('tab-html').setAttribute('aria-pressed', showHtml ? 'true' : 'false');
   byId('tab-text').setAttribute('aria-pressed', showHtml ? 'false' : 'true');
 
@@ -267,7 +274,7 @@ function renderBody() {
   setHidden(textNode, false);
   textNode.textContent =
     (hasText ? message.text : '') ||
-    (hasHtml ? 'This message has an HTML body only.' : 'This message has no body.');
+    (hasHtml ? t('This message has an HTML body only.') : t('This message has no body.'));
 }
 
 /** Grow the sandboxed frame to its content so the pane scrolls as one page. */
@@ -293,7 +300,7 @@ export function renderChrome() {
   const message = state.selected;
   const star = byId('action-star');
   star.setAttribute('aria-pressed', message && message.flagged ? 'true' : 'false');
-  star.textContent = message && message.flagged ? 'Unstar' : 'Star';
+  star.textContent = message && message.flagged ? t('Unstar') : t('Star');
   star.disabled = !message;
   byId('action-unread').disabled = !message;
   byId('action-archive').disabled = !message;
@@ -371,9 +378,9 @@ async function toggleStar(message) {
     renderReader();
     renderChrome();
     if (handlers) handlers.onAfterChange();
-    toastSuccess(next ? 'Starred.' : 'Star removed.');
+    toastSuccess(next ? t('Starred.') : t('Star removed.'));
   } catch (error) {
-    toastError(error instanceof ApiError ? error.message : 'The star could not be changed.');
+    toastError(error instanceof ApiError ? error.message : t('The star could not be changed.'));
   }
 }
 
@@ -394,9 +401,9 @@ async function markUnread(message) {
     renderReader();
     renderChrome();
     if (handlers) handlers.onAfterChange();
-    toastSuccess('Marked unread.');
+    toastSuccess(t('Marked unread.'));
   } catch (error) {
-    toastError(error instanceof ApiError ? error.message : 'The message could not be updated.');
+    toastError(error instanceof ApiError ? error.message : t('The message could not be updated.'));
   }
 }
 
@@ -404,10 +411,10 @@ async function archive(message) {
   const state = getState();
   const archiveFolder = state.folders.find((folder) => folder.specialUse === 'archive');
   if (!archiveFolder) {
-    toastError('This mailbox has no Archive folder.');
+    toastError(t('This mailbox has no Archive folder.'));
     return;
   }
-  await moveTo(message, archiveFolder, 'Archived.');
+  await moveTo(message, archiveFolder, t('Archived.'));
 }
 
 /**
@@ -424,20 +431,20 @@ async function openSourceDialog(message) {
     const response = await request(`${API_BASE}/messages/${message.id}/raw`, { raw: true, toast: false });
     text = await response.text();
   } catch (error) {
-    toastError(error instanceof ApiError ? error.message : 'The message source could not be read.');
+    toastError(error instanceof ApiError ? error.message : t('The message source could not be read.'));
     return;
   }
 
   const pre = el('pre', { class: 'reader-text source-view', tabindex: '0', text });
-  const downloadButton = el('button', { type: 'button', class: 'btn', text: 'Download .eml' });
-  const closeButton = el('button', { type: 'button', class: 'btn btn-primary', text: 'Close' });
+  const downloadButton = el('button', { type: 'button', class: 'btn', text: t('Download .eml') });
+  const closeButton = el('button', { type: 'button', class: 'btn btn-primary', text: t('Close') });
 
   const modal = openModal({
-    title: message.subject ? `Source — ${message.subject}` : 'Message source',
+    title: message.subject ? t('Source — {subject}', { subject: message.subject }) : t('Message source'),
     body: el('div', {}, [
       el('p', {
         class: 'modal-message',
-        text: 'The stored bytes: every header, including the ones the reading pane hides.',
+        text: t('The stored bytes: every header, including the ones the reading pane hides.'),
       }),
       pre,
     ]),
@@ -470,7 +477,7 @@ async function moveTo(message, folder, successText) {
     if (handlers) handlers.onAfterChange();
     toastSuccess(successText);
   } catch (error) {
-    toastError(error instanceof ApiError ? error.message : 'The message could not be moved.');
+    toastError(error instanceof ApiError ? error.message : t('The message could not be moved.'));
   }
 }
 
@@ -481,33 +488,35 @@ async function deleteMessage(message) {
 
   if (alreadyInTrash) {
     const confirmed = await confirmDialog({
-      title: 'Delete permanently',
-      message: `“${message.subject}” will be removed for good. This cannot be undone.`,
-      confirmLabel: 'Delete permanently',
+      title: t('Delete permanently'),
+      message: t('“{subject}” will be removed for good. This cannot be undone.', {
+        subject: message.subject,
+      }),
+      confirmLabel: t('Delete permanently'),
     });
     if (!confirmed) return;
     try {
       await request(`${API_BASE}/messages/${message.id}?permanent=true`, { method: 'DELETE', toast: false });
       afterRemoval(message.id);
-      toastSuccess('Message deleted permanently.');
+      toastSuccess(t('Message deleted permanently.'));
     } catch (error) {
-      toastError(error instanceof ApiError ? error.message : 'The message could not be deleted.');
+      toastError(error instanceof ApiError ? error.message : t('The message could not be deleted.'));
     }
     return;
   }
 
   const confirmed = await confirmDialog({
-    title: 'Move to Trash',
-    message: `“${message.subject}” will be moved to Trash.`,
-    confirmLabel: 'Move to Trash',
+    title: t('Move to Trash'),
+    message: t('“{subject}” will be moved to Trash.', { subject: message.subject }),
+    confirmLabel: t('Move to Trash'),
   });
   if (!confirmed) return;
   try {
     await request(`${API_BASE}/messages/${message.id}`, { method: 'DELETE', toast: false });
     afterRemoval(message.id);
-    toastSuccess('Moved to Trash.');
+    toastSuccess(t('Moved to Trash.'));
   } catch (error) {
-    toastError(error instanceof ApiError ? error.message : 'The message could not be deleted.');
+    toastError(error instanceof ApiError ? error.message : t('The message could not be deleted.'));
   }
 }
 
@@ -528,7 +537,7 @@ async function openMoveDialog(message) {
   const state = getState();
   const others = state.folders.filter((folder) => !state.folder || folder.id !== state.folder.id);
   if (others.length === 0) {
-    toastError('There is no other folder to move this message to.');
+    toastError(t('There is no other folder to move this message to.'));
     return;
   }
 
@@ -538,15 +547,15 @@ async function openMoveDialog(message) {
     select.append(el('option', { value: String(folder.id), text: folder.name }));
   }
   const body = el('div', {}, [
-    el('p', { class: 'modal-message', text: `Move “${message.subject}” to:` }),
-    el('label', { class: 'visually-hidden', for: selectId, text: 'Destination folder' }),
+    el('p', { class: 'modal-message', text: t('Move “{subject}” to:', { subject: message.subject }) }),
+    el('label', { class: 'visually-hidden', for: selectId, text: t('Destination folder') }),
     select,
   ]);
-  const cancel = el('button', { type: 'button', class: 'btn', text: 'Cancel' });
-  const confirm = el('button', { type: 'button', class: 'btn btn-primary', text: 'Move' });
+  const cancel = el('button', { type: 'button', class: 'btn', text: t('Cancel') });
+  const confirm = el('button', { type: 'button', class: 'btn btn-primary', text: t('Move') });
 
   const modal = openModal({
-    title: 'Move message',
+    title: t('Move message'),
     body,
     footer: [cancel, confirm],
     onMount: () => {
@@ -554,7 +563,7 @@ async function openMoveDialog(message) {
       confirm.addEventListener('click', () => {
         const folder = others.find((candidate) => candidate.id === Number.parseInt(select.value, 10));
         modal.close('confirm');
-        if (folder) moveTo(message, folder, `Moved to ${folder.name}.`);
+        if (folder) moveTo(message, folder, t('Moved to {folder}.', { folder: folder.name }));
       });
     },
   });
@@ -565,6 +574,6 @@ async function downloadAttachment(attachment) {
   try {
     await download(`${API_BASE}/attachments/${attachment.id}`, attachment.filename);
   } catch (error) {
-    toastError(error instanceof ApiError ? error.message : 'The attachment could not be downloaded.');
+    toastError(error instanceof ApiError ? error.message : t('The attachment could not be downloaded.'));
   }
 }

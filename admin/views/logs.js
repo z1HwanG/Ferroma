@@ -14,12 +14,13 @@
  * single clipped line the table has room for.
  */
 
-import { API_BASE, ApiError, query, request } from '../api.js';
-import { listOf, num } from '../data.js';
-import { el } from '../dom.js';
-import { formatLogStamp } from '../format.js';
+import { API_BASE, ApiError, query, request } from '../../shared/api.js';
+import { listOf, num } from '../../shared/data.js';
+import { el } from '../../shared/dom.js';
+import { formatLogStamp } from '../../shared/format.js';
+import { t, tn } from '../../shared/i18n.js';
 import { go } from '../router.js';
-import { toastSuccess } from '../toast.js';
+import { toastSuccess } from '../../shared/toast.js';
 import {
   actions,
   adminCard,
@@ -41,6 +42,47 @@ const PAGE_SIZE = 100;
 const LEVELS = ['error', 'warn', 'info', 'debug', 'trace'];
 
 /**
+ * A person-readable label for a tracing severity.
+ *
+ * `level` is API data — it is what the query sends and what `severityRank` compares —
+ * so it is translated only where it is displayed, and each label is a literal inside
+ * `t()` so the catalog stays checkable.
+ *
+ * @param {unknown} level
+ * @returns {string}
+ */
+function severityLabel(level) {
+  switch (String(level || '').toLowerCase()) {
+    case 'error':
+      return t('Error');
+    case 'warn':
+      return t('Warning');
+    case 'info':
+      return t('Info');
+    case 'debug':
+      return t('Debug');
+    case 'trace':
+      return t('Trace');
+    default:
+      return t('Unknown');
+  }
+}
+
+/**
+ * The severity pill, showing the translated severity.
+ *
+ * The raw value still decides the pill's colour; only the text is replaced.
+ *
+ * @param {unknown} level
+ * @returns {Element}
+ */
+function severityBadge(level) {
+  const node = badge(level || 'unknown');
+  node.textContent = severityLabel(level);
+  return node;
+}
+
+/**
  * @param {URLSearchParams} params
  * @returns {Promise<{node: Node, cleanup: () => void}>}
  */
@@ -54,8 +96,8 @@ export async function render(params) {
   };
 
   const level = el('select', { class: 'input', id: 'logs-level' });
-  level.append(el('option', { value: '', text: 'Any severity' }));
-  for (const name of LEVELS) level.append(el('option', { value: name, text: name }));
+  level.append(el('option', { value: '', text: t('Any severity') }));
+  for (const name of LEVELS) level.append(el('option', { value: name, text: severityLabel(name) }));
   level.value = state.level;
 
   const target = el('input', { class: 'input', id: 'logs-target', type: 'text', placeholder: 'ferroma_smtp' });
@@ -70,15 +112,15 @@ export async function render(params) {
   const bar = filterBar({
     id: 'logs-filter',
     fields: [
-      field('Severity', level, 'A floor: “info” also returns warnings and errors.'),
-      field('Target', target, 'Substring of the tracing target.'),
-      field('Message', text, 'Substring of the message or of any field.'),
-      field('Since', since, 'Local time; sent as UTC.'),
-      el('button', { type: 'submit', class: 'btn', text: 'Apply' }),
+      field(t('Severity'), level, t('A floor: “info” also returns warnings and errors.')),
+      field(t('Target'), target, t('Substring of the tracing target.')),
+      field(t('Message'), text, t('Substring of the message or of any field.')),
+      field(t('Since'), since, t('Local time; sent as UTC.')),
+      el('button', { type: 'submit', class: 'btn', text: t('Apply') }),
     ],
     // Clearing is not a filter and not a submit: it belongs beside the fields, with the
     // bar's other actions, so it cannot be triggered by pressing Enter in a text box.
-    actions: [button('Clear', () => go('logs', {}))],
+    actions: [button(t('Clear'), () => go('logs', {}))],
   });
   // `submit` bubbles, so the listener belongs on the bar rather than on the <form> that
   // `filterBar` builds internally.
@@ -94,16 +136,16 @@ export async function render(params) {
     });
   });
 
-  const refreshButton = el('button', { type: 'button', class: 'btn', text: 'Refresh' });
+  const refreshButton = el('button', { type: 'button', class: 'btn', text: t('Refresh') });
   refreshButton.addEventListener('click', () => refresh());
 
   const card = adminCard({
-    title: 'Captured events',
+    title: t('Captured events'),
     subtitle: 'GET /api/v1/logs',
     renderEmpty: () =>
       el('div', { class: 'empty-state' }, [
-        el('p', { class: 'empty-title', text: 'Nothing captured yet' }),
-        el('p', { text: 'The in-process ring is empty, or nothing matches the current filters.' }),
+        el('p', { class: 'empty-title', text: t('Nothing captured yet') }),
+        el('p', { text: t('The in-process ring is empty, or nothing matches the current filters.') }),
       ]),
     renderData: (data) => data.node,
   });
@@ -111,7 +153,7 @@ export async function render(params) {
   const bufferLine = el('p', { class: 'view-sub', id: 'logs-buffer' });
 
   const root = el('div', {}, [
-    viewHead('System logs', 'The most recent events this process has emitted', [refreshButton]),
+    viewHead(t('System logs'), t('The most recent events this process has emitted'), [refreshButton]),
     bar,
     bufferLine,
     card.node,
@@ -151,7 +193,12 @@ export async function render(params) {
       const held = num(payload && payload.buffer_entries, entries.length);
       const capacity = num(payload && payload.buffer_capacity, 0);
       const oldest = payload && payload.oldest_at ? formatLogStamp(payload.oldest_at) : '—';
-      bufferLine.textContent = `Ring: ${held} of ${capacity} entries held; oldest recorded ${oldest}. The ring lives in memory and is lost on restart.`;
+      bufferLine.textContent = tn(
+        capacity,
+        'Ring: {held} of {capacity} entry held; oldest recorded {oldest}. The ring lives in memory and is lost on restart.',
+        'Ring: {held} of {capacity} entries held; oldest recorded {oldest}. The ring lives in memory and is lost on restart.',
+        { held, capacity, oldest },
+      );
 
       if (entries.length === 0) {
         card.setState({ state: 'empty' });
@@ -165,7 +212,7 @@ export async function render(params) {
       bufferLine.textContent = '';
       card.setState({
         state: 'error',
-        message: error instanceof ApiError ? error.message : 'The system log could not be loaded.',
+        message: error instanceof ApiError ? error.message : t('The system log could not be loaded.'),
       });
     }
   }
@@ -191,11 +238,11 @@ function renderTable(entries, total, offset, handlers) {
     entry,
     cells: [
       cell(entry.at ? formatLogStamp(entry.at) : '—', 'cell-mono'),
-      badge(entry.level || 'unknown'),
+      severityBadge(entry.level),
       cell(entry.target || '—', 'cell-mono'),
       el('span', { class: 'truncate', title: entry.message || '', text: entry.message || '—' }),
       el('span', { class: 'truncate cell-mono', title: fieldsText(entry.fields), text: fieldsText(entry.fields) }),
-      actions(button('Details', () => handlers.onDetails(entry))),
+      actions(button(t('Details'), () => handlers.onDetails(entry))),
     ],
   }));
 
@@ -203,18 +250,18 @@ function renderTable(entries, total, offset, handlers) {
     columns: [
       // A timestamp is shown as text but sorted as an instant: comparing the rendered
       // strings would order the page by the day of the month first.
-      { key: 'when', label: 'When', value: (row) => (row.entry.at ? Date.parse(row.entry.at) : 0) },
-      { key: 'level', label: 'Level', value: (row) => severityRank(row.entry.level) },
-      { key: 'target', label: 'Target', value: (row) => row.entry.target || '' },
-      { key: 'message', label: 'Message', value: (row) => row.entry.message || '' },
-      { key: 'fields', label: 'Fields', value: (row) => fieldsText(row.entry.fields) },
-      { key: 'actions', label: 'Actions', sortable: false },
+      { key: 'when', label: t('When'), value: (row) => (row.entry.at ? Date.parse(row.entry.at) : 0) },
+      { key: 'level', label: t('Level'), value: (row) => severityRank(row.entry.level) },
+      { key: 'target', label: t('Target'), value: (row) => row.entry.target || '' },
+      { key: 'message', label: t('Message'), value: (row) => row.entry.message || '' },
+      { key: 'fields', label: t('Fields'), value: (row) => fieldsText(row.entry.fields) },
+      { key: 'actions', label: t('Actions'), sortable: false },
     ],
     rows,
     // `GET /logs` has no companion write endpoint, so there is nothing a selection
     // could act on. Checkboxes here would promise a bulk action the API cannot serve.
     selectable: false,
-    emptyMessage: 'No entries on this page.',
+    emptyMessage: t('No entries on this page.'),
   });
 
   return el('div', {}, [
@@ -247,27 +294,30 @@ function openEntryDrawer(entry) {
 
   const body = el('div', {}, [
     definitionList([
-      ['When', entry.at ? formatLogStamp(entry.at) : '—'],
-      ['Level', badge(entry.level || 'unknown')],
-      ['Target', entry.target || '—'],
-      ['Message', entry.message || '—'],
+      [t('When'), entry.at ? formatLogStamp(entry.at) : '—'],
+      [t('Level'), severityBadge(entry.level)],
+      [t('Target'), entry.target || '—'],
+      [t('Message'), entry.message || '—'],
     ]),
-    el('h3', { class: 'drawer-section', text: 'Fields' }),
+    el('h3', { class: 'drawer-section', text: t('Fields') }),
     captured.length === 0
-      ? el('p', { class: 'view-sub', text: 'This entry captured no structured fields.' })
+      ? el('p', { class: 'view-sub', text: t('This entry captured no structured fields.') })
       : definitionList(captured.map(([key, value]) => [key, fieldValue(value)])),
-    el('h3', { class: 'drawer-section', text: 'Raw entry' }),
+    el('h3', { class: 'drawer-section', text: t('Raw entry') }),
     rawNode,
   ]);
 
-  const copy = button('Copy raw entry', async () => {
+  const copy = button(t('Copy raw entry'), async () => {
     const copied = await copyToClipboard(raw, () => selectNode(rawNode));
-    toastSuccess(copied ? 'Entry copied.' : 'The entry is selected — press Ctrl/Cmd+C to copy it.');
+    toastSuccess(copied ? t('Entry copied.') : t('The entry is selected — press Ctrl/Cmd+C to copy it.'));
   });
 
   return openDrawer({
-    title: entry.message || 'Log entry',
-    subtitle: `${entry.at ? formatLogStamp(entry.at) : 'unknown time'} · ${entry.level || 'unknown'}`,
+    title: entry.message || t('Log entry'),
+    subtitle: t('{time} · {level}', {
+      time: entry.at ? formatLogStamp(entry.at) : t('unknown time'),
+      level: severityLabel(entry.level),
+    }),
     body,
     actions: [copy],
   });

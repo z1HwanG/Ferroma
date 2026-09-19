@@ -30,16 +30,19 @@
 
 import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
 import { dirname, join, resolve, relative, extname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
- * Modules duplicated verbatim into both apps by design (the server serves `web/`
- * and `admin/` independently). Their exports are shared between the two apps, so
- * the dead-export rule cannot judge them per directory and skips them.
+ * Modules living in the sibling `shared/` directory, which both apps import. Their
+ * exports are consumed by two different apps, so the dead-export rule cannot judge
+ * them against one app's import graph and skips them.
  */
-const SHARED_MODULES = new Set(['api.js', 'data.js', 'dom.js', 'format.js', 'net.js', 'theme.js', 'toast.js', 'modal.js']);
+const SHARED_MODULES = new Set(['api.js', 'data.js', 'dom.js', 'format.js', 'net.js', 'theme.js', 'toast.js', 'modal.js', 'i18n.js']);
+
+/** The one directory both apps take their common modules from. */
+const SHARED_ROOT = resolve(ROOT, '..', 'shared');
 
 const failures = [];
 const notes = [];
@@ -71,6 +74,10 @@ function walk(dir, out = []) {
 }
 
 const files = walk(ROOT);
+// The shared modules belong to every app's module graph, so they are checked
+// alongside the app that imports them: imports must resolve, exports must exist,
+// and no `console.log` may hide in them.
+if (existsSync(SHARED_ROOT)) files.push(...walk(SHARED_ROOT));
 const htmlFiles = files.filter((file) => extname(file) === '.html');
 const jsFiles = files.filter((file) => extname(file) === '.js');
 const cssFiles = files.filter((file) => extname(file) === '.css');
@@ -454,7 +461,9 @@ for (const [file, names] of exportMap) {
  * Each case below is the exact envelope a Rust handler serialises. It asserts the
  * app's own normaliser turns it into rows, so renaming a collection on either side
  * fails here instead of in a browser. */
-const data = await import('../data.js');
+// `import()` resolves against *this* file, not the app directory, so the shared
+// normalisers are loaded by absolute file URL.
+const data = await import(pathToFileURL(join(SHARED_ROOT, 'data.js')).href);
 
 const ENVELOPES = [
   ['`{items, total}`, the paged lists', { items: [{ id: 1 }], total: 1 }, (payload) => data.listOf(payload)],
@@ -536,6 +545,213 @@ for (const [label, value, want] of DASHBOARD_CARDS) {
     'data:dashboard',
     `the “${label}” card reads ${String(value)} where the API reports ${String(want)}`,
   );
+}
+
+/* The two normaliser contracts the API and the app disagreed about.
+ *
+ * `GET /mailboxes/:id/folders` sends `special_use: null` for INBOX — RFC 6154 defines
+ * no `\Inbox` attribute and `docs/fcp.md` §4 freezes the null — so the inbox has to be
+ * recognised by name. Failing to do so sorted it last, after Trash, and left it without
+ * an `/inbox` slug. In the other direction, `flags` is the canonical space-separated
+ * lower-case string (`seen flagged`), so matching only the IMAP `\Seen` spelling left
+ * every row unread and every star hidden. Both are asserted here because neither is
+ * visible to the rules above. */
+const INBOX_FOLDER = data.normalizeFolder({ id: 3, name: 'INBOX', special_use: null, message_count: 4 });
+check(
+  INBOX_FOLDER.specialUse === 'inbox',
+  join(SHARED_ROOT, 'data.js'),
+  'data:folder',
+  `INBOX normalises to specialUse ${String(INBOX_FOLDER.specialUse)}; the tree orders and links by that slug`,
+);
+check(
+  INBOX_FOLDER.sortKey === 0,
+  join(SHARED_ROOT, 'data.js'),
+  'data:folder',
+  `INBOX sorts at ${INBOX_FOLDER.sortKey} instead of first`,
+);
+const SENT_FOLDER = data.normalizeFolder({ id: 4, name: 'Sent', special_use: '\\Sent' });
+check(
+  SENT_FOLDER.specialUse === 'sent',
+  join(SHARED_ROOT, 'data.js'),
+  'data:folder',
+  `the IMAP spelling \\Sent normalises to ${String(SENT_FOLDER.specialUse)}`,
+);
+
+const CANONICAL_FLAGS = data.normalizeMessage({ id: 1, flags: 'seen flagged' });
+check(
+  CANONICAL_FLAGS.seen === true && CANONICAL_FLAGS.flagged === true && CANONICAL_FLAGS.answered === false,
+  join(SHARED_ROOT, 'data.js'),
+  'data:flags',
+  'the canonical `seen flagged` string must set seen and flagged and leave answered alone',
+);
+const IMAP_FLAGS = data.normalizeMessage({ id: 1, flags: ['\\Seen', '\\Flagged'] });
+check(
+  IMAP_FLAGS.seen === true && IMAP_FLAGS.flagged === true,
+  join(SHARED_ROOT, 'data.js'),
+  'data:flags',
+  'the IMAP spelling must keep working for a source that spells flags that way',
+);
+
+/* ----------------------------------------------------------------- rule 11 */
+
+/* Localisation coverage.
+ *
+ * Every `t('…')` key must exist in the Simplified Chinese catalog. A missing key is not
+ * a crash — `t()` falls back to the English text — which is exactly why it needs a rule:
+ * a screen nobody translated looks finished to anyone who reads only English, and the
+ * gap only surfaces to the reader it was meant for. */
+const i18n = await import(pathToFileURL(join(SHARED_ROOT, 'i18n.js')).href);
+
+/** Undo the escaping in a matched literal, so a key holding a newline still matches. */
+function unescapeLiteral(text) {
+  return text.replace(/\\(u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|[\s\S])/g, (whole, escape) => {
+    switch (escape) {
+      case 'n': return '\n';
+      case 'r': return '\r';
+      case 't': return '\t';
+      case 'b': return '\b';
+      case 'f': return '\f';
+      case '0': return '\0';
+      default:
+        if (escape[0] === 'u' || escape[0] === 'x') {
+          return String.fromCharCode(parseInt(escape.slice(1), 16));
+        }
+        // `\\`, `\'`, `\"` and every other escaped character stand for themselves.
+        return escape;
+    }
+  });
+}
+
+/**
+ * Remove comments, so an example inside one is not mistaken for a call.
+ *
+ * A `t('…')` in a doc comment is documentation, not a string the app can show, and
+ * demanding a catalog entry for it would punish writing the example down. String
+ * literals are copied through untouched, which is what keeps the `//` in a URL from
+ * truncating the rest of a line.
+ */
+function stripComments(source) {
+  let out = '';
+  let i = 0;
+  while (i < source.length) {
+    const char = source[i];
+    const next = source[i + 1];
+    if (char === '/' && next === '/') {
+      while (i < source.length && source[i] !== '\n') i += 1;
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      i += 2;
+      while (i < source.length && !(source[i] === '*' && source[i + 1] === '/')) i += 1;
+      i += 2;
+      continue;
+    }
+    if (char === "'" || char === '"' || char === '`') {
+      out += char;
+      i += 1;
+      while (i < source.length) {
+        if (source[i] === '\\') {
+          out += source[i] + (source[i + 1] || '');
+          i += 2;
+          continue;
+        }
+        out += source[i];
+        if (source[i] === char) {
+          i += 1;
+          break;
+        }
+        i += 1;
+      }
+      continue;
+    }
+    out += char;
+    i += 1;
+  }
+  return out;
+}
+
+/** The literal keys this module calls `t(...)` and `tn(...)` with. */
+function i18nKeys(source) {
+  const keys = new Set();
+  for (const match of source.matchAll(/\bt\(\s*'((?:[^'\\]|\\.)*)'/g)) keys.add(unescapeLiteral(match[1]));
+  for (const match of source.matchAll(/\bt\(\s*"((?:[^"\\]|\\.)*)"/g)) keys.add(unescapeLiteral(match[1]));
+  for (const match of source.matchAll(/\btn\([^,]+,\s*'((?:[^'\\]|\\.)*)'\s*,\s*'((?:[^'\\]|\\.)*)'/g)) {
+    keys.add(unescapeLiteral(match[1]));
+    keys.add(unescapeLiteral(match[2]));
+  }
+  return keys;
+}
+
+const CATALOG = i18n.catalogs()['zh-CN'] || {};
+
+/* The app shell, in both directions. The marks are explicit, so unlike the JS above
+ * there is no guessing: a marked node must have a translation, and a static text node
+ * the catalog already knows must carry a mark. Without the second half a new string
+ * could be added to `index.html` and stay English with every check green. */
+for (const file of htmlFiles) {
+  const source = readFileSync(file, 'utf8').replace(/<!--[\s\S]*?-->/g, '');
+  const known = (key) => key !== '' && Object.prototype.hasOwnProperty.call(CATALOG, key);
+
+  for (const match of source.matchAll(
+    /<([a-zA-Z][\w-]*)((?:[^>"']|"[^"]*"|'[^']*')*?)data-i18n(?=[\s>])((?:[^>"']|"[^"]*"|'[^']*')*)>([^<]*)</g,
+  )) {
+    const key = match[4].trim();
+    check(
+      known(key),
+      file,
+      'i18n:missing',
+      `a data-i18n element holds ${JSON.stringify(key)}, which is not in the catalog`,
+    );
+  }
+
+  // These markers are flags, not values: `data-i18n-title title="Compose (c)"` marks
+  // the value held in the real attribute, which is what the runtime reads.
+  for (const [marker, attribute] of [
+    ['data-i18n-placeholder', 'placeholder'],
+    ['data-i18n-title', 'title'],
+    ['data-i18n-aria-label', 'aria-label'],
+  ]) {
+    const marked = new RegExp(`(?:^|\\s)${marker}(?:\\s|$)`);
+    const valued = new RegExp(`(?:^|\\s)${attribute}\\s*=\\s*"([^"]*)"`);
+    for (const element of source.matchAll(/<([a-zA-Z][\w-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>/g)) {
+      if (!marked.test(element[2])) continue;
+      const value = valued.exec(element[2]);
+      const key = value ? value[1].trim() : '';
+      check(
+        known(key),
+        file,
+        'i18n:missing',
+        `${marker} marks ${attribute}=${JSON.stringify(key)}, which is not in the catalog`,
+      );
+    }
+  }
+
+  for (const match of source.matchAll(
+    /<([a-zA-Z][\w-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>([^<]+)<\/\1>/g,
+  )) {
+    const key = match[3].trim();
+    if (!known(key)) continue;
+    check(
+      // The attribute group stops just before the `>`, so the marker sits at the end of
+      // the string with nothing after it — a lookahead for whitespace would never fire.
+      /(?:^|\s)data-i18n(?:\s|$)/.test(match[2]),
+      file,
+      'i18n:unmarked',
+      `the text ${JSON.stringify(key)} has a translation but no data-i18n marker, so it stays English`,
+    );
+  }
+}
+
+
+for (const file of jsFiles) {
+  for (const key of i18nKeys(stripComments(readFileSync(file, 'utf8')))) {
+    check(
+      Object.prototype.hasOwnProperty.call(CATALOG, key),
+      file,
+      'i18n:missing',
+      `t(${JSON.stringify(key)}) has no Simplified Chinese translation`,
+    );
+  }
 }
 
 /* ------------------------------------------------------------------ report */

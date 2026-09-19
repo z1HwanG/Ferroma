@@ -11,13 +11,14 @@
  * first and then reports exactly what it freed.
  */
 
-import { API_BASE, ApiError, request } from '../api.js';
-import { num } from '../data.js';
-import { el, setText } from '../dom.js';
-import { formatBytes } from '../format.js';
-import { confirmDialog } from '../modal.js';
+import { API_BASE, ApiError, request } from '../../shared/api.js';
+import { num } from '../../shared/data.js';
+import { el, setText } from '../../shared/dom.js';
+import { formatBytes } from '../../shared/format.js';
+import { t, tn } from '../../shared/i18n.js';
+import { confirmDialog } from '../../shared/modal.js';
 import { adminCard, table, cell, viewHead } from '../ui.js';
-import { toastError, toastSuccess } from '../toast.js';
+import { toastError, toastSuccess } from '../../shared/toast.js';
 
 /**
  * @returns {Promise<{node: Node, cleanup: () => void}>}
@@ -27,26 +28,26 @@ export async function render() {
   const countsHost = el('div', { class: 'stat-grid', id: 'storage-counts' });
   const resultLine = el('p', { class: 'view-sub', id: 'storage-result' });
 
-  const refreshButton = el('button', { type: 'button', class: 'btn', text: 'Refresh' });
+  const refreshButton = el('button', { type: 'button', class: 'btn', text: t('Refresh') });
   refreshButton.addEventListener('click', () => refresh());
 
-  const gcButton = el('button', { type: 'button', class: 'btn btn-danger', text: 'Collect garbage' });
+  const gcButton = el('button', { type: 'button', class: 'btn btn-danger', text: t('Collect garbage') });
   gcButton.addEventListener('click', () => collectGarbage(gcButton));
 
   const usage = adminCard({
-    title: 'Bytes on disk',
+    title: t('Bytes on disk'),
     subtitle: 'GET /api/v1/storage',
     renderData: (data) => data.node,
   });
 
   const counts = adminCard({
-    title: 'What is stored',
+    title: t('What is stored'),
     subtitle: 'GET /api/v1/storage',
     renderData: (data) => data.node,
   });
 
   const root = el('div', {}, [
-    viewHead('Storage', 'What this server is holding, and how much room is left', [refreshButton, gcButton]),
+    viewHead(t('Storage'), t('What this server is holding, and how much room is left'), [refreshButton, gcButton]),
     countsHost,
     used,
     resultLine,
@@ -73,43 +74,43 @@ export async function render() {
 
     fill(
       used,
-      stat({ label: 'Disk used', value: usedBytes, format: (value) => formatBytes(num(value)) }),
+      stat({ label: t('Disk used'), value: usedBytes, format: (value) => formatBytes(num(value)) }),
       stat({
-        label: 'Disk usage',
+        label: t('Disk usage'),
         value: usedPercent,
         note:
           typeof totalBytes === 'number' && typeof freeBytes === 'number'
-            ? `${formatBytes(freeBytes)} free of ${formatBytes(totalBytes)}`
-            : 'this host does not report its filesystem',
+            ? t('{free} free of {total}', { free: formatBytes(freeBytes), total: formatBytes(totalBytes) })
+            : t('this host does not report its filesystem'),
       }),
-      stat({ label: 'Maildir', value: pick(s, 'maildir_bytes'), format: (value) => formatBytes(num(value)) }),
-      stat({ label: 'Attachment blobs', value: pick(s, 'attachment_bytes'), format: (value) => formatBytes(num(value)) }),
-      stat({ label: 'Database', value: pick(s, 'database_bytes'), format: (value) => formatBytes(num(value)) }),
+      stat({ label: t('Maildir'), value: pick(s, 'maildir_bytes'), format: (value) => formatBytes(num(value)) }),
+      stat({ label: t('Attachment blobs'), value: pick(s, 'attachment_bytes'), format: (value) => formatBytes(num(value)) }),
+      stat({ label: t('Database'), value: pick(s, 'database_bytes'), format: (value) => formatBytes(num(value)) }),
     );
 
     fill(
       countsHost,
-      stat({ label: 'Users', value: pick(s, 'users') }),
-      stat({ label: 'Domains', value: pick(s, 'domains') }),
-      stat({ label: 'Mailboxes', value: pick(s, 'mailboxes') }),
-      stat({ label: 'Messages', value: pick(s, 'messages') }),
+      stat({ label: t('Users'), value: pick(s, 'users') }),
+      stat({ label: t('Domains'), value: pick(s, 'domains') }),
+      stat({ label: t('Mailboxes'), value: pick(s, 'mailboxes') }),
+      stat({ label: t('Messages'), value: pick(s, 'messages') }),
     );
 
     usage.setState({
       state: 'ready',
       data: {
         node: table({
-          columns: [{ label: 'Store' }, { label: 'Size' }],
+          columns: [{ label: t('Store') }, { label: t('Size') }],
           rows: [
-            [cell('Maildir'), cell(formatBytes(num(pick(s, 'maildir_bytes'))), 'cell-mono')],
-            [cell('Attachment blobs'), cell(formatBytes(num(pick(s, 'attachment_bytes'))), 'cell-mono')],
-            [cell('Database'), cell(formatBytes(num(pick(s, 'database_bytes'))), 'cell-mono')],
+            [cell(t('Maildir')), cell(formatBytes(num(pick(s, 'maildir_bytes'))), 'cell-mono')],
+            [cell(t('Attachment blobs')), cell(formatBytes(num(pick(s, 'attachment_bytes'))), 'cell-mono')],
+            [cell(t('Database')), cell(formatBytes(num(pick(s, 'database_bytes'))), 'cell-mono')],
             [
-              cell('Free on disk'),
+              cell(t('Free on disk')),
               cell(
                 typeof freeBytes === 'number'
-                  ? `${formatBytes(freeBytes)} of ${formatBytes(num(totalBytes))}`
-                  : 'not reported by this host',
+                  ? t('{free} of {total}', { free: formatBytes(freeBytes), total: formatBytes(num(totalBytes)) })
+                  : t('not reported by this host'),
                 'cell-mono',
               ),
             ],
@@ -122,12 +123,12 @@ export async function render() {
       state: 'ready',
       data: {
         node: table({
-          columns: [{ label: 'Entity' }, { label: 'Count' }],
+          columns: [{ label: t('Entity') }, { label: t('Count') }],
           rows: [
-            [cell('Users'), cell(String(pick(s, 'users') ?? '—'), 'cell-mono')],
-            [cell('Domains'), cell(String(pick(s, 'domains') ?? '—'), 'cell-mono')],
-            [cell('Mailboxes'), cell(String(pick(s, 'mailboxes') ?? '—'), 'cell-mono')],
-            [cell('Messages'), cell(String(pick(s, 'messages') ?? '—'), 'cell-mono')],
+            [cell(t('Users')), cell(String(pick(s, 'users') ?? '—'), 'cell-mono')],
+            [cell(t('Domains')), cell(String(pick(s, 'domains') ?? '—'), 'cell-mono')],
+            [cell(t('Mailboxes')), cell(String(pick(s, 'mailboxes') ?? '—'), 'cell-mono')],
+            [cell(t('Messages')), cell(String(pick(s, 'messages') ?? '—'), 'cell-mono')],
           ],
         }),
       },
@@ -140,7 +141,7 @@ export async function render() {
     try {
       renderStats(await request(`${API_BASE}/storage`, { toast: false }));
     } catch (error) {
-      const message = error instanceof ApiError ? error.message : 'The storage figures could not be loaded.';
+      const message = error instanceof ApiError ? error.message : t('The storage figures could not be loaded.');
       usage.setState({ state: 'error', message });
       counts.setState({ state: 'error', message });
     }
@@ -149,15 +150,14 @@ export async function render() {
   /** Run the maintenance pass and report what it freed. */
   async function collectGarbage(button) {
     const confirmed = await confirmDialog({
-      title: 'Collect garbage?',
-      message:
-        'Attachment blobs and Maildir scratch files that no message references any more are deleted. Referenced messages are never touched.',
-      confirmLabel: 'Collect',
+      title: t('Collect garbage?'),
+      message: t('Attachment blobs and Maildir scratch files that no message references any more are deleted. Referenced messages are never touched.'),
+      confirmLabel: t('Collect'),
     });
     if (!confirmed) return;
 
     button.disabled = true;
-    setText(resultLine, 'Collecting…');
+    setText(resultLine, t('Collecting…'));
     try {
       const payload = await request(`${API_BASE}/storage/gc`, { method: 'POST', toast: false });
       const freed = num(payload && payload.freed_bytes, 0);
@@ -165,12 +165,19 @@ export async function render() {
       const scratch = num(payload && payload.removed_attachment_scratch, 0) + num(payload && payload.removed_maildir_scratch, 0);
       setText(
         resultLine,
-        `Freed ${formatBytes(freed)}: ${attachments} orphaned attachment(s) and ${scratch} scratch file(s) removed in ${num(payload && payload.duration_ms, 0)} ms.`,
+        t('Freed {size}: {attachments} and {scratch} removed in {ms} ms.', {
+          size: formatBytes(freed),
+          attachments: tn(attachments, '{count} orphaned attachment', '{count} orphaned attachments', {
+            count: attachments,
+          }),
+          scratch: tn(scratch, '{count} scratch file', '{count} scratch files', { count: scratch }),
+          ms: num(payload && payload.duration_ms, 0),
+        }),
       );
-      toastSuccess('Garbage collected.');
+      toastSuccess(t('Garbage collected.'));
       await refresh();
     } catch (error) {
-      const message = error instanceof ApiError ? error.message : 'Garbage collection failed.';
+      const message = error instanceof ApiError ? error.message : t('Garbage collection failed.');
       setText(resultLine, message);
       toastError(message);
     } finally {
@@ -198,6 +205,6 @@ function stat(options) {
   return el('div', { class: 'stat' }, [
     el('p', { class: 'stat-label', text: options.label }),
     el('p', { class: 'stat-value', text: missing ? '—' : format(raw) }),
-    el('p', { class: 'stat-note', text: missing ? options.note || 'not reported by this API version' : options.note || '' }),
+    el('p', { class: 'stat-note', text: missing ? options.note || t('not reported by this API version') : options.note || '' }),
   ]);
 }

@@ -7,6 +7,7 @@
  */
 
 import { byId, el, focusable } from './dom.js';
+import { t } from './i18n.js';
 
 /** @type {HTMLElement[]} */
 const stack = [];
@@ -78,7 +79,7 @@ export function openModal(options) {
   const closeButton = el('button', {
     type: 'button',
     class: 'btn btn-icon',
-    'aria-label': 'Close dialog',
+    'aria-label': t('Close dialog'),
     text: '\u00d7',
   });
 
@@ -144,11 +145,11 @@ export function confirmDialog(options) {
       resolve(value);
     };
 
-    const cancel = el('button', { type: 'button', class: 'btn', text: 'Cancel' });
+    const cancel = el('button', { type: 'button', class: 'btn', text: t('Cancel') });
     const confirm = el('button', {
       type: 'button',
       class: `btn ${options.dangerous === false ? 'btn-primary' : 'btn-danger'}`,
-      text: options.confirmLabel || 'Confirm',
+      text: options.confirmLabel || t('Confirm'),
     });
     const message = el('p', { class: 'modal-message', text: options.message });
     const body = el('div', {}, [message]);
@@ -206,23 +207,23 @@ export function promptDialog(options) {
     children.push(error);
     const body = el('div', {}, children);
 
-    const cancel = el('button', { type: 'button', class: 'btn', text: 'Cancel' });
+    const cancel = el('button', { type: 'button', class: 'btn', text: t('Cancel') });
     const confirm = el('button', {
       type: 'button',
       class: 'btn btn-danger',
-      text: options.confirmLabel || 'Confirm',
+      text: options.confirmLabel || t('Confirm'),
     });
 
     const submit = () => {
       const value = input.value.trim();
       if (options.requireValue !== undefined && value !== options.requireValue) {
-        error.textContent = `Type “${options.requireValue}” exactly to continue.`;
+        error.textContent = t('Type “{value}” exactly to continue.', { value: options.requireValue });
         error.hidden = false;
         input.focus();
         return;
       }
       if (value === '') {
-        error.textContent = 'This value is required.';
+        error.textContent = t('This value is required.');
         error.hidden = false;
         input.focus();
         return;

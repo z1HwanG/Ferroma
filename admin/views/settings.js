@@ -1,6 +1,6 @@
 /**
  * Settings: the DB-backed key/value store behind `GET /api/v1/settings` and
- * `PUT /api/v1/settings/:key`.
+ * `PUT /api/v1/settings/:key`, plus the interface-language picker.
  *
  * The API returns "DB-backed settings" without freezing the envelope, so this
  * view accepts a flat object, a `{settings: …}` wrapper or a list of
@@ -8,11 +8,12 @@
  * plain text when they are not.
  */
 
-import { API_BASE, ApiError, request } from '../api.js';
-import { listOf } from '../data.js';
-import { el, setHidden, setText } from '../dom.js';
-import { openModal } from '../modal.js';
-import { toastError, toastSuccess } from '../toast.js';
+import { API_BASE, ApiError, request } from '../../shared/api.js';
+import { listOf } from '../../shared/data.js';
+import { el, setHidden, setText } from '../../shared/dom.js';
+import { LOCALES, currentLocale, setLocale, t } from '../../shared/i18n.js';
+import { openModal } from '../../shared/modal.js';
+import { toastError, toastSuccess } from '../../shared/toast.js';
 import { adminCard, cell, copyToClipboard, table, viewHead } from '../ui.js';
 
 /**
@@ -20,28 +21,29 @@ import { adminCard, cell, copyToClipboard, table, viewHead } from '../ui.js';
  */
 export async function render() {
   const card = adminCard({
-    title: 'Stored settings',
+    title: t('Stored settings'),
     subtitle: 'GET /api/v1/settings',
     renderEmpty: () =>
       el('div', { class: 'empty-state' }, [
-        el('p', { class: 'empty-title', text: 'No database settings' }),
-        el('p', { text: 'This server keeps its configuration in ferroma.toml only.' }),
+        el('p', { class: 'empty-title', text: t('No database settings') }),
+        el('p', { text: t('This server keeps its configuration in ferroma.toml only.') }),
       ]),
     renderData: (data) => data.node,
   });
 
-  const addButton = el('button', { type: 'button', class: 'btn btn-primary', text: 'Add setting' });
+  const addButton = el('button', { type: 'button', class: 'btn btn-primary', text: t('Add setting') });
   addButton.addEventListener('click', () => openSettingDialog(null, () => refresh()));
 
-  const refreshButton = el('button', { type: 'button', class: 'btn', text: 'Refresh' });
+  const refreshButton = el('button', { type: 'button', class: 'btn', text: t('Refresh') });
   refreshButton.addEventListener('click', () => refresh());
 
   const root = el('div', {}, [
-    viewHead('Settings', 'Database-backed configuration', [addButton, refreshButton]),
+    viewHead(t('Settings'), t('Database-backed configuration'), [addButton, refreshButton]),
+    languageCard(),
     el('section', { class: 'card' }, [
       el('p', {
         class: 'view-sub',
-        text: 'File-level configuration lives in ferroma.toml; only keys returned by the API appear here.',
+        text: t('File-level configuration lives in ferroma.toml; only keys returned by the API appear here.'),
       }),
     ]),
     card.node,
@@ -73,7 +75,7 @@ export async function render() {
     } catch (error) {
       card.setState({
         state: 'error',
-        message: error instanceof ApiError ? error.message : 'Settings could not be loaded.',
+        message: error instanceof ApiError ? error.message : t('Settings could not be loaded.'),
       });
     }
   }
@@ -86,24 +88,56 @@ export async function render() {
   return { node: root, cleanup() {} };
 }
 
+/**
+ * The interface-language picker.
+ *
+ * Each option is labelled in its own language, so a reader who cannot read the current
+ * one can still find theirs. Switching reloads the page: every view builds its DOM once
+ * and keeps a reference to it, so re-rendering from here would leave the text already
+ * on screen — including any open dialog — in the old language.
+ */
+function languageCard() {
+  const select = el('select', { class: 'input', id: 'settings-language' });
+  for (const entry of LOCALES) {
+    select.append(el('option', { value: entry.tag, text: entry.label }));
+  }
+  select.value = currentLocale();
+  select.addEventListener('change', () => {
+    setLocale(select.value);
+    window.location.reload();
+  });
+
+  return el('section', { class: 'card' }, [
+    el('h2', { class: 'card-title', text: t('Language') }),
+    el('p', {
+      class: 'view-sub',
+      text: t('The language of this console. The choice is remembered in this browser.'),
+    }),
+    el('div', { class: 'field' }, [
+      el('label', { class: 'field-label', for: 'settings-language', text: t('Language') }),
+      select,
+    ]),
+  ]);
+}
+
 function renderTable(entries, handlers) {
   const rows = entries.map((entry) => {
     const display = typeof entry.value === 'string' ? entry.value : JSON.stringify(entry.value);
     const key = String(entry.key);
-    const copy = button('Copy', async () => {
+    const copy = button(t('Copy'), async () => {
       const copied = await copyToClipboard(display, () => {});
-      if (copied) toastSuccess(`Copied ${key}.`);
-      else toastError('The clipboard is not available in this context.');
+      if (copied) toastSuccess(t('Copied {key}.', { key }));
+      else toastError(t('The clipboard is not available in this context.'));
     });
     return [
       cell(key, 'cell-mono'),
       el('span', { class: 'truncate', title: display, text: display === undefined ? '—' : display }),
-      el('div', { class: 'cell-actions' }, [button('Edit', () => handlers.onEdit(entry)), copy]),
+      el('div', { class: 'cell-actions' }, [button(t('Edit'), () => handlers.onEdit(entry)), copy]),
     ];
   });
 
   return table({
-    columns: [{ label: 'Key' }, { label: 'Value' }, { label: 'Actions' }],
+    columns: [{ label: t('Key') }, { label: t('Value') }, { label: t('Actions') }],
     rows,
   });
 }
@@ -133,22 +167,22 @@ function openSettingDialog(entry, onDone) {
   const error = el('p', { class: 'field-error', id: 'setting-error', hidden: true });
   const body = el('div', {}, [
     el('div', { class: 'field' }, [
-      el('label', { class: 'field-label', for: 'setting-key', text: 'Key' }),
+      el('label', { class: 'field-label', for: 'setting-key', text: t('Key') }),
       key,
     ]),
     el('div', { class: 'field' }, [
-      el('label', { class: 'field-label', for: 'setting-value', text: 'Value (JSON or plain text)' }),
+      el('label', { class: 'field-label', for: 'setting-value', text: t('Value (JSON or plain text)') }),
       value,
-      el('p', { class: 'view-sub', text: '“true”, “12” and “{…}” are stored as JSON; anything else as text.' }),
+      el('p', { class: 'view-sub', text: t('“true”, “12” and “{…}” are stored as JSON; anything else as text.') }),
     ]),
     error,
   ]);
 
-  const cancel = el('button', { type: 'button', class: 'btn', text: 'Cancel' });
-  const save = el('button', { type: 'button', class: 'btn btn-primary', text: editing ? 'Save' : 'Add' });
+  const cancel = el('button', { type: 'button', class: 'btn', text: t('Cancel') });
+  const save = el('button', { type: 'button', class: 'btn btn-primary', text: editing ? t('Save') : t('Add') });
 
   const modal = openModal({
-    title: editing ? `Edit ${entry.key}` : 'Add setting',
+    title: editing ? t('Edit {key}', { key: entry.key }) : t('Add setting'),
     body,
     footer: [cancel, save],
     onMount: () => {
@@ -156,29 +190,29 @@ function openSettingDialog(entry, onDone) {
       save.addEventListener('click', async () => {
         const settingKey = key.value.trim();
         if (settingKey === '') {
-          setText(error, 'A key is required.');
+          setText(error, t('A key is required.'));
           setHidden(error, false);
           key.focus();
           return;
         }
         const parsed = parseValue(value.value);
         save.disabled = true;
-        setText(save, 'Saving…');
+        setText(save, t('Saving…'));
         try {
           await request(`${API_BASE}/settings/${encodeURIComponent(settingKey)}`, {
             method: 'PUT',
             body: { value: parsed },
             toast: false,
           });
-          toastSuccess(`Setting ${settingKey} saved.`);
+          toastSuccess(t('Setting {key} saved.', { key: settingKey }));
           modal.close('saved');
           onDone();
         } catch (err) {
-          setText(error, err instanceof ApiError ? err.message : 'The setting could not be saved.');
+          setText(error, err instanceof ApiError ? err.message : t('The setting could not be saved.'));
           setHidden(error, false);
         } finally {
           save.disabled = false;
-          setText(save, editing ? 'Save' : 'Add');
+          setText(save, editing ? t('Save') : t('Add'));
         }
       });
     },

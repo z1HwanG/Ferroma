@@ -6,6 +6,8 @@
  * than "Invalid Date".
  */
 
+import { t } from './i18n.js';
+
 const TIME_FORMAT = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' });
 const SHORT_FORMAT = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' });
 const FULL_FORMAT = new Intl.DateTimeFormat(undefined, {
@@ -49,7 +51,7 @@ export function shortStamp(value) {
   const dayDelta = Math.round((startOfToday.getTime() - startOfDay.getTime()) / 86400000);
 
   if (dayDelta === 0) return TIME_FORMAT.format(date);
-  if (dayDelta === 1) return 'Yesterday';
+  if (dayDelta === 1) return t('Yesterday');
   if (dayDelta > 1 && dayDelta < 7) {
     return new Intl.DateTimeFormat(undefined, { weekday: 'short' }).format(date);
   }
@@ -68,13 +70,13 @@ export function relativeStamp(value) {
   const date = parseDate(value);
   if (!date) return '';
   const seconds = Math.round((Date.now() - date.getTime()) / 1000);
-  if (seconds < 60) return 'just now';
+  if (seconds < 60) return t('just now');
   const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes} min ago`;
+  if (minutes < 60) return t('{minutes} min ago', { minutes });
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours} h ago`;
+  if (hours < 24) return t('{hours} h ago', { hours });
   const days = Math.round(hours / 24);
-  if (days < 30) return `${days} d ago`;
+  if (days < 30) return t('{days} d ago', { days });
   return shortStamp(value);
 }
 
@@ -98,13 +100,14 @@ export function timeElement(value, options = {}) {
 }
 
 /**
- * `1536` → `1.5 KB`.
+ * `1536` → `1.5 KB`. The units are translated but deliberately unchanged in
+ * Chinese, which is what the identity entries in the catalog record.
  * @param {number} bytes
  */
 export function formatBytes(bytes) {
   const value = Number(bytes);
-  if (!Number.isFinite(value) || value <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const units = [t('B'), t('KB'), t('MB'), t('GB'), t('TB')];
+  if (!Number.isFinite(value) || value <= 0) return `0 ${units[0]}`;
   let index = 0;
   let scaled = value;
   while (scaled >= 1024 && index < units.length - 1) {
@@ -166,8 +169,11 @@ export function htmlToText(html) {
 /** The quoted reply block, in plain text. */
 export function quoteText(message) {
   const stamp = fullStamp(message.date);
-  const attribution = `On ${stamp || 'an unknown date'}, ${message.from || 'the sender'} wrote:`;
-  const body = String(message.text || '').trim() || htmlToText(message.html) || '(no text body)';
+  const attribution = t('On {date}, {sender} wrote:', {
+    date: stamp || t('an unknown date'),
+    sender: message.from || t('the sender'),
+  });
+  const body = String(message.text || '').trim() || htmlToText(message.html) || t('(no text body)');
   const quoted = body
     .split('\n')
     .map((line) => `> ${line}`)
@@ -178,7 +184,10 @@ export function quoteText(message) {
 /** The quoted reply block, in HTML (escaped, then wrapped in a blockquote). */
 export function quoteHtml(message) {
   const stamp = fullStamp(message.date);
-  const attribution = `On ${stamp || 'an unknown date'}, ${message.from || 'the sender'} wrote:`;
+  const attribution = t('On {date}, {sender} wrote:', {
+    date: stamp || t('an unknown date'),
+    sender: message.from || t('the sender'),
+  });
   const source = String(message.html || '').trim();
   const inner = source !== '' ? source : textToHtml(message.text || '');
   return (
@@ -239,5 +248,5 @@ export function replyAllRecipients(message, selfAddresses) {
 /** A short label for the attachment chip. */
 export function fileKind(filename) {
   const match = /\.([A-Za-z0-9]{1,8})$/.exec(String(filename || ''));
-  return match ? match[1].toUpperCase() : 'FILE';
+  return match ? match[1].toUpperCase() : t('FILE');
 }

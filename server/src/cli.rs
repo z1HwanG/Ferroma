@@ -244,6 +244,11 @@ pub struct UserCreateArgs {
     /// Grant administrator rights.
     #[arg(long)]
     pub admin: bool,
+    /// Create the account disabled: the row exists but it cannot log in until an
+    /// administrator enables it, which is how `POST /users` with `enabled: false`
+    /// behaves.
+    #[arg(long)]
+    pub disabled: bool,
     /// Mailbox quota in bytes. Defaults to `limits.mailbox_quota`.
     #[arg(long)]
     pub quota: Option<i64>,
