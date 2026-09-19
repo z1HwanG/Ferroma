@@ -300,16 +300,37 @@ textarea.input {
   min-width: 0;
 }
 
+/*
+ * Filter bars and small inline forms.
+ *
+ * A grid rather than a wrapping flex row, and aligned to the top. Every field is
+ * label + control + hint, and the hints differ in height (one wraps to two lines,
+ * another to one), so `align-items: flex-end` matched the *bottoms* of the fields
+ * and shoved the taller ones' labels and inputs upwards — the controls ended up on
+ * different baselines across a single row. Tops align instead, which lines the
+ * labels up and puts every control on one baseline; the hints are free to wrap
+ * below without moving anything.
+ *
+ * Equal `1fr` columns also stop a narrow `<select>` next to a wide text input,
+ * which is what `flex: 1 1 180px` produced once the buttons had taken their share.
+ */
 .inline-form {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: flex-end;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px 14px;
+  align-items: start;
 }
 
 .inline-form .field {
-  flex: 1 1 180px;
   margin-bottom: 0;
+}
+
+/* Actions keep their natural width instead of stretching to fill a column, and sit
+   on the control baseline rather than the label's. */
+.inline-form > .btn {
+  justify-self: start;
+  align-self: center;
+  white-space: nowrap;
 }
 
 /* ------------------------------------------------------------------ banners */
