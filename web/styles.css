@@ -86,6 +86,16 @@
   box-sizing: border-box;
 }
 
+/* The `hidden` attribute must win over any component `display` rule.
+   Author styles beat the browser's built-in `[hidden] { display: none }`, so
+   without this rule every element that sets `display` (`.app`, `.login-view`,
+   `.reader`, `.bulk-bar`, …) stays visible while it carries `hidden`. That is
+   how the sign-in card ended up stacked above the signed-in shell, and how the
+   reader showed its toolbar and Rich/Plain tabs with no message selected. */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   height: 100%;
@@ -871,10 +881,6 @@ select.input {
   flex-direction: column;
   background: var(--surface);
   overflow-y: auto;
-}
-
-.compose-host[hidden] {
-  display: none;
 }
 
 .modal-host:empty {

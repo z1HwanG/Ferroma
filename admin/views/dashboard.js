@@ -3,6 +3,13 @@
  * plus a hand-drawn SVG sparkline of queue depth sampled in the browser while the
  * section stays open (a maximum of 40 samples, one per poll).
  *
+ * The page is organised by the question it answers, not by the endpoint it calls:
+ *
+ *   1. what needs attention — exceptions only, or an explicit all-clear;
+ *   2. the four figures an operator checks first, as a hero row;
+ *   3. the supporting figures;
+ *   4. queue depth over time, then the raw detail for debugging.
+ *
  * Values the API does not report render as “—” rather than as a misleading zero.
  */
 
@@ -11,13 +18,10 @@ import { dashboardStats, num } from '../data.js';
 import { el, clear } from '../dom.js';
 import { formatBytes, formatLogStamp } from '../format.js';
 import { getState, setState } from '../store.js';
-import { adminCard, table, cell, badge, viewHead } from '../ui.js';
+import { adminCard, attentionList, badge, cell, statTile, table, viewHead } from '../ui.js';
 
 const REFRESH_MS = 30000;
 const MAX_SAMPLES = 40;
-
-/** Id of the stat grid this view builds; the checker traces it to `byId` below. */
-const STATS_GRID_ID = 'dashboard-stats';
 
 /** First present key among several spellings. */
 function pick(source, keys, fallback) {
@@ -31,57 +35,45 @@ function pick(source, keys, fallback) {
 }
 
 /**
- * Render a measurement, or “—” with an explanatory note when the API omits it.
- * @param {{label: string, value: unknown, note?: string, format?: (value: unknown) => string}} options
- */
-function stat(options) {
-  const raw = options.value;
-  const missing = raw === undefined || raw === null || raw === '';
-  const format = options.format || ((value) => String(value));
-  return el('div', { class: 'stat' }, [
-    el('p', { class: 'stat-label', text: options.label }),
-    el('p', { class: 'stat-value', text: missing ? '—' : format(raw) }),
-    el('p', { class: 'stat-note', text: missing ? options.note || 'not reported by this API version' : options.note || '' }),
-  ]);
-}
-
-/**
  * @param {URLSearchParams} params
  * @returns {Promise<{node: Node, cleanup: () => void}>}
  */
 export async function render(params) {
   const user = getState().user;
-  const statsHost = el('div', { class: 'stat-grid', id: STATS_GRID_ID });
+  const heroHost = el('div', { class: 'stat-grid stat-grid-hero' });
+  const statsHost = el('div', { class: 'stat-grid' });
+
+  const attentionCard = adminCard({
+    title: 'Needs attention',
+    subtitle: 'problems derived from the figures below; silent when there are none',
+    renderData: (node) => node,
+  });
 
   const root = el('div', {}, [
     viewHead('Dashboard', `Signed in as ${(user && user.email) || 'administrator'}`),
+    attentionCard.node,
+    heroHost,
     statsHost,
   ]);
 
   const stateCard = adminCard({
     title: 'System health',
-    subtitle: 'GET /api/v1/health',
-    actions: [],
     renderData: (data) => data.node,
   });
 
   const queueCard = adminCard({
-    title: 'Mail queue',
-    subtitle: 'GET /api/v1/queue/stats',
-    actions: [],
+    title: 'Mail queue by state',
     renderData: (data) => data.node,
   });
 
   const storageCard = adminCard({
     title: 'Storage',
-    subtitle: 'GET /api/v1/storage',
-    actions: [],
     renderData: (data) => data.node,
   });
 
   const historyCard = adminCard({
-    title: 'Queue depth history',
-    subtitle: 'sampled in this browser, 30 s apart',
+    title: 'Queue depth',
+    subtitle: 'sampled in this browser, one point every 30 s while the console is open',
     renderData: (data) => data.node,
   });
 
@@ -94,7 +86,8 @@ export async function render(params) {
       fetchStorage(),
     ]);
 
-    renderStats(statsHost, health, queueStats, storage);
+    renderAttention(attentionCard, health, queueStats);
+    renderStats(heroHost, statsHost, health, queueStats, storage);
     renderQueue(queueCard, queueStats);
     renderHistory(historyCard, queueStats);
     renderHealth(stateCard, health);
@@ -148,13 +141,73 @@ async function fetchStorage() {
 /* -------------------------------------------------------------------- renders */
 
 /**
- * @param {HTMLElement} host the stat grid
+ * Derive the exceptions worth an operator's time. Everything here is a finding,
+ * not a reading: a number that is merely interesting belongs in the grids below.
+ *
  * @param {{ok: boolean, data?: object, message?: string}} health
  * @param {{ok: boolean, data?: object, message?: string}} queueStats
- * @param {{ok: boolean, data?: object, message?: string}} storage
  */
-function renderStats(host, health, queueStats, storage) {
-  clear(host);
+function findings(health, queueStats) {
+  /** @type {Array<{tone: 'warn'|'danger', title: string, detail?: string}>} */
+  const issues = [];
+  const h = health.ok ? health.data || {} : null;
+
+  if (!health.ok) {
+    issues.push({ tone: 'danger', title: 'System health could not be read', detail: health.message });
+  }
+  if (h && h.database && h.database.ok === false) {
+    issues.push({ tone: 'danger', title: 'The database is not reachable', detail: 'Mail cannot be stored or read until it recovers.' });
+  }
+  if (h && h.smtp && h.smtp.enabled === false) {
+    issues.push({ tone: 'warn', title: 'SMTP is disabled', detail: 'No inbound mail is being accepted.' });
+  }
+  if (h && h.imap && h.imap.enabled === false) {
+    issues.push({ tone: 'warn', title: 'IMAP is disabled', detail: 'Mail clients cannot connect.' });
+  }
+  if (h && h.status && String(h.status).toLowerCase() === 'degraded') {
+    issues.push({ tone: 'warn', title: 'The server reports itself as degraded' });
+  }
+
+  const counts = queueStats.ok ? queueCounts(queueStats) : {};
+  const failed = num(pick(counts, ['failed'], 0));
+  const retry = num(pick(counts, ['retry'], 0));
+  if (failed > 0) {
+    issues.push({
+      tone: 'danger',
+      title: `${failed} delivery attempt(s) have failed permanently`,
+      detail: 'Failed entries are kept in the queue; open Mail queue and filter by “failed”.',
+    });
+  }
+  if (retry > 0) {
+    issues.push({ tone: 'warn', title: `${retry} message(s) are waiting to be retried`, detail: 'Delivery is retrying with backoff.' });
+  }
+  if (!queueStats.ok) {
+    issues.push({ tone: 'warn', title: 'Queue statistics could not be read', detail: queueStats.message });
+  }
+
+  return issues;
+}
+
+function renderAttention(card, health, queueStats) {
+  card.setState({ state: 'ready', data: attentionList(findings(health, queueStats)) });
+}
+
+/** The counters object, whether the API nests it under `counts` or not. */
+function queueCounts(queueStats) {
+  const data = queueStats.data || {};
+  return data.counts || data;
+}
+
+/**
+ * @param {HTMLElement} heroHost the four headline tiles
+ * @param {HTMLElement} statsHost the supporting tiles
+ * @param {{ok: boolean, data?: object}} health
+ * @param {{ok: boolean, data?: object}} queueStats
+ * @param {{ok: boolean, data?: object}} storage
+ */
+function renderStats(heroHost, statsHost, health, queueStats, storage) {
+  clear(heroHost);
+  clear(statsHost);
   const h = health.ok ? health.data || {} : {};
   const s = storage.ok ? storage.data || {} : {};
   const database = h.database || {};
@@ -163,46 +216,65 @@ function renderStats(host, health, queueStats, storage) {
   // that the grid used to miss — lives in `data.js` so a test can prove it.
   const stats = dashboardStats(health.ok ? health.data : {}, queueStats.ok ? queueStats.data : {}, s);
 
-  host.append(
-    stat({ label: 'Users', value: stats.users, note: 'from /storage' }),
-    stat({ label: 'Domains', value: stats.domains, note: 'from /storage' }),
-    stat({ label: 'Received today', value: stats.receivedToday, note: 'from /health queue.received_today' }),
-    stat({ label: 'Sent today', value: stats.sentToday, note: 'from /health queue.sent_today' }),
-    stat({ label: 'Queue pending', value: stats.queuePending }),
-    stat({ label: 'Queue retry', value: stats.queueRetry }),
-    stat({
+  const failed = stats.failedDeliveries;
+
+  heroHost.append(
+    statTile({
+      label: 'Queue pending',
+      value: stats.queuePending,
+      note: 'waiting to be delivered',
+      hero: true,
+    }),
+    statTile({
       label: 'Failed deliveries',
-      value: stats.failedDeliveries,
-      note: 'entries in the failed state',
+      value: failed,
+      note: num(failed) > 0 ? 'need a decision' : 'none',
+      hero: true,
+      tone: num(failed) > 0 ? 'danger' : 'ok',
     }),
-    stat({ label: 'Mailbox storage', value: stats.maildirBytes, format: (value) => formatBytes(num(value)) }),
-    stat({
+    statTile({ label: 'Mailboxes', value: stats.users, note: 'accounts', hero: true }),
+    statTile({
+      label: 'Mailbox storage',
+      value: stats.maildirBytes === undefined ? undefined : formatBytes(num(stats.maildirBytes)),
+      note: 'Maildir on disk',
+      hero: true,
+    }),
+  );
+
+  statsHost.append(
+    statTile({ label: 'Domains', value: stats.domains, note: 'hosted here' }),
+    statTile({ label: 'Received today', value: stats.receivedToday }),
+    statTile({ label: 'Sent today', value: stats.sentToday }),
+    statTile({
+      label: 'Queue retry',
+      value: stats.queueRetry,
+      tone: num(stats.queueRetry) > 0 ? 'warn' : undefined,
+    }),
+    statTile({
       label: 'Attachments',
-      value: stats.attachmentBytes,
-      format: (value) => formatBytes(num(value)),
+      value: stats.attachmentBytes === undefined ? undefined : formatBytes(num(stats.attachmentBytes)),
+      note: 'blob store',
     }),
-    stat({
+    statTile({
       label: 'Database size',
-      value: stats.databaseBytes,
-      format: (value) => formatBytes(num(value)),
+      value: stats.databaseBytes === undefined ? undefined : formatBytes(num(stats.databaseBytes)),
+      note: database.server_version ? String(database.server_version) : '',
     }),
-    stat({
+    statTile({
+      label: 'Active client sessions',
+      value: stats.activeClientSessions,
+    }),
+    statTile({
+      label: 'Uptime',
+      value: stats.uptimeSecs === undefined ? undefined : formatUptime(num(stats.uptimeSecs)),
+    }),
+    statTile({
       label: 'Connection pool',
       value:
         pool.size === undefined && pool.idle === undefined
           ? undefined
-          : `${num(pick(pool, ['size'], 0))} open / ${num(pick(pool, ['idle'], 0))} idle of ${num(pick(pool, ['max'], 0))}`,
-      note: database.server_version ? String(database.server_version) : '',
-    }),
-    stat({
-      label: 'Active client sessions',
-      value: stats.activeClientSessions,
-      note: 'from /health clients.active_sessions',
-    }),
-    stat({
-      label: 'Uptime',
-      value: stats.uptimeSecs,
-      format: (value) => formatUptime(num(value)),
+          : `${num(pick(pool, ['size'], 0))} / ${num(pick(pool, ['max'], 0))}`,
+      note: 'in use of max',
     }),
   );
 }
@@ -222,17 +294,20 @@ function renderQueue(card, queueStats) {
     card.setState({ state: 'error', message: queueStats.message });
     return;
   }
-  const counts = queueStats.data && queueStats.data.counts ? queueStats.data.counts : queueStats.data || {};
+  const counts = queueCounts(queueStats);
   const rows = Object.keys(counts)
     .filter((key) => typeof counts[key] === 'number' || typeof counts[key] === 'string')
     .map((key) => [cell(key), cell(String(counts[key]))]);
   const nextDue = queueStats.data ? queueStats.data.next_due_at : null;
-  if (nextDue) rows.push([cell('next_due_at'), cell(formatLogStamp(nextDue))]);
   if (rows.length === 0) {
     card.setState({ state: 'empty' });
     return;
   }
-  card.setState({ state: 'ready', data: { node: table({ columns: [{ label: 'Status' }, { label: 'Count' }], rows }) } });
+  const node = el('div', {}, [
+    table({ columns: [{ label: 'State' }, { label: 'Messages' }], rows }),
+    nextDue ? el('p', { class: 'view-sub', text: `Next attempt scheduled for ${formatLogStamp(nextDue)}.` }) : null,
+  ]);
+  card.setState({ state: 'ready', data: node });
 }
 
 function renderHealth(card, health) {
@@ -265,7 +340,7 @@ function renderHealth(card, health) {
   ];
   card.setState({
     state: 'ready',
-    data: { node: table({ columns: [{ label: 'Check' }, { label: 'Value' }], rows }) },
+    data: table({ columns: [{ label: 'Check' }, { label: 'Value' }], rows }),
   });
 }
 
@@ -292,7 +367,7 @@ function renderStorage(card, storage) {
   ];
   card.setState({
     state: 'ready',
-    data: { node: table({ columns: [{ label: 'Store' }, { label: 'Size' }], rows }) },
+    data: table({ columns: [{ label: 'Store' }, { label: 'Size' }], rows }),
   });
 }
 
@@ -316,13 +391,12 @@ function renderHistory(card, queueStats) {
           : `Now: depth ${latest.depth}, failed ${latest.failed} — ${history.length} samples.`,
     }),
   ]);
-  card.setState({ state: 'ready', data: { node } });
+  card.setState({ state: 'ready', data: node });
 }
 
 /** Sample the queue depth into the shared history buffer. */
 function sampleQueueDepth(queueStats) {
-  const data = queueStats.data || {};
-  const counts = data.counts || data;
+  const counts = queueCounts(queueStats);
   const depth = num(pick(counts, ['pending'], 0)) + num(pick(counts, ['retry'], 0));
   const failed = num(pick(counts, ['failed'], 0));
   const history = getState().queueHistory.slice();

@@ -210,4 +210,60 @@ export async function copyToClipboard(value, onFallback) {
   return false;
 }
 
+/**
+ * One dashboard measurement.
+ *
+ * A value the API did not report renders as “—”, never as a misleading zero, and
+ * the note says what the number covers rather than which endpoint produced it —
+ * the endpoint names that used to sit here (`from /health queue.received_today`)
+ * told an operator nothing they could act on.
+ *
+ * @param {{
+ *   label: string,
+ *   value?: unknown,
+ *   note?: string,
+ *   tone?: 'ok'|'warn'|'danger',
+ *   hero?: boolean,
+ * }} options
+ */
+export function statTile(options) {
+  const raw = options.value;
+  const missing = raw === undefined || raw === null || raw === '';
+  const classes = ['stat'];
+  if (options.hero) classes.push('stat-hero');
+  if (options.tone) classes.push(`stat-${options.tone}`);
+  return el('div', { class: classes.join(' ') }, [
+    el('p', { class: 'stat-label', text: options.label }),
+    el('p', { class: 'stat-value', text: missing ? '—' : String(raw) }),
+    options.note ? el('p', { class: 'stat-note', text: missing ? 'not reported' : options.note }) : null,
+  ]);
+}
+
+/**
+ * The exceptions an operator should act on, or an explicit all-clear.
+ *
+ * This is the part of a dashboard that carries a decision rather than a number:
+ * the caller derives the findings, and an empty list is reported as good news
+ * instead of an empty box.
+ *
+ * @param {Array<{tone: 'warn'|'danger', title: string, detail?: string}>} issues
+ */
+export function attentionList(issues) {
+  if (issues.length === 0) {
+    return el('div', { class: 'attention attention-clear' }, [
+      el('p', { class: 'attention-clear-text', text: 'Nothing needs attention.' }),
+    ]);
+  }
+  return el(
+    'ul',
+    { class: 'attention' },
+    issues.map((issue) =>
+      el('li', { class: `attention-item attention-${issue.tone}` }, [
+        el('p', { class: 'attention-title', text: issue.title }),
+        issue.detail ? el('p', { class: 'attention-detail', text: issue.detail }) : null,
+      ]),
+    ),
+  );
+}
+
 export { setHidden, setText };

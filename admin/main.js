@@ -5,6 +5,7 @@
 
 import { API_BASE, ApiError, clearTokens, onConnectionChange, request, setTokens, setUnauthorizedHandler } from './api.js';
 import { byId, clear, el, setHidden, setText } from './dom.js';
+import { icon } from './icons.js';
 import { parseHash, go, onRouteChange, SECTIONS } from './router.js';
 import { getState, setState } from './store.js';
 import { initTheme, setTheme, currentTheme } from './theme.js';
@@ -168,12 +169,25 @@ function renderNavigation() {
   clear(list);
   queueBadge = null;
   const current = parseHash().section;
+  let group = null;
+
   for (const section of SECTIONS) {
+    // One heading per group, emitted in array order so the sidebar reads as
+    // four short lists rather than one flat run of twelve entries.
+    if (section.group !== group) {
+      group = section.group;
+      if (group) {
+        list.append(el('li', { class: 'nav-group' }, [el('span', { class: 'nav-group-title', text: group })]));
+      }
+    }
+
     const button = el('button', {
       type: 'button',
       class: 'btn nav-button',
       'aria-current': section.id === current ? 'true' : 'false',
+      dataset: { section: section.id },
     });
+    button.append(icon(section.icon, 'icon nav-icon'));
     button.append(el('span', { class: 'nav-label', text: section.label }));
     if (section.id === 'queue') {
       queueBadge = el('span', { class: 'nav-badge' });
@@ -189,11 +203,11 @@ function renderNavigation() {
 }
 
 function updateNavCurrent(section) {
-  const buttons = byId('nav-list').querySelectorAll('.nav-button');
-  SECTIONS.forEach((candidate, index) => {
-    const button = buttons[index];
-    if (button) button.setAttribute('aria-current', candidate.id === section ? 'true' : 'false');
-  });
+  // Selected by data attribute rather than by index: the group headings are
+  // siblings, so positional lookup against SECTIONS no longer lines up.
+  for (const button of byId('nav-list').querySelectorAll('.nav-button')) {
+    button.setAttribute('aria-current', button.dataset.section === section ? 'true' : 'false');
+  }
 }
 
 function closeNav() {
