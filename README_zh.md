@@ -199,7 +199,7 @@ cargo clippy --workspace  →  0 错误（clippy 1.98 下多 2 条 `manual_is_mu
   称作未实现的状态横幅；`architecture.md` 的横幅与产品表已在 0.1.3 修正，其余没有。每一处
   标记都是关于行为的一句断言，需要对着代码逐条核实，所以这是一次独立的通读，而不是查找替换。
 
-完整规格见 [`Ferroma-完整项目书.md`](Ferroma-完整项目书.md)（中文，64 章）。仓库约定见 [`AGENTS.md`](AGENTS.md)。
+仓库约定见 [`AGENTS.md`](AGENTS.md)。
 
 ---
 

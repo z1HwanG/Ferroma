@@ -41,14 +41,20 @@ const problems = [];
 const notes = [];
 
 // --- 1. what the project book does ------------------------------------------
-const spec = read(path.join(root, 'Ferroma-完整项目书.md'));
-const specSpacing = spacing(spec);
-const specRatio = specSpacing.spaced / Math.max(1, specSpacing.spaced + specSpacing.tight);
-notes.push(
-  `project book prose: ${specSpacing.spaced} spaced vs ${specSpacing.tight} tight ` +
-    `(${(specRatio * 100).toFixed(0)}% spaced) -> convention is ` +
-    `${specRatio > 0.5 ? 'SPACE' : 'NO SPACE'}`,
-);
+// Optional: the project book is no longer part of the tree, so this reports the
+// convention only when a copy is sitting next to the sources. Everything below runs
+// either way; the step was never a check, only a note.
+const specPath = path.join(root, 'Ferroma-完整项目书.md');
+if (fs.existsSync(specPath)) {
+  const spec = read(specPath);
+  const specSpacing = spacing(spec);
+  const specRatio = specSpacing.spaced / Math.max(1, specSpacing.spaced + specSpacing.tight);
+  notes.push(
+    `project book prose: ${specSpacing.spaced} spaced vs ${specSpacing.tight} tight ` +
+      `(${(specRatio * 100).toFixed(0)}% spaced) -> convention is ` +
+      `${specRatio > 0.5 ? 'SPACE' : 'NO SPACE'}`,
+  );
+}
 
 // --- 2. per-file structure parity and terminology ---------------------------
 const files = fs.readdirSync(zhDir).filter((f) => f.endsWith('.md') && f !== 'GLOSSARY.md');

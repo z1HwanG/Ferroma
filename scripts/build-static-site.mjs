@@ -453,7 +453,6 @@ buildIndex();
 </ul>
 <h2>Quick links</h2>
 <ul>
-  <li><a href="Ferroma-完整项目书.md" target="_blank">Ferroma-完整项目书.md</a> — Full project specification (Chinese)</li>
   <li><a href="https://github.com" target="_blank">GitHub Repository</a></li>
 </ul>
 `;
@@ -476,7 +475,6 @@ buildIndex();
 </ul>
 <h2>快速链接</h2>
 <ul>
-  <li><a href="Ferroma-完整项目书.md" target="_blank">Ferroma-完整项目书.md</a> — 完整项目规格书（中文）</li>
   <li><a href="https://github.com" target="_blank">GitHub 仓库</a></li>
 </ul>
 `;

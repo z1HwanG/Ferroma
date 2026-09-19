@@ -1,8 +1,15 @@
 # AGENTS.md — working in this repository
 
-Ferroma is a from-scratch, Rust-native self-hosted mail platform. The authoritative
-specification is [`Ferroma-完整项目书.md`](Ferroma-完整项目书.md) (Chinese, 64 sections).
-Read the sections that cover whatever you are about to touch.
+Ferroma is a from-scratch, Rust-native self-hosted mail platform. Its design record is
+`docs/`: [`architecture.md`](docs/architecture.md) for the shape of the system,
+[`api.md`](docs/api.md) and [`fcp.md`](docs/fcp.md) for the frozen wire contracts, and
+[`security.md`](docs/security.md) for the threat model. The conventions in §4 below are
+not negotiable.
+
+The 64-section project book this repository was built from is no longer kept in the
+tree. Documents and doc comments that cite it by section number — `specification §N`,
+`项目书 §N` — are quoting a text that now lives only in git history, so treat the code
+and the documents under `docs/` as what a change is measured against.
 
 ---
 

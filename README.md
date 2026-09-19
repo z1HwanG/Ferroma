@@ -251,8 +251,7 @@ release for, and neither is fixed by a mechanical edit:
   claim about behaviour that has to be checked against the code, so this is a read of
   its own rather than a search-and-replace.
 
-The full specification lives in [`Ferroma-完整项目书.md`](Ferroma-完整项目书.md) (Chinese,
-64 sections). [`AGENTS.md`](AGENTS.md) explains the repository conventions.
+[`AGENTS.md`](AGENTS.md) explains the repository conventions.
 A Chinese translation of this file is at [`README_zh.md`](README_zh.md).
 
 ---

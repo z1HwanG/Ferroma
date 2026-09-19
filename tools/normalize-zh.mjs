@@ -12,8 +12,7 @@
  *      does not exist. Only links whose target actually lives at the repository root
  *      are rewritten, so a genuine `../` link is left alone.
  *   2. "specification §N" became 规范 §N in some files and 规格说明 §N in others. The
- *      project's specification is `Ferroma-完整项目书.md`, so 项目书 §N is the form a
- *      reader can act on.
+ *      Chinese documents settled on 项目书 §N, which is the form this script enforces.
  *   3. The `_(planned)_` status marker was translated in some files and kept in
  *      others. It is prose about documentation status, not a contract literal, so the
  *      Chinese documents should say 计划中.
