@@ -15,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 # The floor is set by the dependency graph, not by preference: `encoding_rs`, `home`,
 # the ICU crates and `time` all require 1.88. Claiming anything lower makes `cargo`

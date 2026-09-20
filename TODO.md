@@ -8,10 +8,10 @@ still carry, and the gaps in the documentation set itself. Nothing here is a new
 what has shipped is in [`CHANGELOG.md`](CHANGELOG.md), and the reasoning behind the
 retired pieces is in its `## [Unreleased]` section.
 
-## Next release (0.1.5)
+## Next release (0.1.6)
 
-- A published image cannot say which build it is: `ferroma version` inside the container and the Admin console both print `built: unknown` / `revision: unknown`, because the `Dockerfile` passes its build identity only to the OCI labels — [README — Carried into 0.1.5](README.md#carried-into-015), [CHANGELOG — Known issues carried into 0.1.5](CHANGELOG.md#known-issues-carried-into-015).
-- Eight documents still describe skeletons: they carry `_(planned)_` claims written before those crates existed, and five of them — `client.md`, `imap.md`, `security.md`, `smtp.md`, `sync.md` — still open with a status banner calling implemented crates unimplemented — [README — Carried into 0.1.5](README.md#carried-into-015), [CHANGELOG — Known issues carried into 0.1.5](CHANGELOG.md#known-issues-carried-into-015).
+- A published image cannot say which build it is: `ferroma version` inside the container and the Admin console both print `built: unknown` / `revision: unknown`, because the `Dockerfile` passes its build identity only to the OCI labels — [README — Carried into 0.1.5](README.md#carried-into-016), [CHANGELOG — Known issues carried into 0.1.5](CHANGELOG.md#known-issues-carried-into-016).
+- Eight documents still describe skeletons: they carry `_(planned)_` claims written before those crates existed, and five of them — `client.md`, `imap.md`, `security.md`, `smtp.md`, `sync.md` — still open with a status banner calling implemented crates unimplemented — [README — Carried into 0.1.5](README.md#carried-into-016), [CHANGELOG — Known issues carried into 0.1.5](CHANGELOG.md#known-issues-carried-into-016).
 
 ## Documented but not delivered
 

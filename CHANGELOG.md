@@ -14,6 +14,8 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ## [Unreleased]
 
+## [0.1.5] — 2026-09-20
+
 ### Changed
 
 - **The interface follows the system's light or dark setting until someone chooses otherwise.**
@@ -523,13 +525,13 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
   indistinguishable from a server that never answered.
 
 
-### Known issues carried into 0.1.5
+### Known issues carried into 0.1.6
 
 Both items found while cutting 0.1.3 are still open: a published image cannot say which
 build it is, and eight documents still carry `_(planned)_` claims written before those
 crates existed. They are now tracked in [`TODO.md`](TODO.md) under "Next release
-(0.1.5)"; the fix for the first is described in
-[README — Carried into 0.1.5](README.md#carried-into-015).
+(0.1.6)"; the fix for the first is described in
+[README — Carried into 0.1.6](README.md#carried-into-016).
 
 ## [0.1.3] — 2026-09-19
 

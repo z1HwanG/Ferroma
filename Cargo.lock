@@ -624,7 +624,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "ferroma-api"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "axum",
  "base64",
@@ -664,7 +664,7 @@ dependencies = [
 
 [[package]]
 name = "ferroma-auth"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "argon2",
  "base64",
@@ -691,7 +691,7 @@ dependencies = [
 
 [[package]]
 name = "ferroma-client"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "base64",
@@ -721,7 +721,7 @@ dependencies = [
 
 [[package]]
 name = "ferroma-core"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "chrono",
  "once_cell",
@@ -739,7 +739,7 @@ dependencies = [
 
 [[package]]
 name = "ferroma-events"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-trait",
  "chrono",
@@ -756,7 +756,7 @@ dependencies = [
 
 [[package]]
 name = "ferroma-imap"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "base64",
  "chrono",
@@ -781,7 +781,7 @@ dependencies = [
 
 [[package]]
 name = "ferroma-mail"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "base64",
  "chrono",
@@ -799,7 +799,7 @@ dependencies = [
 
 [[package]]
 name = "ferroma-server"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "axum",
@@ -842,7 +842,7 @@ dependencies = [
 
 [[package]]
 name = "ferroma-smtp"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "base64",
  "chrono",
@@ -881,7 +881,7 @@ dependencies = [
 
 [[package]]
 name = "ferroma-storage"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-trait",
  "base64",
@@ -907,7 +907,7 @@ dependencies = [
 
 [[package]]
 name = "ferroma-sync"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-trait",
  "chrono",
