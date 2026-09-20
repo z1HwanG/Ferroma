@@ -1506,6 +1506,15 @@ another cold Rust build without publishing anything. `--no-cache` skips even tha
 A registry cache would mean a published `buildcache` tag in the release repository,
 which is why there is none; CI uses GitHub's own cache instead (above).
 
+One environment trap is worth knowing, because it fails *after* a successful publish:
+BuildKit passes the cache destination through a gRPC header, and a header value has to
+be printable ASCII. A checkout under a path with non-ASCII characters (`~/项目/Ferroma`)
+therefore cannot export the cache, and the run ends with
+`header key "buildkit-attachable-store-id" contains value with non-printable ASCII
+characters` even though the image is already on Docker Hub. The script moves the cache
+to `$HOME/.cache/ferroma-buildx` when the checkout path is not plain ASCII, so the
+status it reports matches what happened; `FERROMA_BUILDX_CACHE` overrides the location.
+
 Two things about the build itself are worth knowing before starting one, because
 neither is visible until it fails:
 

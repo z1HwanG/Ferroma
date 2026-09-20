@@ -95,7 +95,7 @@
 | tag | 标签 | 给发布命名的标签，如 `0.2.0`、`latest` |
 | digest | 摘要 | 镜像 manifest 的不可变摘要；密码与校验和才叫「哈希」 |
 | provenance attestation | 来源证明 | BuildKit 附加到已发布镜像的声明 |
-| layer cache | 层缓存 | `<repo>/.cache/buildx` 里的本地 buildx 缓存 |
+| layer cache | 层缓存 | 本地 buildx 缓存：`.cache/buildx`，检出路径含非 ASCII 字符时改用 `$HOME/.cache/ferroma-buildx` |
 | sidecar | 边车 | **已废弃**：0.1.3 及更早版本随附的备份/恢复容器，只在历史说明中出现 |
 | job | 作业 | 指「某人分内的事」时写「……的事」 |
 | roadmap | 路线图 | |

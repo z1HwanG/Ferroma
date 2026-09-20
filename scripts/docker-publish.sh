@@ -19,7 +19,8 @@
 # `latest`. There is deliberately no rolling `X.Y` tag and no `buildcache` tag:
 # the repository holds runnable images and nothing else, so a tag in it always
 # means one specific release. Layer caching is local (`.cache/buildx`, which is
-# gitignored), so repeated builds on this machine are cheap without publishing
+# gitignored — or `$HOME/.cache/ferroma-buildx` when the checkout path is not plain
+# ASCII, see below), so repeated builds on this machine are cheap without publishing
 # anything; CI uses GitHub's own cache instead.
 #
 # The same build is what `.github/workflows/docker-publish.yml` runs on a `v*` tag;
@@ -39,9 +40,23 @@ DEFAULT_REPO="wesukilaye/ferroma"
 # silicon development boxes).
 DEFAULT_PLATFORMS="linux/amd64,linux/arm64"
 
-# The buildx local layer cache. Under `.cache/`, which `.gitignore` excludes, and
-# deliberately not a registry: a registry cache is a published `buildcache` tag.
-CACHE_DIR="$ROOT_DIR/.cache/buildx"
+# The buildx local layer cache: gitignored inside the repository, and deliberately
+# not a registry — a registry cache is a published `buildcache` tag, and this cache
+# exists for this machine alone.
+#
+# Where it may live is not a free choice. BuildKit passes the destination path through
+# a gRPC header, and a header value has to be printable ASCII, so a checkout under a
+# path with non-ASCII characters cannot export the cache at all — this one lives under
+# `项目/`. The failure is nastier than it looks: the build finishes and the push
+# succeeds, and *then* the run dies with
+#   header key "buildkit-attachable-store-id" contains value with non-printable ASCII
+# so the exit status says "failed" for a release that is already published. A non-ASCII
+# root therefore falls back to `$HOME/.cache/ferroma-buildx`; `FERROMA_BUILDX_CACHE`
+# overrides either choice.
+case "$ROOT_DIR" in
+    *[!\ -~]*) CACHE_DIR="${FERROMA_BUILDX_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/ferroma-buildx}" ;;
+    *)         CACHE_DIR="${FERROMA_BUILDX_CACHE:-$ROOT_DIR/.cache/buildx}" ;;
+esac
 
 REPO="${FERROMA_REPO:-$DEFAULT_REPO}"
 PLATFORMS="$DEFAULT_PLATFORMS"

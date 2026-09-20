@@ -1381,6 +1381,14 @@ powershell -ExecutionPolicy Bypass -File scripts/docker-publish.ps1 --dry-run
 本地缓存也跳过。registry 缓存意味着在发布仓库里多一个 `buildcache` 标签，所以没有它；
 CI 改用 GitHub 自己的缓存（见上文）。
 
+有一个环境陷阱必须知道，因为它在**推送成功之后**才失败：BuildKit 会把缓存目标路径放进 gRPC
+header，而 header 值必须是可打印 ASCII。因此路径含非 ASCII 字符的检出（`~/项目/Ferroma`）
+根本无法导出缓存，运行会以
+`header key "buildkit-attachable-store-id" contains value with non-printable ASCII
+characters` 结束——尽管镜像其实已经推上 Docker Hub 了。脚本在检出路径不是纯 ASCII 时把缓存
+挪到 `$HOME/.cache/ferroma-buildx`，让退出状态与真实结果一致；`FERROMA_BUILDX_CACHE` 可覆盖
+这个位置。
+
 开始构建之前有两件事值得知道，因为它们在失败之前都看不见：
 
 * **它会先拉基础镜像。** `rust:1.88-bookworm` 与 `debian:bookworm-slim` 约 1.5 GB，而且是

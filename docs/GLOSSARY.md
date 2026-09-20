@@ -68,7 +68,7 @@ thing, which is what this table exists to prevent.
 | reverse proxy | proxy | when the distinction matters; "proxy" alone after first mention |
 | release, tag, digest | version (for a tag), hash | a release is `X.Y.Z`; a tag names it; a digest is the immutable manifest |
 | provenance attestation | provenance | the statement BuildKit attaches to a published image |
-| layer cache | build cache | the local buildx cache in `.cache/buildx`; the retired registry cache was a `buildcache` tag |
+| layer cache | build cache | the local buildx cache — `.cache/buildx`, or `$HOME/.cache/ferroma-buildx` when the checkout path has non-ASCII characters; the retired registry cache was a `buildcache` tag |
 | sidecar | | **retired**: the backup and restore containers 0.1.3 shipped. Historical notes only |
 | TLS, STARTTLS, SMTPS, IMAPS, SMTP, IMAP, MTA-STS, DKIM, SPF, DMARC, MX | | protocol names, always in this case |
 | RFC 5322, RFC 3501, RFC 7489 | the RFC 5322 standard | cite the number, not a paraphrase of it |
