@@ -14,6 +14,24 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ## [Unreleased]
 
+### Changed
+
+- **The first-run wizard ends at the sign-in page.** It used to reload into `/admin/`, and the
+  session it minted meant the Webmail at `/` opened straight into the inbox. Finishing setup is a
+  handoff, not a session: it waits for the restarted server to answer twice — the first answer can
+  still come from the process on its way out, and landing in that gap is what put a blank shell on
+  screen — then drops the session it created and opens the domain root, which is the Webmail's
+  sign-in card, with the console one address away at `/admin/`.
+
+### Fixed
+
+- **A front-end document is revalidated like the scripts it loads.** `/` and `/admin/` have no
+  file extension, so the revalidation layer skipped them and their responses carried no
+  `Cache-Control` at all — a browser's cue to cache heuristically. After an upgrade, or after the
+  root switched from the console to the Webmail, a browser could therefore keep the previous
+  shell while its scripts moved on: the new bundle running inside the old app's HTML, which
+  reports a missing element and leaves a sign-in that worked sitting on the sign-in card.
+
 ## [0.1.6] — 2026-09-20
 
 ### Changed

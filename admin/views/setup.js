@@ -16,7 +16,7 @@
  * is created).
  */
 
-import { API_BASE, ApiError, request, setTokens } from '../../shared/api.js';
+import { API_BASE, ApiError, clearTokens, request, setTokens } from '../../shared/api.js';
 import { el, setHidden, setText } from '../../shared/dom.js';
 import { t } from '../../shared/i18n.js';
 import { consoleUrl, go } from '../router.js';
@@ -222,14 +222,9 @@ function renderWizard(status) {
         return;
       }
       toastSuccess(t('Administrator created. Welcome to Ferroma.'));
-      // Leaving setup mode means the server now has an administrator, and the console is
-      // where it has always been: `/admin/`. This page may have been served at `/`, which
-      // becomes the Webmail the moment the server is initialised, so a plain reload would
-      // hand the operator the Webmail instead of the console they just unlocked.
-      // The domain root, not the console: the operator has just finished setting this instance
-      // up and asked to come back to the address they typed. `/` is the Webmail while an
-      // administrator exists, and `/admin/` is one click away.
-      window.setTimeout(() => window.location.replace('/'), 600);
+      // Nothing needed a restart, so the server is already the one this instance will be: the
+      // handoff is the same, minus the waiting.
+      if (!(await landOnSignIn())) window.location.replace('/');
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
         // Someone else finished the wizard between the page load and this click. The
@@ -293,22 +288,54 @@ function renderWizard(status) {
    * arrives here as an `ApiError` carrying the status.
    */
   async function waitForRestart(status, manual) {
-    for (let attempt = 0; attempt < 30; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 700));
-      try {
-        await request(`${API_BASE}/health`, { toast: false, retryOn401: false });
-        window.location.replace('/');
-        return;
-      } catch (error) {
-        if (error instanceof ApiError && error.status >= 400) {
-          window.location.replace('/');
-          return;
-        }
-        // No status at all: still between two process images.
-      }
-    }
+    if (await landOnSignIn()) return;
     setText(status, t('The server did not come back.'));
     setHidden(manual, false);
+  }
+
+  /**
+   * Wait for the instance to be *serving* again, then hand the operator the sign-in page.
+   *
+   * Two probes with a pause between them, because the first successful answer can still come
+   * from the process that is on its way out — and landing in that gap is exactly what left a
+   * blank shell on the screen after a fresh install. The health endpoint and the static files
+   * are the same router, so an answer that survives the pause means the page will load.
+   *
+   * The tokens the wizard minted are dropped on the way: a fresh install is a handoff, not a
+   * session. The operator just chose a password, and the only way to see that it works is to use
+   * it — `/` is the Webmail's sign-in card, and the console takes the same credentials at
+   * `/admin/`.
+   *
+   * @returns {Promise<boolean>} whether the server came back
+   */
+  async function landOnSignIn() {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (!(await answers())) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        continue;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      if (!(await answers())) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        continue;
+      }
+      clearTokens();
+      window.location.replace('/');
+      return true;
+    }
+    clearTokens();
+    return false;
+  }
+
+  /** Whether the API is answering at all — its status does not matter, its presence does. */
+  async function answers() {
+    try {
+      await request(`${API_BASE}/health`, { toast: false, retryOn401: false });
+      return true;
+    } catch (error) {
+      // A real HTTP status means a running server; anything else is the gap between two of them.
+      return error instanceof ApiError && error.status >= 400;
+    }
   }
 
   function show(message) {

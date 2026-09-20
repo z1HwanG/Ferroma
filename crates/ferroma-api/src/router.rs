@@ -588,12 +588,24 @@ where
     router.layer(middleware::from_fn(revalidate_assets))
 }
 
-/// Make the browser ask before reusing a front-end asset.
+/// Make the browser ask before reusing a front-end document or asset.
+///
+/// Documents count, and they were the gap: `/` and `/admin/` have no extension, so this
+/// middleware skipped them and their responses carried no `Cache-Control` at all — which is a
+/// browser's cue to cache *heuristically*. An upgrade then left the operator holding the
+/// previous shell while the scripts, which do revalidate, moved on: the page was two releases at
+/// once, the new bundle running inside the old app's HTML. That is what "missing element
+/// #login-language" was, and why a sign-in could succeed and leave the sign-in card on screen.
 async fn revalidate_assets(request: Request, next: Next) -> Response {
     let path = request.uri().path().to_string();
     let mut response = next.run(request).await;
+    // A path whose last segment has no dot is a document — `/`, `/admin/`, `/f/inbox` — and a
+    // document is exactly what must never be reused: it names the scripts by URL, and those
+    // URLs are the same in every release.
+    let last_segment = path.rsplit('/').next().unwrap_or_default();
+    let document = !last_segment.contains('.');
     let extension = path.rsplit('.').next().unwrap_or_default();
-    if matches!(extension, "js" | "mjs" | "css" | "html" | "json" | "map") {
+    if document || matches!(extension, "js" | "mjs" | "css" | "html" | "json" | "map") {
         response.headers_mut().insert(
             axum::http::header::CACHE_CONTROL,
             axum::http::HeaderValue::from_static("no-cache"),
@@ -832,6 +844,52 @@ mod tests {
         // repositories need a Tokio context to register their lazy pool.
         let router = build(test_state());
         let _ = router;
+    }
+
+    /// A document has to be revalidated too, and it was the gap.
+    ///
+    /// `/` and `/admin/` have no extension, so the revalidation layer skipped them and their
+    /// responses carried no `Cache-Control` at all — a browser's cue to cache heuristically. An
+    /// upgrade then left the previous shell in place while the scripts, which do carry
+    /// `no-cache`, moved on: the new bundle running inside the old app's HTML. That is a page
+    /// that reports a missing element and, after a sign-in that works, looks like a sign-in page
+    /// that will not go away.
+    #[tokio::test]
+    async fn documents_and_assets_are_both_revalidated() {
+        use axum::body::Body;
+        use axum::http::{Request as HttpRequest, StatusCode};
+        use tower::ServiceExt;
+
+        let mut config = Config::default();
+        let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        config.api.admin_dir = Some(
+            repository
+                .join("admin")
+                .canonicalize()
+                .expect("the admin directory is in the repository"),
+        );
+        config.api.webmail_dir = Some(
+            repository
+                .join("web")
+                .canonicalize()
+                .expect("the webmail directory is in the repository"),
+        );
+
+        let app = frontends_for_bootstrap(Router::new(), &config);
+        for uri in ["/", "/admin/", "/main.js", "/styles.css"] {
+            let response = app
+                .clone()
+                .oneshot(HttpRequest::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .expect("the router answers");
+            assert_eq!(response.status(), StatusCode::OK, "{uri} must be served");
+            let header = response
+                .headers()
+                .get(axum::http::header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("");
+            assert_eq!(header, "no-cache", "{uri} must be revalidated, not cached");
+        }
     }
 
     #[tokio::test]
