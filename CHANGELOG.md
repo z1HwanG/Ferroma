@@ -14,6 +14,22 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The image shipped six static files that the service user could not read, and the
+  Webmail and Admin rendered a blank page.** `COPY` preserves the mode of the file it
+  copies, and a checkout can legitimately hold a source file at `0600` — some editors and
+  agent tools write that way, and git records only the exec bit, so nothing in review
+  shows it. The service runs as uid `10001`, so `shared/i18n.js`, `shared/diag.js`,
+  `shared/locales/zh-CN.js`, `admin/icons.js`, `admin/views/bootstrap.js` and
+  `admin/views/first-run.js` answered **404** through the static file server; the
+  front-end's ES module graph failed to load and the page stayed empty, with nothing in
+  the server log to connect the blank screen to a file mode. The `Dockerfile` now
+  normalises what it ships (`chmod -R a+rX /usr/share/ferroma /etc/ferroma`) instead of
+  trusting the umask of whichever machine built it, and `tools/check-deploy.mjs` fails on
+  a static file that is not world-readable — a bind-mounted checkout gets no protection
+  from the Dockerfile. 0.1.3 shipped the same defect.
+
 ## [0.1.4] — 2026-09-20
 
 ### Added

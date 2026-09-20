@@ -136,10 +136,20 @@ COPY --from=builder /build/web /usr/share/ferroma/web
 COPY --from=builder /build/admin /usr/share/ferroma/admin
 COPY --from=builder /build/shared /usr/share/ferroma/shared
 
+# `COPY` preserves the mode of the file it copies, and a checkout can legitimately hold a
+# source file that is not world-readable — `0600` is what some editors and agent tools
+# write, and git does not track the difference (only the exec bit). The service runs as
+# uid 10001 and reads these through the static file server, so such a file is not
+# "slightly private": it answers 404, the ES module graph fails to load, and the Webmail
+# and Admin render a blank page — a symptom with nothing in the server log to connect it
+# to a file mode. The image therefore normalises what it ships instead of trusting the
+# umask of whichever machine built it. `X` grants execute only to directories.
+#
 # State: the Maildir, the attachment blobs, the DKIM private key and database.json.
 # No backups directory: nothing in the image writes backups, and the volume is the
 # operator's to back up (docs/deployment.md §8).
 RUN set -eux; \
+    chmod -R a+rX /usr/share/ferroma /etc/ferroma; \
     mkdir -p /var/lib/ferroma/{mail,attachments,tls}; \
     chown -R ferroma:ferroma /var/lib/ferroma /etc/ferroma
 

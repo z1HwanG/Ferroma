@@ -11,6 +11,18 @@ Ferroma 的重要变更，新的在前。
 
 ## [未发布]
 
+### 修复
+
+- **镜像里有六个静态文件服务用户读不到，导致 Webmail 与 Admin 白屏。** `COPY` 会原样保留被
+  复制文件的权限位，而检出里的源文件完全可能处于 `0600`——某些编辑器与 agent 工具就这么写文件，
+  而 git 只记录可执行位，代码评审里看不出任何异常。服务以 uid `10001` 运行，于是
+  `shared/i18n.js`、`shared/diag.js`、`shared/locales/zh-CN.js`、`admin/icons.js`、
+  `admin/views/bootstrap.js`、`admin/views/first-run.js` 经静态文件服务一律返回 **404**；
+  前端的 ES 模块图加载失败，页面上什么都没有，而服务端日志里没有任何东西能把"白屏"和"权限位"
+  联系起来。`Dockerfile` 现在统一规整它发布的内容（`chmod -R a+rX /usr/share/ferroma
+  /etc/ferroma`），不再信任构建机器的 umask；`tools/check-deploy.mjs` 也会因为静态文件不可被
+  所有人读取而失败——bind mount 一份检出的部署拿不到 Dockerfile 的保护。0.1.3 带有同一缺陷。
+
 ## [0.1.4] — 2026-09-20
 
 ### 新增

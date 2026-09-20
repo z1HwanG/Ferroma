@@ -15,6 +15,8 @@
  *     dependency-caching layer cannot compile;
  *   * a `COPY` whose source does not exist, or that `.dockerignore` excludes — the
  *     build either fails or silently ships without the file;
+ *   * a static file that is not world-readable (`0600` is what some editors write),
+ *     which ships unreadable and turns the Webmail and Admin into a blank page;
  *   * a `COPY --from=builder` path that the build stage never produced, which fails
  *     at the very end of a long build;
  *   * a compose file with a tab (fatal in YAML) or a `${VAR}` with no default and no
@@ -197,6 +199,35 @@ for (const copy of dockerfileCopies) {
       problems.push(
         `Dockerfile:${copy.line} copies ${source}, but .dockerignore excludes it — ` +
           `the build would fail or silently ship without it`,
+      );
+    }
+  }
+}
+
+// -----------------------------------------------------------------------------
+// B2. What the image ships as static files must be readable by uid 10001
+// -----------------------------------------------------------------------------
+// `COPY` preserves the mode of the file it copies, and the service runs as uid 10001. A
+// source file that is not world-readable therefore ships unreadable: the static file
+// server answers 404, the front-end's ES module graph fails to load, and the Webmail and
+// Admin render a blank page — a symptom with nothing in the server log to connect it to
+// a file mode. 0.1.4 shipped that way (six files at 0600) and 0.1.3 had it too.
+//
+// The Dockerfile now normalises what it ships, so this is a hazard rather than a broken
+// image. It is checked anyway: a deployment that bind-mounts a checkout instead of using
+// the image (`FERROMA__API__WEBMAIL_DIR`) gets no protection from the Dockerfile, and the
+// mode of a file is invisible in review — git records only the exec bit.
+for (const tree of ['web', 'admin', 'shared', 'config']) {
+  if (!exists(tree)) continue;
+  for (const entry of fs.readdirSync(path.join(root, tree), { recursive: true })) {
+    const rel = path.join(tree, String(entry));
+    const stat = fs.statSync(path.join(root, rel));
+    if (!stat.isFile()) continue;
+    if ((stat.mode & 0o004) === 0) {
+      problems.push(
+        `${rel} is not world-readable (mode 0${(stat.mode & 0o777).toString(8)}) — ` +
+          `\`COPY\` preserves that mode, so uid 10001 reads the file as a 404 and a ` +
+          `front-end that imports it never boots`,
       );
     }
   }
