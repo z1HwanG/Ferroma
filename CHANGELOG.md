@@ -28,6 +28,18 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ### Fixed
 
+- **A fresh installation could land on the sign-in page instead of the first-run wizard.**
+  The console asks `GET /api/v1/setup` to decide which page to show, and the moment the
+  database address is accepted — when the page reloads — the process is still switching from
+  the bootstrap router to the real API. In that window the request was answered by the
+  front-end's SPA fallback: the Webmail's HTML with a `200`. The console reported "a response
+  that is not JSON" and read it as *no wizard*, so the operator was shown a sign-in box
+  claiming an administrator already existed, on an installation that had just been told to
+  create its first one; only a hard reload got past it, which is not something to ask of an
+  operator. The bootstrap router now answers every unknown API path with the same JSON `404`
+  the running server uses, so an API request can never receive a page, and the console's two
+  boot probes retry an answer they cannot parse instead of treating it as a decision.
+
 - **The image shipped six static files that the service user could not read, and the
   Webmail and Admin rendered a blank page.** `COPY` preserves the mode of the file it
   copies, and a checkout can legitimately hold a source file at `0600` — some editors and

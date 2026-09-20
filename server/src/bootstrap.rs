@@ -204,13 +204,7 @@ pub async fn run(
     let state = std::sync::Arc::new(BootstrapState::new(&config, error));
     let bound = listener.local_addr()?;
 
-    let router = Router::new()
-        .route(
-            "/api/v1/bootstrap",
-            get(status_handler).post(connect_handler),
-        )
-        .route("/api/v1/health", get(health_handler))
-        .with_state(state.clone());
+    let router = bootstrap_router(state.clone());
     let router = ferroma_api::frontends_for_bootstrap(router, &config);
 
     announce(&config, &state, bound);
@@ -265,6 +259,41 @@ fn announce(config: &Config, state: &BootstrapState, bound: SocketAddr) {
         code = %state.code,
         "waiting for a database connection; open the setup page and enter the code"
     );
+}
+
+/// The API prefix this mode answers under, the same one the running server mounts.
+const API_PREFIX: &str = "/api/v1";
+
+/// The router of the bootstrap server: two endpoints, and a JSON `404` for every other
+/// path under the API prefix.
+///
+/// The `404` is not decoration. Without it an unknown `/api/v1/…` request falls through to
+/// the front-end's SPA fallback and is answered with the Webmail's HTML and a `200`, and
+/// the console reads that as *an answer that is not about a wizard* — which is how a fresh
+/// installation was shown a sign-in box, claiming an administrator already existed, instead
+/// of the page that creates its first one. The window is real rather than theoretical: the
+/// console reloads the moment the database is accepted, while this router is still the one
+/// bound to the port. The running server answers the same envelope for a path it does not
+/// know, so a client cannot tell the two modes apart by shape — which is the point.
+fn bootstrap_router(state: std::sync::Arc<BootstrapState>) -> Router {
+    Router::new().nest(
+        API_PREFIX,
+        Router::new()
+            .route("/bootstrap", get(status_handler).post(connect_handler))
+            .route("/health", get(health_handler))
+            .fallback(api_not_found)
+            .with_state(state),
+    )
+}
+
+/// The `404` an unknown API path gets, in the envelope every API error uses.
+async fn api_not_found() -> impl IntoResponse {
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({
+            "error": { "code": "not_found", "message": "no such endpoint" }
+        })),
+    )
 }
 
 async fn status_handler(State(state): State<std::sync::Arc<BootstrapState>>) -> impl IntoResponse {
@@ -421,5 +450,67 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o077, 0, "the file holds a password and must be owner-only");
         }
+    }
+
+    #[tokio::test]
+    async fn an_unknown_api_path_is_json_and_never_the_front_end() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request as HttpRequest, StatusCode};
+        use tower::ServiceExt;
+
+        // The console asks `GET /api/v1/setup` while leaving this mode, and this router is
+        // still bound to the port for a moment after the database is accepted. The
+        // front-end's SPA fallback used to answer that request with the Webmail's HTML and
+        // a `200`, which the console reported as "not JSON" and then treated as *no wizard*
+        // — so the operator saw a sign-in box for an installation with no administrator yet,
+        // and only a hard reload got past it.
+        let mut config = Config::default();
+        let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        config.api.admin_dir = Some(
+            repository.join("admin").canonicalize().expect("the admin directory"),
+        );
+        config.api.webmail_dir = Some(
+            repository.join("web").canonicalize().expect("the webmail directory"),
+        );
+
+        let state = std::sync::Arc::new(BootstrapState::new(&config, None));
+        let app = ferroma_api::frontends_for_bootstrap(bootstrap_router(state), &config);
+
+        let response = app
+            .clone()
+            .oneshot(HttpRequest::builder().uri("/api/v1/setup").body(Body::empty()).unwrap())
+            .await
+            .expect("the router answers");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let content_type = response.headers()["content-type"].to_str().unwrap().to_owned();
+        assert!(
+            content_type.starts_with("application/json"),
+            "an API path must not be answered with {content_type}"
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.expect("a body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("JSON");
+        assert_eq!(json["error"]["code"], "not_found");
+
+        // The endpoint this mode does serve is still served, and still answers honestly:
+        // `503` with the reason, because the database is the thing that is missing.
+        let response = app
+            .clone()
+            .oneshot(HttpRequest::builder().uri("/api/v1/health").body(Body::empty()).unwrap())
+            .await
+            .expect("the router answers");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), usize::MAX).await.expect("a body");
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).expect("JSON")["status"], "setup");
+
+        // …and the setup page itself is still the console, still HTML.
+        let response = app
+            .oneshot(HttpRequest::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .expect("the router answers");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("text/html"));
     }
 }

@@ -228,27 +228,47 @@ async function mountAfterBoot() {
 }
 
 /**
+ * Ask the server a question the page cannot proceed without, allowing for the moments when
+ * it is not the server answering yet.
+ *
+ * Both probes below run while the process may still be switching routers — into or out of
+ * the bootstrap mode that has no database — and during that window a request can be answered
+ * by the front-end's own fallback with HTML (`200`) or fail outright. Read literally, either
+ * one means "there is no wizard", which is how a fresh installation was shown a sign-in box
+ * for an account that did not exist, with only a hard reload getting past it. A `200` that is
+ * not JSON, or a connection that is not there, is therefore retried; any real status is the
+ * server's own answer and is taken as such — `404` from `/setup` means the wizard is
+ * disabled, which is a decision, not a hiccup.
+ */
+async function probeWithRetry(path, attempts = 4) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await request(path, { toast: false, retryOn401: false });
+    } catch (error) {
+      const transient = error instanceof ApiError && (error.status === 200 || error.network);
+      if (!transient) break;
+      if (attempt + 1 < attempts) {
+        await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Whether the server has a database yet.
  *
  * The endpoint exists only in that state, so a `404` is the ordinary answer on a configured
  * server and is not an error worth reporting.
  */
 async function fetchBootstrapStatus() {
-  try {
-    return await request(`${API_BASE}/bootstrap`, { toast: false, retryOn401: false });
-  } catch {
-    return null;
-  }
+  return probeWithRetry(`${API_BASE}/bootstrap`);
 }
 
 /** Whether the server still needs its first administrator, and what it advertises. */
 async function fetchSetupStatus() {
-  try {
-    return await request(`${API_BASE}/setup`, { toast: false, retryOn401: false });
-  } catch {
-    // No wizard, or no API: the ordinary sign-in path is the honest fallback.
-    return null;
-  }
+  // No wizard, or no API: the ordinary sign-in path is the honest fallback.
+  return probeWithRetry(`${API_BASE}/setup`);
 }
 
 /** Show the console shell: the wizard on a fresh install, the sections otherwise. */

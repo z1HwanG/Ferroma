@@ -52,3 +52,5 @@ walkdir = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true }
 tempfile = { workspace = true }
+# Test-only: `tower::ServiceExt::oneshot` drives a router without binding a socket.
+tower = { workspace = true }
