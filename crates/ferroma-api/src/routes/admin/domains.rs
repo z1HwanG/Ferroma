@@ -231,8 +231,16 @@ pub async fn check_domain(domain: &str, checks: &DnsChecks) -> Vec<DnsRecord> {
     });
 
     // A / AAAA.
+    // The address the A record names is also the one a PTR record has to answer for, so it is
+    // kept. `DnsChecks::expected_address` is a value a deployment may *state*, and nothing fills
+    // it in today, so without this the PTR row was always skipped with "no expected address is
+    // configured" — true of the code, and wrong about a host that publishes its own A record.
+    let mut resolved_address: Option<IpAddr> = None;
     records.push(match lookup(&checks.mail_host, "A").await {
         Ok(values) => {
+            resolved_address = values
+                .iter()
+                .find_map(|value| value.trim().parse::<IpAddr>().ok());
             let matched = checks.expected_address.is_none_or(|expected| {
                 values.iter().any(|value| value.contains(&expected.to_string()))
             });
@@ -256,8 +264,9 @@ pub async fn check_domain(domain: &str, checks: &DnsChecks) -> Vec<DnsRecord> {
         Err(reason) => DnsRecord::skipped("AAAA", None, &reason),
     });
 
-    // PTR: reverse-resolve the expected address, when one is known.
-    records.push(match checks.expected_address {
+    // PTR: reverse-resolve the expected address, when one is known — stated by the deployment,
+    // or learned from the A record the operator published.
+    records.push(match checks.expected_address.or(resolved_address) {
         Some(address) => match reverse_lookup(address).await {
             Ok(values) => {
                 let matched = values.iter().any(|value| {
@@ -279,7 +288,7 @@ pub async fn check_domain(domain: &str, checks: &DnsChecks) -> Vec<DnsRecord> {
         None => DnsRecord::skipped(
             "PTR",
             Some(checks.mail_host.clone()),
-            "no expected address is configured, so there is nothing to reverse-resolve",
+            "the mail host does not resolve to an address yet, so there is nothing to reverse-resolve",
         ),
     });
 
@@ -486,6 +495,35 @@ pub fn extract_records(output: &str, kind: &str) -> Vec<String> {
             }
         }
 
+        // An address answer, as the same tool prints it: a `Name:` line and then one
+        // `Address:` line per record — never `… IN A …`, which is `dig`'s shape. Without this
+        // the A row reported no address on a host that publishes one, and the PTR check had
+        // nothing to reverse-resolve. The banner's own `Address:` line is above the answer
+        // section, which the gate above has already excluded.
+        if keyword == "a" || keyword == "aaaa" {
+            if lower.starts_with("address:") {
+                let value = trimmed["address:".len()..].trim().trim_end_matches("#53").trim();
+                if !value.is_empty() && !out.contains(&value.to_string()) {
+                    out.push(value.to_string());
+                }
+                continue;
+            }
+        }
+
+        // A TXT answer: `name  text = "…"`. The record type is spelled `text` here and never
+        // `TXT`, so looking for it as a token found nothing at all — which is why every TXT
+        // row (SPF, DKIM, DMARC) came back empty on domains whose records were published and
+        // correct.
+        if keyword == "txt" {
+            if let Some(position) = lower.find("text =") {
+                let value = join_txt_chunks(trimmed[position + "text =".len()..].trim());
+                if !value.is_empty() && !out.contains(&value) {
+                    out.push(value);
+                }
+                continue;
+            }
+        }
+
         let Some(value) = bind_style_value(trimmed, &keyword) else {
             continue;
         };
@@ -531,6 +569,28 @@ pub fn parse_windows_mx(line: &str) -> Option<String> {
         None
     } else {
         Some(value.trim_end_matches('.').to_string())
+    }
+}
+
+/// The value of one TXT answer, with its quoting removed.
+///
+/// A value longer than one 255-byte character-string — a DKIM public key — is printed as
+/// several `"…"` pieces on a single line, and the operator has to paste them as one string,
+/// which is also what the published-value comparison expects.
+fn join_txt_chunks(value: &str) -> String {
+    let mut joined = String::new();
+    let mut inside = false;
+    for character in value.chars() {
+        match character {
+            '"' => inside = !inside,
+            _ if inside => joined.push(character),
+            _ => {}
+        }
+    }
+    if joined.is_empty() {
+        value.trim().trim_matches('"').trim().to_string()
+    } else {
+        joined
     }
 }
 
@@ -1260,6 +1320,30 @@ example.com.  3600  IN  TXT  \"v=spf1 mx -all\"
 ";
         let txt = extract_records(txt_output, "TXT");
         assert_eq!(txt, vec!["v=spf1 mx -all"]);
+
+        // The shape `nslookup` actually prints: the record type is spelled `text`, the value
+        // is quoted, and a long one arrives as several quoted pieces. Looking for `TXT` as a
+        // token therefore found nothing, and every TXT row — SPF, DKIM, DMARC — came back
+        // empty on domains whose records were published and correct.
+        let nslookup = "Non-authoritative answer:\n\
+z1hwang.cn\ttext = \"v=spf1 include:spf.example.com ~all\"\n";
+        assert_eq!(
+            extract_records(nslookup, "TXT"),
+            vec!["v=spf1 include:spf.example.com ~all"]
+        );
+
+        let split = "Non-authoritative answer:\n\
+key.example\ttext = \"v=DKIM1; k=rsa; p=MIIB\" \"AABB\"\n";
+        assert_eq!(
+            extract_records(split, "TXT"),
+            vec!["v=DKIM1; k=rsa; p=MIIBAABB"]
+        );
+
+        // An address answer, in the same dialect: `Name:` and then `Address:`, with the
+        // resolver's own banner lines above the answer section excluded.
+        let address = "Server:\t\t127.0.0.53\nAddress:\t127.0.0.53#53\n\n\
+Non-authoritative answer:\nName:\tmail.example.com\nAddress: 203.0.113.10\n";
+        assert_eq!(extract_records(address, "A"), vec!["203.0.113.10"]);
     }
 
     #[test]
