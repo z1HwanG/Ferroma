@@ -390,17 +390,18 @@ api_host?, api_port?, tls_enabled?, tls_cert?, tls_key?}`. `GET /api/v1/setup` r
 the running values for the same fields, so the wizard can prefill itself.
 
 Every field except the administrator and the domain is optional, and every one of them is
-*stored* rather than applied: a running process cannot move its own socket or re-read a
-PEM file, so the values are written to `settings` and the server adopts whatever the
-deployment left at its default on the next start (see the server's
-`apply_stored_settings`). `applied` lists exactly what was stored, and `restart_required`
-says whether anything needs one. A `tls_cert`/`tls_key` that is not a file *on the server*
-is refused with `400`, because the path is read by the process, not by the browser.
-configuration is written to the `settings` table as `server.hostname` /
-`api.public_url` and adopted on the next start — the running process cannot rewrite
-its own configuration — and `applied.restart_required` says whether that happened.
-`ferroma.toml` and the environment still win over a stored row, so a deployment that
-states its hostname explicitly is never overridden by a stale wizard submission.
+*stored* rather than applied on the spot: a running process cannot move its own socket or
+re-read a PEM file, so the values are written to `settings` and read back when the server
+starts (see the server's `apply_stored_settings`). `applied` lists exactly what was stored,
+and `restart_required` says whether that means a restart.
+
+A submission that needs one is not left to the operator: the server replaces its own process
+image as soon as this response is on the wire — a container keeps its ports, its volumes and
+the same PID, which matters because in a container that process is PID 1 — and the console
+waits for it to answer again and reloads into it. `ferroma.toml` and the environment still win
+over a stored row, so a deployment that states its hostname explicitly is never overridden by
+a stale wizard submission. A `tls_cert`/`tls_key` that is not a file *on the server* is
+refused with `400`, because the path is read by the process, not by the browser.
 
 `POST /api/v1/setup` answers `409 conflict` once an admin exists. Both endpoints
 answer `404 not_found` when `api.enable_setup_wizard = false`: a disabled wizard is

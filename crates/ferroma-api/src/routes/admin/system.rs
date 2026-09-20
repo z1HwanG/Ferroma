@@ -709,6 +709,16 @@ pub async fn setup(
         || applied.tls_cert.is_some()
         || applied.tls_key.is_some();
 
+    if applied.restart_required {
+        // Every field above is read once at boot, which is why they are stored rather than
+        // applied — a running process cannot move its own socket and the PEM files were read
+        // when it started. Asking the operator to restart the container themselves was the old
+        // arrangement, and it is why a wizard that had just been filled in looked like it had
+        // done nothing. The process comes back up by itself instead (see `restart_itself` in
+        // the server binary); the console waits for it and reloads into it.
+        state.restart.request();
+    }
+
     // The account first: it is the only step that can fail for a reason the operator
     // can act on (a weak password, a duplicate address).
     let user = state
@@ -723,16 +733,20 @@ pub async fn setup(
         )
         .await?;
 
+    // Only what the operator typed. The wizard used to substitute
+    // "Created by the first-run wizard" when this field was absent — and the wizard never asks
+    // for one, so that sentence was what *every* fresh installation carried: operator-facing
+    // metadata nobody wrote, listed next to the domain as if someone had left a note, and
+    // indistinguishable from a note someone actually left.
     let description = request
         .domain_description
         .as_deref()
         .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .unwrap_or("Created by the first-run wizard");
+        .filter(|text| !text.is_empty());
     let domain = state
         .repos
         .domains
-        .create(&domain_name, Some(description))
+        .create(&domain_name, description)
         .await?;
 
     let mailbox = state

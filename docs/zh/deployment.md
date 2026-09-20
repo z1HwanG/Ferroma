@@ -821,7 +821,13 @@ docker compose -f docker-compose.prod.yml logs ferroma | tail -50
 ### 6.2 首次运行向导
 
 在还没有 admin 时，`GET /api/v1/setup` 返回 `{ "required": true }`（[api.md](api.md)
-§4.7）。打开 `https://mail.example.com/`，Webmail 会重定向到 Admin 设置界面。
+§4.7），而 `/` 提供的是 Admin 控制台而不是 Webmail——那就是向导（为什么实例初始化完成前根路径
+是控制台，见 [§3.5](#35-在浏览器里选择数据库)）。填完它会创建第一个管理员，并把你登录进去。
+
+它收集的 hostname、公开 URL、监听地址与 TLS 材料都是**启动时读取**的，所以服务器会自己重启一次
+来采用它们：页面会显示"重启中"，等服务器重新应答后自动回到控制台。不需要你手工做任何事；万一进程
+没法替换自己（没有 `exec` 的平台），页面会明说，剩下的交给容器的重启策略或
+`docker compose restart ferroma`。
 
 ```bash
 # 或者从 shell 里驱动它。
@@ -832,9 +838,9 @@ curl -s -X POST https://mail.example.com/api/v1/setup \
 ```
 
 `POST /setup` 创建第一个 admin、该域及其主地址，并返回一对普通令牌。此后两个端点都返回
-`409 conflict`。用 `api.enable_setup_wizard = false` 可以完全禁用该向导；如果你更愿意在
-带外创建第一个 admin，就在 `ferroma.toml` 里设它，并记住这意味着那些端点返回 404 而不是
-失败。
+`409 conflict`。响应里的 `restart_required` 说明服务器是否正在为采用这些设置而重启。用
+`api.enable_setup_wizard = false` 可以完全禁用该向导；如果你更愿意在带外创建第一个 admin，就在
+`ferroma.toml` 里设它，并记住这意味着那些端点返回 404 而不是失败。
 
 ### 6.3 不用向导创建域
 

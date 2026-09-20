@@ -16,6 +16,16 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ### Changed
 
+- **The first-run wizard applies what it collected, by itself.** The hostname, the public URL,
+  the HTTP listen address and the TLS material are read once at boot — a running process cannot
+  move its own socket or re-read a PEM — so the wizard stores them and the server now comes back
+  up to adopt them instead of printing "restart the container and they take effect". It replaces
+  its own process image (`exec`, so a container keeps its ports, its volumes and the same PID 1),
+  and the console waits for it to answer and reloads into it; if the platform cannot do that, the
+  page says so and the container's restart policy finishes the job. A wizard that ends by asking
+  the person who just filled it in to go and restart something is a wizard they cannot tell
+  worked.
+
 - **Setting up happens at one address: `/`.** While an instance still owes an administrator —
   no database, or a database with no administrator in it — `/` serves the Admin console, and
   the console shows whichever step is outstanding: the form that asks for the connection and

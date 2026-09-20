@@ -501,6 +501,13 @@ async fn serve(config: &Config, args: &ServeArgs, log_sink: ferroma_api::LogSink
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let mut tasks: Vec<(&'static str, tokio::task::JoinHandle<()>)> = Vec::new();
 
+    // The wizard writes settings a running process cannot adopt — the advertised hostname, the
+    // public URL, the listen address, the TLS material — and then asks the process to come back
+    // up. This is the channel that request arrives on; it is watched below, next to the shutdown
+    // signal, so that a restart and a `SIGTERM` take the same path out.
+    let restart = ferroma_api::RestartSignal::default();
+    let mut restart_rx = restart.watch();
+
     // --- DNS ------------------------------------------------------------------
     // One resolver, shared: the outbound queue uses it to find MX hosts, and the
     // inbound path uses it to evaluate SPF, DKIM and DMARC. Sharing it means one
@@ -650,7 +657,8 @@ async fn serve(config: &Config, args: &ServeArgs, log_sink: ferroma_api::LogSink
         .with_database(Arc::clone(&database))
         // The ring the `tracing` layer at boot is filling, so `GET /api/v1/logs`
         // answers with what this process has actually logged.
-        .with_log_sink(log_sink);
+        .with_log_sink(log_sink)
+        .with_restart(restart);
 
         // Which app answers at `/` is decided here, because the answer is a fact about the
         // database: an instance that still owes its first administrator serves the console at
@@ -727,9 +735,19 @@ async fn serve(config: &Config, args: &ServeArgs, log_sink: ferroma_api::LogSink
     println!("press Ctrl-C to stop");
 
     // --- wait for a signal --------------------------------------------------
-    wait_for_shutdown().await;
-    tracing::info!("shutdown requested");
-    println!("\nshutting down…");
+    // Two ways out, and they differ only at the end: `SIGTERM` stops the process, while the
+    // wizard's request brings it back up having adopted everything it stored.
+    let restarting = tokio::select! {
+        _ = wait_for_shutdown() => false,
+        changed = restart_rx.changed() => changed.is_ok(),
+    };
+    if restarting {
+        tracing::info!("restarting to adopt the settings the first-run wizard stored");
+        println!("\nrestarting…");
+    } else {
+        tracing::info!("shutdown requested");
+        println!("\nshutting down…");
+    }
 
     let _ = shutdown_tx.send(true);
 
@@ -747,8 +765,53 @@ async fn serve(config: &Config, args: &ServeArgs, log_sink: ferroma_api::LogSink
     }
 
     database.close().await;
+
+    if restarting {
+        match restart_itself() {
+            Ok(never) => match never {},
+            Err(error) => {
+                tracing::error!(
+                    %error,
+                    "could not restart in place; exiting — start the container again to adopt the stored settings"
+                );
+                println!("could not restart automatically; start the container again");
+            }
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+
     println!("stopped");
     Ok(ExitCode::SUCCESS)
+}
+
+/// Replace this process with a fresh copy of itself.
+///
+/// The settings the first-run wizard stores — the advertised hostname, the public URL, the HTTP
+/// listen address and the TLS material — are read once at boot, and a running process cannot
+/// move its own socket or re-read a PEM. Telling the operator to restart the container is what
+/// made a filled-in wizard look like it had done nothing, so the process does it.
+///
+/// `exec` and not "exit and let something bring us back": in a container this binary is PID 1,
+/// and a PID 1 that exits takes the container down with it. Replacing the process image keeps
+/// the container, its port mappings and its volumes exactly where they are. Returns only on
+/// failure, which the caller reports and then handles by exiting.
+#[cfg(unix)]
+fn restart_itself() -> std::io::Result<std::convert::Infallible> {
+    use std::os::unix::process::CommandExt;
+
+    let executable = std::env::current_exe()?;
+    let arguments: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    Err(std::process::Command::new(executable).args(arguments).exec())
+}
+
+/// Restarting in place is a Unix mechanism; elsewhere the caller exits and the supervisor is
+/// responsible for bringing the service back.
+#[cfg(not(unix))]
+fn restart_itself() -> std::io::Result<std::convert::Infallible> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "restarting in place is implemented for Unix only",
+    ))
 }
 
 /// Resolve on `SIGINT` or `SIGTERM`.

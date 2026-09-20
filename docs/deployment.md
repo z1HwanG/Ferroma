@@ -895,8 +895,15 @@ listener, and the migration outcome when `database.run_migrations = true`.
 ### 6.2 The first-run wizard
 
 While no admin exists, `GET /api/v1/setup` returns `{ "required": true }`
-([api.md](api.md) §4.7). Open `https://mail.example.com/` and the Webmail
-redirects to the Admin setup screen.
+([api.md](api.md) §4.7), and `/` serves the Admin console rather than the Webmail — that is the
+wizard ([§3.5](#35-choosing-the-database-in-the-browser) explains why the root is the console
+until an instance is set up). Filling it in creates the first administrator and signs you in.
+
+The hostname, the public URL, the listen address and the TLS material it collects are read when
+the server starts, so the server comes back up by itself to adopt them: the page says it is
+restarting, waits for the server to answer again, and reloads into the console. Nothing to do by
+hand — and if the process cannot replace itself (a platform without `exec`), the page says so and
+the container's restart policy, or `docker compose restart ferroma`, finishes the job.
 
 ```bash
 # Or drive it from the shell.
@@ -908,7 +915,8 @@ curl -s -X POST https://mail.example.com/api/v1/setup \
 
 `POST /setup` creates the first admin, the domain and its primary address, and
 returns a normal token pair. Both endpoints return `409 conflict` afterwards.
-The wizard is disabled entirely by `api.enable_setup_wizard = false` — set that
+`restart_required` in the response says whether the server is restarting to adopt what was
+stored. The wizard is disabled entirely by `api.enable_setup_wizard = false` — set that
 in `ferroma.toml` if you would rather create the first admin out of band, and
 remember that it means the endpoints 404 rather than fail.
 

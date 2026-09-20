@@ -216,9 +216,8 @@ function renderWizard(status) {
       const applied = payload && payload.applied ? payload.applied : null;
       finished = true;
       if (applied && applied.restart_required) {
-        // The session exists and the administrator is usable; the hostname, the URL and
-        // the listener wait for a restart, so the operator is told rather than reloaded
-        // into a console that looks like the values went nowhere.
+        // The session exists and the administrator is usable; the settings above are read when
+        // the server starts, so it is restarting itself right now and this page waits for it.
         showRestartNotice(applied);
         return;
       }
@@ -254,18 +253,59 @@ function renderWizard(status) {
       applied.tls_key ? [t('Private key'), applied.tls_key] : null,
     ].filter(Boolean);
 
+    // The settings above are read once, when the server starts — which is why it comes back up
+    // by itself rather than asking the operator to go and restart a container: a wizard that
+    // ends with "now restart this" looks like it did nothing, and the step it just took is the
+    // one thing the person who filled it in cannot check.
+    const status = el('p', { text: t('The server is restarting to apply these settings…') });
+    const manual = el('p', {
+      text: t('The administrator was created. These settings are stored and take effect after the next restart of Ferroma (or its container):'),
+    });
+
     notice.replaceChildren(
-      el('p', {
-        text: t('The administrator was created. These settings are stored and take effect after the next restart of Ferroma (or its container):'),
-      }),
+      status,
       el('ul', { class: 'setup-summary' }, rows.map(([label, value]) => summaryItem(label, value))),
+      manual,
       el('div', { class: 'card-actions' }, [
         linkButton(t('Continue to the console'), () => window.location.replace(consoleUrl())),
       ]),
     );
+    setHidden(manual, true);
     setHidden(notice, false);
     setHidden(error, true);
     toastSuccess(t('Administrator created.'));
+    waitForRestart(status, manual);
+  }
+
+  /**
+   * Wait for the process to answer again, then walk into the console.
+   *
+   * The server replaced itself a moment ago (see `restart_itself` in the server binary), so the
+   * page cannot navigate until it listens again. Nothing to do but wait — and to say so, rather
+   * than spin forever, if it never comes back.
+   *
+   * The probe goes through `request()` like every other call, so `shared/api.js` stays the only
+   * file that talks to the network. A server that answers *at all* is a server that is back:
+   * `/health` answers `503` with the health document while there is no database, and that
+   * arrives here as an `ApiError` carrying the status.
+   */
+  async function waitForRestart(status, manual) {
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      try {
+        await request(`${API_BASE}/health`, { toast: false, retryOn401: false });
+        window.location.replace(consoleUrl());
+        return;
+      } catch (error) {
+        if (error instanceof ApiError && error.status >= 400) {
+          window.location.replace(consoleUrl());
+          return;
+        }
+        // No status at all: still between two process images.
+      }
+    }
+    setText(status, t('The server did not come back.'));
+    setHidden(manual, false);
   }
 
   function show(message) {

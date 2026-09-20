@@ -22,6 +22,8 @@ export const zhCN = {
   '{failed} failed': '{failed} 项失败',
   '{from}–{to} of {total}': '第 {from}–{to} 条，共 {total} 条',
   'Close details': '关闭详情',
+  'The server is restarting to apply these settings…': '服务器正在重启以应用这些设置……',
+  'The server did not come back.': '服务器没有回来。',
   'health unavailable': '健康状态不可用',
   'Loading {section}…': '正在加载 {section}…',
   'Loading…': '加载中…',

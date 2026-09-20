@@ -72,7 +72,7 @@ pub use router::{
 pub use routes::admin::system::setup_required;
 pub use service::{MessageService, SendRequest, SendResult};
 pub use state::{
-    AppState, ConnTracker, ConnectionGuard, MailSender, QueueMailSender, SendOutcome,
+    AppState, ConnTracker, ConnectionGuard, MailSender, QueueMailSender, RestartSignal, SendOutcome,
     UploadRegistry, UploadSession,
 };
 

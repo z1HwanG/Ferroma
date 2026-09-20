@@ -522,6 +522,39 @@ pub struct AppState {
     pub mail_service: crate::service::MessageService,
     /// The bounded in-process log ring behind `GET /api/v1/logs`.
     pub logs: crate::logbuf::LogSink,
+    /// Asked for when the process has to come back up for a stored setting to be real.
+    ///
+    /// The first-run wizard can only *write* the advertised hostname, the public URL, the HTTP
+    /// listen address and the TLS material: a running process cannot move its own socket, and
+    /// the PEM files were read at boot. Watching this is how the `ferroma` binary learns it has
+    /// been asked to come back up — see `restart_itself` in `server/src/serve.rs`.
+    pub restart: RestartSignal,
+}
+
+/// A process's request to restart itself.
+///
+/// A `watch` channel rather than a flag, because the request and the wait for it are not
+/// ordered: the wizard's request is made by a request handler while the server waits elsewhere,
+/// and a receiver sees the current value whenever it subscribes, so a request made a moment
+/// early is not lost.
+#[derive(Clone, Default)]
+pub struct RestartSignal(Arc<tokio::sync::watch::Sender<bool>>);
+
+impl RestartSignal {
+    /// Ask the process to come back up.
+    ///
+    /// `send_replace` rather than `send`: this is a state — "a restart has been asked for" — and
+    /// not an event to be caught. The wizard's handler may be the only thing on this side of the
+    /// channel at the moment it asks, and the server subscribes when it is ready.
+    pub fn request(&self) {
+        self.0.send_replace(true);
+    }
+
+    /// Watch for that request. The current value arrives immediately.
+    #[must_use]
+    pub fn watch(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.0.subscribe()
+    }
 }
 
 impl std::fmt::Debug for AppState {
@@ -588,6 +621,7 @@ impl AppState {
             uploads: Arc::new(UploadRegistry::new()),
             mail_service,
             logs: crate::logbuf::LogSink::new(Arc::new(crate::logbuf::LogBuffer::default())),
+            restart: RestartSignal::default(),
         }
     }
 
@@ -635,6 +669,13 @@ impl AppState {
     #[must_use]
     pub fn with_log_sink(mut self, logs: crate::logbuf::LogSink) -> Self {
         self.logs = logs;
+        self
+    }
+
+    /// Use `restart` for this process's own restart requests, so the server can watch them.
+    #[must_use]
+    pub fn with_restart(mut self, restart: RestartSignal) -> Self {
+        self.restart = restart;
         self
     }
 
@@ -903,5 +944,20 @@ mod tests {
         assert_eq!(state.maildir.root(), dir.path().join("mail").as_path());
         assert_eq!(state.attachments.root(), dir.path().join("att").as_path());
         assert_eq!(state.connections.smtp_connections(), 0);
+    }
+
+    #[test]
+    fn a_restart_request_survives_a_watch_that_starts_later() {
+        // The wizard asks for a restart from inside a request handler; the server subscribes
+        // when it reaches that part of its own startup. A request that arrives in between is a
+        // process that never adopts what the operator typed, so the value has to be a state and
+        // not an event: `watch` hands the current value to whoever subscribes, whenever.
+        let signal = RestartSignal::default();
+        signal.request();
+        let watch = signal.watch();
+        assert!(
+            *watch.borrow(),
+            "a request made before anything was watching must still be delivered"
+        );
     }
 }
