@@ -274,8 +274,10 @@ Details worth knowing:
   reference, so re-rendering from the settings section would leave the text already on
   screen in the old language. The choice is kept in `localStorage` under
   `ferroma.locale`.
-* **The first visit follows the browser.** `navigator.languages` is matched against the
-  shipped tags; any Chinese region selects Simplified, and anything else gets English.
+* **The first visit is English, whatever the browser asks for.** `navigator.languages` is
+  deliberately ignored: one instance is usually reached by several people, and a UI that
+  changes language because somebody re-installed their laptop is a UI nobody can give
+  instructions for. The picker is on the sign-in panel and in Settings.
 * **`Accept-Language` follows the picker**, so an API error — the message in a toast, or
   the text under a form — arrives in the chosen language. `code` never changes with the
   locale, so the console's own branching is language-independent.

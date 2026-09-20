@@ -16,6 +16,14 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ### Changed
 
+- **The interface follows the system's light or dark setting until someone chooses otherwise.**
+  The theme default was light; it is now `match system`, so a desktop that has been dark all day
+  does not get a white mail client. That reverses the decision recorded in 0.1.1 — "a UI that
+  turns black because somebody's laptop is set up that way" — which is a fair argument about a
+  decision nobody made, and this is about the first visit, where the system's setting is the best
+  evidence there is. The toggle and the picker's three choices are unchanged, and an explicit
+  choice still wins and is remembered.
+
 - **The first-run wizard applies what it collected, by itself.** The hostname, the public URL,
   the HTTP listen address and the TLS material are read once at boot — a running process cannot
   move its own socket or re-read a PEM — so the wizard stores them and the server now comes back
@@ -41,6 +49,13 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
   own pages finish by navigating to `/admin/` rather than reloading `/`.
 
 ### Fixed
+
+- **The panel that reports a front-end which did not start now speaks the chosen language.**
+  `shared/diag.js` held its text in English on purpose — it is a classic script loaded before
+  the apps, so it cannot read the language catalog — which meant a console set to Chinese
+  reported its worst failure in English, the one message an operator is least able to interpret.
+  It carries a two-entry table instead and applies the catalog's own rule (the stored choice
+  wins, English is the default), while staying dependency-free.
 
 - **The Webmail no longer keeps an address that names a different application.** The hash is
   how both front-ends say what is on screen, and they use different shapes: the Webmail's are

@@ -1,17 +1,22 @@
 /**
  * Theme handling.
  *
- * The default is **light**, and it is stored the moment someone chooses otherwise. It
- * deliberately does not follow `prefers-color-scheme`: a mail client that turns black
- * because the desktop does is a surprise on first run, and a reader who wants dark has the
- * toggle in the top bar (and the picker in Settings, which also offers "match system").
+ * The default follows the system: a desktop that has been dark all day means the interface
+ * should be too, and the first visit is the one case where the system's own setting is the best
+ * evidence about the person in front of the screen. An explicit choice — the toggle in the top
+ * bar, or the picker in Settings, which offers light, dark and "match system" — is remembered
+ * and wins from then on.
+ *
+ * This reverses the behaviour up to 0.1.4, which defaulted to light on the argument that a UI
+ * turning black because somebody's laptop is set up that way is unexpected. That argument is
+ * about a decision nobody made; a first visit is not a decision, it is the absence of one.
  */
 
 const STORAGE_KEY = 'ferroma.theme';
 const MODES = ['auto', 'light', 'dark'];
 
 const listeners = new Set();
-let mode = 'light';
+let mode = 'auto';
 
 function safeRead() {
   try {
@@ -172,7 +177,7 @@ export function toggleTheme(options = {}) {
  */
 export function setTheme(next, options = {}) {
   const previous = mode;
-  mode = MODES.includes(next) ? next : 'light';
+  mode = MODES.includes(next) ? next : 'auto';
   safeWrite(mode);
   const changed = mode !== previous;
 
@@ -226,7 +231,7 @@ export function onThemeChange(listener) {
 /** Called once at boot, before the first paint of the app. */
 export function initTheme() {
   const stored = safeRead();
-  mode = MODES.includes(stored) ? stored : 'light';
+  mode = MODES.includes(stored) ? stored : 'auto';
   apply();
   const media = window.matchMedia('(prefers-color-scheme: dark)');
   const onChange = () => {
