@@ -34,6 +34,10 @@ one of its two.
 - `docs/dockerhub.md` is a single bilingual artifact rather than a translated pair: its Chinese half lives in the same file because the page it feeds has no language switch, so there is no `docs/zh/dockerhub.md` — [dockerhub.md](docs/dockerhub.md).
 - `AGENTS.md` has no Chinese mirror, and nothing in the repository requires one — [AGENTS.md](AGENTS.md).
 
+## Testing
+
+- The bootstrap server — the mode that serves the setup page when no database is reachable — has no acceptance test: `server/tests/e2e.rs` covers the running server only, so the root mount (`/` serving the console) is held by a unit test in `crates/ferroma-api/src/router.rs` and nothing drives it over a socket — [router.rs](crates/ferroma-api/src/router.rs).
+
 ## Decided against
 
 - The backup and restore sidecars stay retired: neither compose file defines a `backup` or `restore` service, `scripts/backup.sh` and `scripts/restore.sh` are gone, and backing up the database and the `ferroma-data` volume together is the operator's job — [CHANGELOG — Removed](CHANGELOG.md#removed).

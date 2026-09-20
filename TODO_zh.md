@@ -32,6 +32,10 @@
 - `docs/dockerhub.md` 是单份双语文件，而不是一对译本：它的中文半部分就在同一个文件里，因为它要粘贴到的页面没有语言切换，所以不存在 `docs/zh/dockerhub.md`——[dockerhub.md](docs/dockerhub.md)。
 - `AGENTS.md` 没有中文版，仓库也没有任何规则要求它有——[AGENTS.md](AGENTS.md)。
 
+## 测试
+
+- bootstrap 服务器（连不上数据库时提供设置页的那个模式）没有验收测试：`server/tests/e2e.rs` 只覆盖正常运行中的服务器，所以"根路径 `/` 提供控制台"这件事目前只由 `crates/ferroma-api/src/router.rs` 里的单元测试守着，没有任何测试真的通过 socket 走一遍——[router.rs](crates/ferroma-api/src/router.rs)。
+
 ## 已决定不做
 
 - 备份与恢复边车保持退休状态：两个 compose 文件都不再定义 `backup` 或 `restore` 服务，`scripts/backup.sh` 与 `scripts/restore.sh` 已删除，改为由运维把数据库与 `ferroma-data` 卷一起备份——[CHANGELOG_zh — 移除](CHANGELOG_zh.md#移除)。
