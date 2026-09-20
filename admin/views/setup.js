@@ -226,7 +226,10 @@ function renderWizard(status) {
       // where it has always been: `/admin/`. This page may have been served at `/`, which
       // becomes the Webmail the moment the server is initialised, so a plain reload would
       // hand the operator the Webmail instead of the console they just unlocked.
-      window.setTimeout(() => window.location.replace(consoleUrl()), 600);
+      // The domain root, not the console: the operator has just finished setting this instance
+      // up and asked to come back to the address they typed. `/` is the Webmail while an
+      // administrator exists, and `/admin/` is one click away.
+      window.setTimeout(() => window.location.replace('/'), 600);
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
         // Someone else finished the wizard between the page load and this click. The
@@ -294,11 +297,11 @@ function renderWizard(status) {
       await new Promise((resolve) => setTimeout(resolve, 700));
       try {
         await request(`${API_BASE}/health`, { toast: false, retryOn401: false });
-        window.location.replace(consoleUrl());
+        window.location.replace('/');
         return;
       } catch (error) {
         if (error instanceof ApiError && error.status >= 400) {
-          window.location.replace(consoleUrl());
+          window.location.replace('/');
           return;
         }
         // No status at all: still between two process images.
