@@ -439,10 +439,12 @@ docker compose -f docker-compose.prod.yml down
 连不上 PostgreSQL 的服务器什么都提供不了——没有仓储、没有会话，连用来修它的那个页面也没有。
 所以它不再直接退出：当**没有人显式声明**连接（没有 `FERROMA_DATABASE__URL`、`ferroma.toml`
 里没有、`<data_dir>/database.json` 也不存在）时，它照样绑定 web 端口，只提供一个页面
-`http://<主机>:<端口>/admin/`，在那里询问连接信息。
+`http://<主机>:<端口>/`，在那里询问连接信息。`/admin/` 提供的是同一个页面（0.1.5 之前的版本
+让你打开的就是它）；控制台在这两个地址上都挂着，而在有数据库之前 Webmail 根本不挂载——一个
+登不进去的登录框，比一个直接问你要连接信息的表单更糟。
 
 ```
-No database is connected yet. Open http://0.0.0.0:8080/admin/ and enter:
+No database is connected yet. Open http://0.0.0.0:8080/ and enter:
 
     address   postgres://user:password@host:5432/ferroma
     code      7JVTQAHO

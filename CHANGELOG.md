@@ -14,6 +14,18 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ## [Unreleased]
 
+### Changed
+
+- **The page that asks for the database is now the site root.** A server with no connection
+  stated serves the Admin console at `/` instead of leaving `/` to the Webmail, whose
+  sign-in box cannot work before there is a database — it answered `405` to its own login
+  request, so an operator who opened the mail hostname saw a page that looked broken while
+  the form they needed sat one path away. `/admin/` still serves the same console (earlier
+  releases printed that URL) and `/shared` is unmoved, so this is one application mounted
+  twice; the Webmail is not mounted at all until there is a database.
+  `crates/ferroma-api/src/router.rs` now says *which* app answers at `/` and why the app
+  mounted there must be the one whose directory is mounted there.
+
 ### Fixed
 
 - **The image shipped six static files that the service user could not read, and the

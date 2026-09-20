@@ -211,7 +211,7 @@ pub async fn run(
         )
         .route("/api/v1/health", get(health_handler))
         .with_state(state.clone());
-    let router = ferroma_api::frontends_only(router, &config);
+    let router = ferroma_api::frontends_for_bootstrap(router, &config);
 
     announce(&config, &state, bound);
 
@@ -249,7 +249,9 @@ fn listener_from(address: &SocketAddr) -> Result<TcpListener> {
 
 /// Tell the operator, in the log and on stdout, what to do next.
 fn announce(config: &Config, state: &BootstrapState, bound: SocketAddr) {
-    let url = format!("http://{bound}/admin/");
+    // The console answers at the root while there is no database, so that is the URL to
+    // print: the operator typed the hostname, and `/admin/` still serves the same page.
+    let url = format!("http://{bound}/");
     println!();
     println!("No database is connected yet. Open {url} and enter:");
     println!();
@@ -261,7 +263,7 @@ fn announce(config: &Config, state: &BootstrapState, bound: SocketAddr) {
     tracing::warn!(
         %bound,
         code = %state.code,
-        "waiting for a database connection; open the admin page and enter the setup code"
+        "waiting for a database connection; open the setup page and enter the code"
     );
 }
 

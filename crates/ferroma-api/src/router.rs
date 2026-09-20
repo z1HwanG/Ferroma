@@ -488,7 +488,22 @@ pub fn apply_negotiation_headers(
 /// common. Each app is served from its own root, so `../shared/api.js` from
 /// `/main.js` and from `/admin/main.js` both resolve to `/shared/api.js`.
 pub fn with_frontends(router: Router<AppState>, config: &Config) -> Router<AppState> {
-    frontends(router, config)
+    frontends(router, config, RootApp::Webmail)
+}
+
+/// Which app answers at `/`.
+///
+/// Not a cosmetic choice. Both apps reference their assets relatively (`./main.js`,
+/// `./styles.css`) so that each one works from wherever it is mounted, which means the app
+/// serving `/` has to be the app whose *directory* is mounted there — see
+/// [`redirect_admin_to_slash`] for what shipping that backwards produced.
+#[derive(Clone, Copy)]
+enum RootApp {
+    /// The Webmail: the sign-in page of a server that has a database.
+    Webmail,
+    /// The Admin console: the server has no database yet, and the console is the only one
+    /// of the two apps that has a page for that state.
+    Console,
 }
 
 /// The static apps alone, with no application state.
@@ -497,14 +512,29 @@ pub fn with_frontends(router: Router<AppState>, config: &Config) -> Router<AppSt
 /// asks for the database still has to be served — so the static half is available on its
 /// own. The bootstrap server in the `ferroma` binary is the only caller.
 pub fn frontends_only(router: Router, config: &Config) -> Router {
-    frontends(router, config)
+    frontends(router, config, RootApp::Webmail)
+}
+
+/// The static apps for a server that has no database yet: the Admin console at `/`.
+///
+/// The bootstrap server in the `ferroma` binary is the only caller. It mounts the console at
+/// the root because the console is the one app with a page for this state — the form that
+/// asks for the connection and the one-time code. The Webmail's sign-in box cannot work
+/// before there is a database (its login request is answered `405` by a server that has only
+/// `/api/v1/bootstrap` and `/api/v1/health`), so an operator who opens the mail hostname
+/// should not be handed a page that looks broken when what they need is the setup form.
+///
+/// `/admin/` serves the same app: earlier releases printed that URL, and there is no reason
+/// to break it. `/shared` is unmoved, so this is the console mounted twice, not a third app.
+pub fn frontends_for_bootstrap(router: Router, config: &Config) -> Router {
+    frontends(router, config, RootApp::Console)
 }
 
 /// Mount `web/`, `admin/` and `shared/` onto any router.
 ///
 /// Generic over the state because the static services need none: the same lines serve the
 /// full API and the bootstrap page.
-fn frontends<S>(router: Router<S>, config: &Config) -> Router<S>
+fn frontends<S>(router: Router<S>, config: &Config, root: RootApp) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
 {
@@ -514,19 +544,30 @@ where
         router = router.nest_service("/shared", ServeDir::new(&shared));
     }
 
-    if let Some(webmail) = resolve_dir(config.api.webmail_dir.as_ref(), &["web/dist", "web"]) {
+    // The console is mounted in both modes; the Webmail only when it is the app at `/`.
+    let webmail = match root {
+        RootApp::Webmail => resolve_dir(config.api.webmail_dir.as_ref(), &["web/dist", "web"]),
+        RootApp::Console => None,
+    };
+    let admin = resolve_dir(config.api.admin_dir.as_ref(), &["admin/dist", "admin"]);
+
+    if let Some(webmail) = webmail {
         router = router.fallback_service(
             ServeDir::new(&webmail).fallback(ServeFile::new(webmail.join("index.html"))),
         );
     }
 
-    if let Some(admin) = resolve_dir(config.api.admin_dir.as_ref(), &["admin/dist", "admin"]) {
-        let service = ServeDir::new(&admin).fallback(ServeFile::new(admin.join("index.html")));
+    if let Some(admin) = admin {
+        // The same directory, mounted at `/admin/` always and at `/` when it is the app for
+        // this mode. `ServeDir` is `Clone`, so one `admin` serves both mounts.
+        let service = || ServeDir::new(&admin).fallback(ServeFile::new(admin.join("index.html")));
+        router = router.nest_service("/admin", service());
+        if matches!(root, RootApp::Console) {
+            router = router.fallback_service(service());
+        }
         // A nested service on `/admin`, and the directory redirect that has to sit in
         // front of it. The outer SPA fallback stays for `/`.
-        router = router
-            .nest_service("/admin", service)
-            .layer(middleware::from_fn(redirect_admin_to_slash));
+        router = router.layer(middleware::from_fn(redirect_admin_to_slash));
     }
 
     // The apps are files on disk, and they are edited in place — by an upgrade, by an
@@ -782,6 +823,67 @@ mod tests {
         // repositories need a Tokio context to register their lazy pool.
         let router = build(test_state());
         let _ = router;
+    }
+
+    #[tokio::test]
+    async fn with_no_database_the_console_answers_at_the_root() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request as HttpRequest, StatusCode};
+        use tower::ServiceExt;
+
+        // The bootstrap server mounts the console at `/`, because the Webmail has nothing to
+        // show before there is a database: its login request is answered 405 and the operator
+        // is left looking at a sign-in box that cannot work, instead of at the form that asks
+        // for the connection. That is only safe while the console's *own* directory answers
+        // at `/` — the apps reference `./main.js` relatively, so a root serving the webmail's
+        // bundle would put two apps on one page, which is the failure
+        // `the_bare_admin_path_redirects_into_the_directory` was written for.
+        let mut config = Config::default();
+        let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        config.api.admin_dir = Some(
+            repository
+                .join("admin")
+                .canonicalize()
+                .expect("the admin directory is in the repository"),
+        );
+        config.api.webmail_dir = Some(
+            repository
+                .join("web")
+                .canonicalize()
+                .expect("the webmail directory is in the repository"),
+        );
+
+        let app = frontends_for_bootstrap(Router::new(), &config);
+        let get = |uri: &'static str| {
+            let app = app.clone();
+            async move {
+                app.oneshot(HttpRequest::builder().uri(uri).body(Body::empty()).unwrap())
+                    .await
+                    .expect("the router answers")
+            }
+        };
+
+        let response = get("/").await;
+        assert_eq!(response.status(), StatusCode::OK, "the console must answer at /");
+        let body = to_bytes(response.into_body(), usize::MAX).await.expect("a body");
+        let body = String::from_utf8_lossy(&body);
+        assert!(
+            body.contains("Ferroma Admin"),
+            "the root must be the console, not the webmail's sign-in page"
+        );
+
+        let response = get("/main.js").await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.expect("a body");
+        let body = String::from_utf8_lossy(&body);
+        assert!(
+            body.contains("Admin console shell"),
+            "/main.js at the root must be the console's own bundle, or the page runs the webmail's"
+        );
+
+        // `/admin/` keeps working: earlier releases printed that URL, and the shared modules
+        // are still served from `/shared` for whichever app is mounted.
+        assert_eq!(get("/admin/").await.status(), StatusCode::OK);
+        assert_eq!(get("/shared/api.js").await.status(), StatusCode::OK);
     }
 
     #[tokio::test]

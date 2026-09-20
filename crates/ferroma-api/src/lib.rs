@@ -66,7 +66,8 @@ pub use extract::{
 };
 pub use logbuf::{floor_for, LogBuffer, LogEntry, LogFilter, LogSink, DEFAULT_CAPACITY};
 pub use router::{
-    body_limit, build, client_api, cors_layer, frontends_only, management_api, route_table,
+    body_limit, build, client_api, cors_layer, frontends_for_bootstrap, frontends_only,
+    management_api, route_table,
 };
 pub use service::{MessageService, SendRequest, SendResult};
 pub use state::{

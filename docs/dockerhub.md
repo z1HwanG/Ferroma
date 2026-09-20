@@ -56,7 +56,7 @@ FERROMA_VERSION=0.1.4 docker compose -f docker-compose.prod.yml up -d
 
 A bare `docker run` works, but PostgreSQL has to be reachable from the container and the
 schema has to exist. The one environment variable it needs is the database address:
-without `DATABASE_URL` the container still starts and serves a page at `/admin/` that
+without `DATABASE_URL` the container still starts and serves a page at `/` that
 asks for it, printing the one-time code to the log. Everything else the first-run wizard
 collects — the mail domain, the hostname, the public URL — is that wizard's to own, and
 the JWT secret is generated into the volume (`<data_dir>/jwt_secret`) when
@@ -144,7 +144,7 @@ cp .env.example .env      # 设置 POSTGRES_PASSWORD；FERROMA_VERSION 决定发
 FERROMA_VERSION=0.1.4 docker compose -f docker-compose.prod.yml up -d
 ```
 
-单独 `docker run` 也可以，但 PostgreSQL 必须能从容器内访问，并且 schema 已经存在。它需要的唯一环境变量是数据库地址：不设置 `DATABASE_URL` 时容器仍会启动，并在 `/admin/` 提供一个询问地址的页面，一次性代码打印在日志里。其余由首次运行向导收集，邮件域、主机名、公开 URL 都归向导所有；未设置 `FERROMA_JWT_SECRET` 时，JWT 密钥会生成到数据卷（`<data_dir>/jwt_secret`）。隐式 TLS 端口是刻意不发布的：`465` 与 `993` 在随附配置中**处于关闭状态**（`smtps_port = 0`、`imaps_port = 0`），在这里发布它们只会映射到没人监听的端口，连接被拒绝，而不是给出任何人能读懂的错误。`docker-compose.prod.yml` 会把它们连同所需证书一起打开：
+单独 `docker run` 也可以，但 PostgreSQL 必须能从容器内访问，并且 schema 已经存在。它需要的唯一环境变量是数据库地址：不设置 `DATABASE_URL` 时容器仍会启动，并在 `/` 提供一个询问地址的页面，一次性代码打印在日志里。其余由首次运行向导收集，邮件域、主机名、公开 URL 都归向导所有；未设置 `FERROMA_JWT_SECRET` 时，JWT 密钥会生成到数据卷（`<data_dir>/jwt_secret`）。隐式 TLS 端口是刻意不发布的：`465` 与 `993` 在随附配置中**处于关闭状态**（`smtps_port = 0`、`imaps_port = 0`），在这里发布它们只会映射到没人监听的端口，连接被拒绝，而不是给出任何人能读懂的错误。`docker-compose.prod.yml` 会把它们连同所需证书一起打开：
 
 ```bash
 docker run -d --name ferroma \

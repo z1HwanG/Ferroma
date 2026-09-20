@@ -470,10 +470,13 @@ A server that cannot reach PostgreSQL has nothing to serve — no repositories, 
 not even the page that would let you fix it. So it does not exit: when no connection was
 *stated* (no `FERROMA_DATABASE__URL`, nothing in `ferroma.toml`, nothing in
 `<data_dir>/database.json`), it binds the web port anyway and serves one page, at
-`http://<host>:<port>/admin/`, that asks for the connection.
+`http://<host>:<port>/`, that asks for the connection. `/admin/` serves the same page,
+which is where releases before 0.1.5 sent you; the console is mounted at both, and the
+Webmail is not mounted at all until there is a database, because a sign-in box that
+cannot work is a worse answer than the form that asks for the connection.
 
 ```
-No database is connected yet. Open http://0.0.0.0:8080/admin/ and enter:
+No database is connected yet. Open http://0.0.0.0:8080/ and enter:
 
     address   postgres://user:password@host:5432/ferroma
     code      7JVTQAHO
