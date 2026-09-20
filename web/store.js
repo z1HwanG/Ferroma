@@ -8,7 +8,7 @@ const PREF_KEY = 'ferroma.webmail.prefs';
 const DEFAULT_PREFS = {
   displayName: '',
   signature: '',
-  theme: 'auto',
+  theme: 'light',
   perPage: 50,
   markReadOnOpen: true,
 };

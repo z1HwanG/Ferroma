@@ -12,6 +12,7 @@ import { el } from '../../shared/dom.js';
 import { formatLogStamp } from '../../shared/format.js';
 import { t, tn } from '../../shared/i18n.js';
 import { confirmDialog } from '../../shared/modal.js';
+import { icon } from '../icons.js';
 import { go } from '../router.js';
 import { toastError, toastSuccess } from '../../shared/toast.js';
 import {
@@ -154,7 +155,7 @@ export async function render(params) {
   refreshButton.addEventListener('click', () => refresh());
 
   const root = el('div', {}, [
-    viewHead(t('Devices'), t('Every client installation known to this server'), [refreshButton]),
+    viewHead(t('Devices'), t('Client installations registered with this server'), [refreshButton]),
     bar,
     card.node,
   ]);
@@ -313,7 +314,7 @@ function renderTable(devices, handlers, total, offset) {
       cell(device.lastSeenAt ? formatLogStamp(device.lastSeenAt) : '—', 'cell-mono'),
       stateBadge(device.revoked ? 'revoked' : 'active'),
       actions(
-        button(t('Details'), () => handlers.onDetails(device)),
+        button(t('Details'), () => handlers.onDetails(device), '', 'details'),
         revokeButton(device, handlers),
       ),
     ],
@@ -406,7 +407,7 @@ function deviceLabel(device) {
  * that the action exists at all.
  */
 function revokeButton(device, handlers) {
-  const node = button(t('Revoke'), () => handlers.onRevoke(device), 'btn-danger');
+  const node = button(t('Revoke'), () => handlers.onRevoke(device), 'btn-danger', 'power');
   node.disabled = device.revoked;
   node.setAttribute('aria-label', t('Revoke {device}', { device: deviceLabel(device) }));
   return node;
@@ -424,8 +425,11 @@ function stampValue(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function button(label, onClick, className = '') {
-  const node = el('button', { type: 'button', class: `btn btn-small ${className}`.trim(), text: label });
+function button(label, onClick, className = '', glyph = '') {
+  const node = el('button', { type: 'button', class: `btn btn-small ${className}`.trim() }, [
+    glyph ? icon(glyph, 'icon') : null,
+    el('span', { text: label }),
+  ]);
   node.addEventListener('click', onClick);
   return node;
 }

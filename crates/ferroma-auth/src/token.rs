@@ -135,6 +135,18 @@ impl TokenService {
         })
     }
 
+    /// A fresh signing secret: 48 random bytes, base64.
+    ///
+    /// Exposed so a deployment can provision one and *keep* it — the server writes it
+    /// to its data directory when `api.jwt_secret` is unset. Generating a secret and
+    /// discarding it at every boot is what logged every session out on every restart.
+    pub fn generate_secret() -> String {
+        let mut secret_bytes = [0u8; 48];
+        use rand::RngCore;
+        rand::thread_rng().fill_bytes(&mut secret_bytes);
+        B64.encode(secret_bytes)
+    }
+
     /// Build a service from configuration.
     ///
     /// When `api.jwt_secret` is unset a random secret is generated and a warning is
@@ -153,11 +165,8 @@ impl TokenService {
                     "api.jwt_secret is not configured: generating an ephemeral secret. \
                      Every restart will invalidate all sessions. Set FERROMA_JWT_SECRET in production."
                 );
-                let mut secret_bytes = [0u8; 48];
-                use rand::RngCore;
-                rand::thread_rng().fill_bytes(&mut secret_bytes);
                 let mut service = Self::new(
-                    &B64.encode(secret_bytes),
+                    &Self::generate_secret(),
                     config.access_token_ttl_secs,
                     config.refresh_token_ttl_secs,
                     hostname,

@@ -10,6 +10,7 @@
 //! The command surface is defined in [`cli`]; the implementations are in
 //! [`commands`].
 
+mod bootstrap;
 mod cli;
 mod commands;
 mod logring;

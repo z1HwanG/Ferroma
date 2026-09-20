@@ -1218,24 +1218,28 @@ impl ImapSession {
             ));
             return Ok(SessionFlow::Continue);
         }
+        // The parent's row id, so the folder records the hierarchy both in its own
+        // `/`-separated name and in `parent_id`. `None` for a top-level folder.
+        let mut parent_id = None;
         if let Some(parent) = mbox::parent(&canonical) {
-            if mbox::parent(&canonical).is_some()
-                && self
-                    .context
-                    .repos
-                    .folders
-                    .find_by_name(mailbox_id, parent)
-                    .await
-                    .map_err(FerromaError::storage)?
-                    .is_none()
+            match self
+                .context
+                .repos
+                .folders
+                .find_by_name(mailbox_id, parent)
+                .await
+                .map_err(FerromaError::storage)?
             {
-                // RFC 3501: creating a child of a missing parent needs TRYCREATE.
-                out.send(&Response::tagged_no(
-                    tag,
-                    "Parent mailbox does not exist",
-                    Some(ResponseCode::TryCreate),
-                ));
-                return Ok(SessionFlow::Continue);
+                Some(folder) => parent_id = Some(folder.folder_id()),
+                None => {
+                    // RFC 3501: creating a child of a missing parent needs TRYCREATE.
+                    out.send(&Response::tagged_no(
+                        tag,
+                        "Parent mailbox does not exist",
+                        Some(ResponseCode::TryCreate),
+                    ));
+                    return Ok(SessionFlow::Continue);
+                }
             }
         }
 
@@ -1243,7 +1247,7 @@ impl ImapSession {
         self.context
             .repos
             .folders
-            .create(mailbox_id, &canonical, special_use)
+            .create_in(mailbox_id, &canonical, parent_id, special_use)
             .await
             .map_err(FerromaError::storage)?;
         self.create_disk_folder(&canonical)?;

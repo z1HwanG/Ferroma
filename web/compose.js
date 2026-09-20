@@ -22,7 +22,7 @@ import {
   textToHtml,
 } from '../shared/format.js';
 import { t, tn } from '../shared/i18n.js';
-import { confirmDialog, openModal } from '../shared/modal.js';
+import { confirmDialog, openModal, promptDialog } from '../shared/modal.js';
 import { getPrefs, getState } from './store.js';
 import { toastError, toastSuccess } from '../shared/toast.js';
 
@@ -30,10 +30,12 @@ const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
 /**
  * @typedef {object} ComposeSeed
- * @property {'new'|'reply'|'reply-all'|'forward'} mode
+ * @property {'new'|'reply'|'reply-all'|'forward'|'draft'} mode
  * @property {object} [message] the message being answered
+ * @property {number} [draftId] the draft record this window continues
  * @property {string[]} [to]
  * @property {string[]} [cc]
+ * @property {string[]} [bcc]
  * @property {string} [subject]
  * @property {string} [text]
  * @property {string} [html]
@@ -106,6 +108,11 @@ export function openCompose(seed) {
     spellcheck: 'true',
   });
 
+  // A `contenteditable` with no block element refuses the list and quote commands, and
+  // leaves a collapsed caret in a state where `bold` can claim the whole text node. One
+  // empty paragraph gives every command a block to work on.
+  editor.append(el('div', {}, [el('br')]));
+
   const toolbar = el('div', { class: 'editor-toolbar', role: 'toolbar', 'aria-label': t('Formatting') });
   const editorWrap = el('div', {}, [
     el('span', { class: 'field-label', id: 'compose-body-label', text: t('Message') }),
@@ -145,9 +152,14 @@ export function openCompose(seed) {
   }
 
   if (seed.to) to.setValues(seed.to);
-  if (seed.cc) {
+  if (seed.cc && seed.cc.length) {
     cc.setValues(seed.cc);
     ccRow.hidden = false;
+  }
+  if (seed.bcc && seed.bcc.length) {
+    bcc.setValues(seed.bcc);
+    bccRow.hidden = false;
+    fieldsToggle.setAttribute('aria-pressed', 'true');
   }
   if (seed.subject !== undefined) subject.value = seed.subject;
 
@@ -186,26 +198,115 @@ export function openCompose(seed) {
     editor.style.height = `${Math.min(Math.max(editor.scrollHeight, 200), 460)}px`;
   };
 
-  const exec = (command, value) => {
+  /**
+   * The editor's HTML, with the empty-block scaffolding treated as empty.
+   *
+   * An editor that was never touched still holds `<div><br></div>`; sending that would
+   * put a body on a message the reader deliberately left blank.
+   */
+  const editorHtml = () => {
+    if ((editor.textContent || '').trim() === '' && editor.querySelector('img, hr, table') === null) {
+      return '';
+    }
+    return editor.innerHTML.trim();
+  };
+
+  /*
+   * The selection is saved and restored around every command.
+   *
+   * A toolbar button, and above all a dialog, takes the focus; `execCommand` then acts on
+   * whatever selection is left — a collapsed caret at best, and at worst the whole
+   * editor, which is how one click of "bold" could bold everything. Restoring the range
+   * the reader actually had is what makes the buttons mean what they say.
+   */
+  let savedRange = null;
+
+  const saveSelection = () => {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return;
+    const range = selection.getRangeAt(0);
+    if (editor.contains(range.commonAncestorContainer)) savedRange = range.cloneRange();
+  };
+
+  const restoreSelection = () => {
     editor.focus();
+    if (!savedRange) return;
+    const selection = window.getSelection();
+    if (!selection) return;
+    selection.removeAllRanges();
+    selection.addRange(savedRange);
+  };
+
+  const pressedButtons = [];
+
+  /** Reflect bold/italic/underline state on the toolbar, so the buttons are readable. */
+  const syncToolbarState = () => {
+    for (const { button, command } of pressedButtons) {
+      let on = false;
+      try {
+        on = document.queryCommandState(command);
+      } catch {
+        on = false;
+      }
+      button.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+  };
+
+  const afterCommand = () => {
+    richHtml = editor.innerHTML;
+    saveSelection();
+    syncEditorHeight();
+    syncToolbarState();
+  };
+
+  const exec = (command, value) => {
+    restoreSelection();
     try {
       document.execCommand(command, false, value);
     } catch {
       toastError(t('This browser refused that formatting command.'));
       return;
     }
-    richHtml = editor.innerHTML;
-    syncEditorHeight();
+    afterCommand();
   };
 
+  /**
+   * Clear every format the editor can apply, not just the inline three.
+   *
+   * `removeFormat` undoes bold/italic/underline/colour; a list and a quote are *block*
+   * formats and survive it, which is why "Clear" used to leave a bulleted line bulleted.
+   */
+  const clearFormatting = () => {
+    restoreSelection();
+    try {
+      document.execCommand('removeFormat');
+      document.execCommand('unlink');
+      if (document.queryCommandState('insertUnorderedList')) document.execCommand('insertUnorderedList');
+      if (document.queryCommandState('insertOrderedList')) document.execCommand('insertOrderedList');
+      document.execCommand('formatBlock', false, 'div');
+    } catch {
+      toastError(t('This browser refused that formatting command.'));
+      return;
+    }
+    afterCommand();
+  };
+
+  /** Escape a URL for the one place it becomes markup, in the editor only. */
+  const escapeAttribute = (value) =>
+    String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+
   const toolbarSpec = [
-    { label: t('Bold'), command: 'bold', text: 'B' },
-    { label: t('Italic'), command: 'italic', text: 'I' },
-    { label: t('Underline'), command: 'underline', text: 'U' },
+    { label: t('Bold'), command: 'bold', text: 'B', pressed: true },
+    { label: t('Italic'), command: 'italic', text: 'I', pressed: true },
+    { label: t('Underline'), command: 'underline', text: 'U', pressed: true },
     { label: t('Bulleted list'), command: 'insertUnorderedList', text: t('• List') },
     { label: t('Numbered list'), command: 'insertOrderedList', text: t('1. List') },
     { label: t('Quote'), command: 'formatBlock', value: 'blockquote', text: t('Quote') },
-    { label: t('Remove formatting'), command: 'removeFormat', text: t('Clear') },
+    { label: t('Remove formatting'), command: 'removeFormat', text: t('Clear'), clear: true },
   ];
   for (const item of toolbarSpec) {
     const button = el('button', {
@@ -214,9 +315,16 @@ export function openCompose(seed) {
       text: item.text,
       title: item.label,
       'aria-label': item.label,
+      'aria-pressed': 'false',
     });
+    // Keeping the mousedown from moving focus preserves the selection; the range itself
+    // is saved as well, because a dialog cannot help stealing it.
     button.addEventListener('mousedown', (event) => event.preventDefault());
-    button.addEventListener('click', () => exec(item.command, item.value));
+    button.addEventListener('click', () => {
+      if (item.clear) clearFormatting();
+      else exec(item.command, item.value);
+    });
+    if (item.pressed) pressedButtons.push({ button, command: item.command });
     toolbar.append(button);
   }
 
@@ -227,16 +335,50 @@ export function openCompose(seed) {
     'aria-label': t('Insert link'),
   });
   linkButton.addEventListener('mousedown', (event) => event.preventDefault());
-  linkButton.addEventListener('click', () => {
-    const url = window.prompt(t('Link address (https://…)'));
+  linkButton.addEventListener('click', async () => {
+    saveSelection();
+    const selection = window.getSelection();
+    const hasText = Boolean(selection && selection.toString().trim() !== '');
+    // The app's own dialog, not `window.prompt`: the native prompt cannot be styled, and
+    // it returns focus to a page state in which the selection is gone.
+    const url = await promptDialog({
+      title: t('Insert link'),
+      label: t('Link address (https://…)'),
+      confirmLabel: t('Add'),
+      value: 'https://',
+      placeholder: 'https://example.com',
+      hint: hasText
+        ? t('The link is added to the text you selected.')
+        : t('Nothing is selected, so the address becomes the link text.'),
+    });
     if (!url) return;
     if (!/^https?:\/\//i.test(url)) {
       toastError(t('Links must start with http:// or https://.'));
       return;
     }
-    exec('createLink', url);
+    if (hasText) {
+      exec('createLink', url);
+      return;
+    }
+    // Nothing selected: the address becomes the link text, which is what a reader who
+    // pastes a URL into an empty line meant.
+    restoreSelection();
+    try {
+      const safe = escapeAttribute(url);
+      document.execCommand('insertHTML', false, `<a href="${safe}">${safe}</a>`);
+    } catch {
+      document.execCommand('insertText', false, url);
+    }
+    afterCommand();
   });
   toolbar.append(linkButton);
+
+  document.addEventListener('selectionchange', () => {
+    saveSelection();
+    syncToolbarState();
+  });
+  editor.addEventListener('keyup', syncToolbarState);
+  editor.addEventListener('mouseup', syncToolbarState);
 
   /* ------------------------------------------------------------ attachments */
 
@@ -422,8 +564,8 @@ export function openCompose(seed) {
       cc: cc.getValues(),
       bcc: bcc.getValues(),
       subject: subject.value.trim(),
-      html: plainMode ? textToHtml(editor.textContent || '') : editor.innerHTML.trim(),
-      text: htmlToText(plainMode ? editor.textContent || '' : editor.innerHTML),
+      html: plainMode ? textToHtml(editor.textContent || '') : editorHtml(),
+      text: htmlToText(plainMode ? editor.textContent || '' : editorHtml()),
     };
   };
 
@@ -511,9 +653,13 @@ export function openCompose(seed) {
     saveDraft.disabled = true;
     setText(send, t('Sending…'));
     try {
-      const payload = await request(`${API_BASE}/messages`, {
+      // `POST /drafts/:id/send` takes the same body and falls back to the stored draft for
+      // anything omitted, so continuing a draft and sending it is one call — and the draft
+      // record goes away with it, instead of staying behind as a copy of the sent message.
+      const target = draftId ? `${API_BASE}/drafts/${draftId}/send` : `${API_BASE}/messages`;
+      const payload = await request(target, {
         method: 'POST',
-        body: buildPayload(values, extra),
+        body: draftId ? buildDraftPayload(values, extra) : buildPayload(values, extra),
         toast: false,
       });
       const queued = payload && payload.queued !== undefined ? Number(payload.queued) : 0;
@@ -556,8 +702,8 @@ export function openCompose(seed) {
     saveDraft.disabled = true;
     setText(saveDraft, t('Saving…'));
     try {
-      await request(`${API_BASE}/drafts`, {
-        method: 'POST',
+      await request(draftId ? `${API_BASE}/drafts/${draftId}` : `${API_BASE}/drafts`, {
+        method: draftId ? 'PATCH' : 'POST',
         body: buildDraftPayload(values, threadingExtra()),
         toast: false,
       });
@@ -575,7 +721,15 @@ export function openCompose(seed) {
     }
   });
 
-  const title = mode === 'new' ? t('New message') : mode === 'forward' ? t('Forward') : t('Reply');
+  // A draft is a message being continued, not a new one: the window says so.
+  const draftId = Number(seed.draftId) || 0;
+  const title = draftId
+    ? t('Edit draft')
+    : mode === 'new'
+      ? t('New message')
+      : mode === 'forward'
+        ? t('Forward')
+        : t('Reply');
 
   /** Ask before throwing away unsaved text; `reason` is informational. */
   const requestClose = async (reason) => {

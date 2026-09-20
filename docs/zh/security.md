@@ -1,7 +1,7 @@
 # 安全
 
 **谁应该读这份文档：**任何准备把Ferroma暴露到互联网之前评审它的人，任何改动认证、TLS、
-邮件策略或存储层的人，以及任何需要知道一次Ferroma部署防住了什么、又没防住什么的操作者。
+邮件策略或存储层的人，以及任何需要知道一次Ferroma部署防住了什么、又没防住什么的运维者。
 
 这份文档是威胁模型，也是控制项清单。它先陈述前提假设，再逐条走过每一项控制（密码哈希、
 令牌与会话、登录限流、中继预防、发件人与收件人校验、SPF/DKIM/DMARC、TLS、速率与大小限制、
@@ -25,7 +25,7 @@ HTML 处理、路径穿越、日志卫生与密钥管理），并给出实现它
 | 邮件内容 | `storage.maildir_root`下的Maildir，`storage.attachment_root`下的二进制对象 | 每个用户的往来信件被完整读取 |
 | 凭据 | `users.password_hash`（Argon2id PHC 字符串） | 离线破解，随后账号被接管 |
 | 会话与令牌 | `sessions.token_hash`，内存中的访问令牌 | 无需密码即可实时接管账号 |
-| DKIM 私钥 | `domains.dkim_private_key`、`[dkim] private_key_path` | 以操作者的域名伪造已签名邮件 |
+| DKIM 私钥 | `domains.dkim_private_key`、`[dkim] private_key_path` | 以运维者的域名伪造已签名邮件 |
 | TLS 私钥 | `tls.key_path` | 冒充这台服务器，解密已录制的流量 |
 | `api.jwt_secret` | 环境变量（`FERROMA_JWT_SECRET`） | 为任意用户签发有效访问令牌 |
 | 服务器的发信声誉 | IP 地址与域名 | 这台机器变成垃圾邮件源并被列入黑名单 |
@@ -357,12 +357,12 @@ if let Some(ref ip_text) = ip_str {
 | 密码错误 | `invalid_credentials()` |
 | 已停用账号 | `invalid_credentials()`**并且**记一条点名用户 id 的`warn`日志 |
 
-代码里的注释说得很明确：*「未知账号：与密码错误相同的消息、相同的开销特征。」*攻击者无法
+代码里的注释说得很明确：*「未知账号：与密码错误相同的信息、相同的开销特征。」*攻击者无法
 通过登录端点枚举账号，而两种情况下每次尝试都恰好花掉一次 Argon2 校验，这也正是上面的限流
 必须存在的原因。
 
 服务器**确实**区别对待的唯一地方是审计日志，已停用账号会在那里产生
-`"login refused: account disabled"`。那是给操作者看的，不是给调用方看的。
+`"login refused: account disabled"`。那是给运维者看的，不是给调用方看的。
 
 ### 5.4 保留期
 
@@ -490,7 +490,7 @@ tls.self_signed_fallback requires tls.allow_insecure_dev_mode = true
 ```
 
 一台MX用自签名证书就无法被任何发信服务器校验，于是每一次发信 TLS 握手都会失败，更糟的是，
-操作者可能被引诱去在别处关掉校验。
+运维者可能被引诱去在别处关掉校验。
 
 ### 7.4 TLS 买到了什么、没买到什么
 
@@ -539,7 +539,7 @@ FERROMA__IMAP__REQUIRE_TLS_FOR_LOGIN: 'true'
 `dmarc_failure_action`默认取`quarantine`而不是`reject`，有一个具体原因：对一封*被转发*的
 邮件（邮件列表、校友转发器）评估 DMARC `p=reject`，通常会 SPF 与 DKIM 双双失败，而这封
 邮件是合法的。隔离把它放进`Junk`，用户还能找到；拒绝则直接丢掉。已经测量过自己转发容忍度
-的操作者可以提高它。
+的运维者可以提高它。
 
 `policy.spf_max_lookups`（10）是 RFC 7208 §4.6.4 的限制；它存在，是因为一条 SPF 记录可以被
 构造成强制产生无上限次数的 DNS 查询，这是同时针对 Ferroma 和解析器的拒绝服务途径。
@@ -777,7 +777,7 @@ sender          recipient   message_id   result   duration
 ```
 
 `connection_id`是一个 UUID，它也会出现在Ferroma前置插入的`Received:`头字段中，因此一行
-日志与一个头字段可以关联起来（[smtp.md](smtp.md) §10），操作者无需打开邮件就能回答
+日志与一个头字段可以关联起来（[smtp.md](smtp.md) §10），运维者无需打开邮件就能回答
 「这封邮件从哪来」。
 
 ### 12.3 日志配置
@@ -787,10 +787,10 @@ sender          recipient   message_id   result   duration
 | `server.log_level` | `"info"` | 在`ferroma_smtp`或`ferroma_imap`上用`debug`/`trace`会记录协议细节；生产环境请保持关闭 |
 | `server.log_format` | `"text"` | 投递日志时用`"json"`；两种格式的字段相同 |
 | `database.log_statements` | `false` | **生产环境绝不启用** |
-| `NOISY_DEFAULTS` | `hyper=warn,h2=warn,sqlx=warn,hickory_resolver=warn,hickory_proto=warn,rustls=warn,tokio_tungstenite=warn` | 除非操作者显式选择加入，第三方 crate 都被保持在`warn`，因此一个依赖无法开始打印请求数据 |
+| `NOISY_DEFAULTS` | `hyper=warn,h2=warn,sqlx=warn,hickory_resolver=warn,hickory_proto=warn,rustls=warn,tokio_tungstenite=warn` | 除非运维者显式选择加入，第三方 crate 都被保持在`warn`，因此一个依赖无法开始打印请求数据 |
 | `RUST_LOG` / `FERROMA_LOG_LEVEL` | — | `logging::init_for_tests`会读取它们；测试运行默认是安静的 |
 
-`logging::build_filter`保留操作者的指令，只对指令尚未提及的目标追加嘈杂 crate 的默认值，
+`logging::build_filter`保留运维者的指令，只对指令尚未提及的目标追加嘈杂 crate 的默认值，
 因此`sqlx=debug`会被尊重，而不是被覆盖。
 
 ### 12.4 审计轨迹
@@ -806,17 +806,26 @@ sender          recipient   message_id   result   duration
 
 | 密钥 | 必须放在哪里 | 绝不能放在哪里 |
 |---|---|---|
-| `api.jwt_secret` / `FERROMA_JWT_SECRET` | 环境变量，或由密钥管理器以环境变量注入 | 版本控制里的配置文件；备份归档（`scripts/backup.sh`排除了`*.env`与`credentials*`） |
+| `api.jwt_secret` / `FERROMA_JWT_SECRET` | 环境变量，或由密钥管理器以环境变量注入；两者都没有配置时，服务器会生成一个并写入 `<data_dir>/jwt_secret` | 版本控制里的配置文件；放在别人可读位置的 `.env` 或 `ferroma-data` 归档 —— 不再有随附的备份工具，因此没有任何东西替你排除凭据 |
 | `POSTGRES_PASSWORD` | `.env`，已 gitignore，或密钥管理器 | compose 文件，它们会插值`${POSTGRES_PASSWORD:?…}`并在缺少它时拒绝启动 |
 | DKIM 私钥 | 只读挂载上的`dkim.private_key_path`，或`domains.dkim_private_key` | 公开的`GET /api/v1/domains/:id/dkim`响应，它只返回`p=`公钥 |
 | TLS 私钥 | `tls.key_path`，只读挂载（`./tls:/etc/ferroma/tls:ro`） | 镜像里 |
 | 用户密码 | 任何地方都不放，永远不放 | — |
 
+不再有随附的备份工具，因此一份备份的保护完全由运维者负责。这一点要紧，因为数据卷的
+备份是含密的：里面有 DKIM 私钥，以及当密钥是被生成而非配置时的 `<data_dir>/jwt_secret`；
+卷里的 `<data_dir>/database.json` 记住了数据库地址，URL 里可能就带着凭据。请加密这份
+归档，或像对待数据库本身一样严格控制它的访问。
+
 仓库已经强制执行的实践：
 
-* **缺少密钥时 compose 快速失败。**`${FERROMA_JWT_SECRET:?set FERROMA_JWT_SECRET in .env}`
-  与`${POSTGRES_PASSWORD:?…}`意味着缺少密钥的部署根本不会启动，而不是带着默认值启动。
-* **配置归档排除凭据。**`tar … --exclude='*.env' --exclude='credentials*'`。
+* **单机 compose 在缺少密钥时快速失败。** `docker-compose.yml` 里的
+  `${FERROMA_JWT_SECRET:?set FERROMA_JWT_SECRET in .env}` 与 `${POSTGRES_PASSWORD:?…}`
+  意味着缺少密钥的部署根本不会启动，而不是带着默认值启动。`docker-compose.prod.yml`
+  刻意不设 JWT 密钥：服务器首次启动时会生成一个并写进数据卷，这也是那个卷含密的
+  原因之一。
+* **备份是运维者的事，凭据也一样。** 不再有脚本替你排除 `*.env` 或 `credentials*`；
+  `.env` 或 `ferroma-data` 卷的归档必须加密，并像它所含的密钥一样存放。
 * **`.env.example`只带占位符和生成命令**，从不带真实取值。
 * **数据库容器不对外发布。**`docker-compose.yml`在内部网络上用`expose: ['5432']`，而不是
   映射宿主端口。
@@ -898,7 +907,7 @@ sender          recipient   message_id   result   duration
 
 ## 15. 已知缺口
 
-Ferroma v1 中刻意的省略。每一条都是决定，不是疏忽；「缓解」一栏说的是操作者应当改做什么。
+Ferroma v1 中刻意的省略。每一条都是决定，不是疏忽；「缓解」一栏说的是运维者应当改做什么。
 
 ### 15.1 没有杀毒或恶意软件扫描
 
@@ -909,7 +918,7 @@ Ferroma 不扫描附件。没有 ClamAV 集成、没有`clamd`套接字、没有
 依赖，而一个悄悄停止更新的扫描器比没有扫描器更糟，因为它制造虚假的信心。它在可扩展性清单
 上（规范§57，「病毒扫描」）。
 
-**操作者的缓解措施：**跑一个`clamd`，在带外扫描邮件根目录，或者让收信经过一道网关。在接收
+**运维者的缓解措施：**跑一个`clamd`，在带外扫描邮件根目录，或者让收信经过一道网关。在接收
 客户端屏蔽可执行附件类型，那才是用户真正打开它们的地方。
 
 ### 15.2 没有贝叶斯或启发式垃圾邮件过滤
@@ -924,7 +933,7 @@ Ferroma 不扫描附件。没有 ClamAV 集成、没有`clamd`套接字、没有
 误报、丢掉真实邮件，规范§54把这一点认定为风险。发布一个悄悄吃掉发票的过滤器，比不发布
 更糟。
 
-**操作者的缓解措施：**在前面放一道过滤网关，或者用托管过滤服务。`Junk`文件夹与`\Junk`
+**运维者的缓解措施：**在前面放一道过滤网关，或者用托管过滤服务。`Junk`文件夹与`\Junk`
 特殊用途标记已经在 schema 里（`special_use`的`CHECK`），因此日后加过滤器不需要迁移。
 
 ### 15.3 没有 OIDC、没有 OAuth2、没有 2FA
@@ -939,7 +948,7 @@ Ferroma 不扫描附件。没有 ClamAV 集成、没有`clamd`套接字、没有
 没有 TOTP、没有 WebAuthn、没有恢复码、没有`mfa_required`标志。一个被钓走的密码就是完整的
 账号接管，只受登录限流和`limits.max_failed_logins`约束。
 
-**操作者的缓解措施：**对 Webmail 这一面，在前面放一个执行 2FA 并传递已认证身份的 SSO
+**运维者的缓解措施：**对 Webmail 这一面，在前面放一个执行 2FA 并传递已认证身份的 SSO
 代理；对 SMTP/IMAP，除了在Ferroma之外管理应用专用密码，没有诚实的缓解办法。不要把一次
 Ferroma部署说成「受 2FA 保护」。
 
@@ -964,7 +973,7 @@ PostgreSQL 的`LISTEN`/`NOTIFY`后端。
 **为什么：**broker 是又一个需要运维、加固和监控的有状态服务，而规范的第一版 Docker 栈
 （§41）明确就是 Ferroma 加 PostgreSQL，Redis 被放在「后期」。
 
-**操作者的缓解措施：**只跑一个`ferroma`进程。如果需要更多容量，先扩数据库和存储；两者都
+**运维者的缓解措施：**只跑一个`ferroma`进程。如果需要更多容量，先扩数据库和存储；两者都
 比事件扇出更可能是瓶颈。
 
 ### 15.5 更小的缺口，直说
@@ -977,7 +986,7 @@ PostgreSQL 的`LISTEN`/`NOTIFY`后端。
 | 没有 Sieve 或服务端规则 | 过滤只能在客户端做 | — |
 | 没有泄露语料库密码检查 | 用户可能设置一个已知被泄露的密码 | 在创建账号时按你信任的清单强制执行 |
 | 没有针对`AUTH`的按用户 IP 白名单 | 偷来的密码在任何地方都能用 | 设备吊销，并监控`sessions.ip` |
-| 没有 DMARC 聚合报告处理 | 除非操作者去读，`rua`报告无人问津 | 把`rua`指向你会查看的邮箱 |
+| 没有 DMARC 聚合报告处理 | 除非运维者去读，`rua`报告无人问津 | 把`rua`指向你会查看的邮箱 |
 | webhook 没有请求签名 | _（计划中）_的 webhook 是未认证的 HTTP POST | 不要在不可信网络上启用 webhook |
 | `GET /.well-known/ferroma`没有速率限制 | 一个未认证端点可被用于侦察和加载 | 如果在意，就在前面加一层代理限制 |
 | 收信时不校验 PTR | 来自没有 PTR 的主机的邮件仍被接受 | SPF/DKIM/DMARC_（计划中）_与一道网关 |

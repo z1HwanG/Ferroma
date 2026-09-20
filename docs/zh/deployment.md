@@ -1,17 +1,17 @@
 # 部署
 
-**谁应该读这一份：** 正在搭建 Ferroma 服务器的运维人员，以及当它停止投递邮件时被呼叫的那位。
+**谁应该读这一份：** 正在搭建 Ferroma 服务器的运维者，以及当它停止投递邮件时被呼叫的那位。
 
 本文是完整的运维路径：首次启动前需要创建的 DNS 记录、该用哪个 compose 文件以及何时用、
 必须设置的环境变量、端口表、TLS 方案（由 Ferroma 终结还是交给反向代理）以及如何取得
-Let's Encrypt 证书、首次运行设置、创建域与用户、生成并发布 DKIM 密钥、备份与恢复流程
-以及为什么顺序很重要、监控与健康检查、升级与回滚，以及一节按症状编排的故障排查，每个
-症状都配上用于诊断的命令。
+Let's Encrypt 证书、首次运行设置、创建域与用户、生成并发布 DKIM 密钥、由你自己用宿主机
+自带工具执行的备份与恢复流程以及为什么两半必须在一起、监控与健康检查、升级与回滚，以及
+一节按症状编排的故障排查，每个症状都配上用于诊断的命令。
 
 > **状态：** 部署产物是真实且完整的 —
 > `Dockerfile`、`docker-compose.yml`、`docker-compose.prod.yml`、
 > `docker-compose.external-db.yml`、`.env.example`、`config/ferroma.toml`、
-> `scripts/deploy.sh`、`scripts/backup.sh`、`scripts/restore.sh`。
+> `scripts/deploy.sh`。
 > `ferroma` 二进制实现了本文用到的全部子命令：`serve`、`config check|show|default`、
 > `database init|status`、`migrate`、`user`、`domain`、`dkim`、`storage`、`sync`、
 > `healthcheck`、`doctor`、`version`。
@@ -44,7 +44,8 @@ Let's Encrypt 证书、首次运行设置、创建域与用户、生成并发布
                   ┌────────▼────────┐            ┌─────────▼──────────┐
                   │ postgres:16     │            │ volume ferroma-data│
                   │ (internal only) │            │  mail/ attachments/│
-                  └─────────────────┘            │  tls/ backups/     │
+                  └─────────────────┘            │  dkim/ private key │
+                                                 │  database.json     │
                                                  └────────────────────┘
 ```
 
@@ -53,15 +54,15 @@ Let's Encrypt 证书、首次运行设置、创建域与用户、生成并发布
 
 > **如果这台服务器上已经有 PostgreSQL**（以及负责 443 的反向代理），就别再起第二个数据库
 > 容器：用 §3.1 的 `docker-compose.external-db.yml` 与 `./scripts/deploy.sh`，那里只有
-> Ferroma 自己、一个备份边车，数据库是本机已有的那一个。
+> Ferroma 自己与已有的数据库；备份是你自己的事，见 §8。
 
 开始之前的要求：
 
 | 要求 | 原因 |
 |---|---|
 | 一台具有静态公网 IPv4 地址的宿主机 | MX 需要稳定地址，PTR 记录必须与之匹配 |
-| 端口 25 **入站**可达 | 接收来自其它服务器的邮件。许多 VPS 供应商默认封锁它，开始之前先请他们解除封锁 |
-| 端口 25 **出站**可达 | 投递邮件。有些供应商封锁出站 25，迫使你走中继 |
+| 端口 25 **收信**可达 | 接收来自其它服务器的邮件。许多 VPS 供应商默认封锁它，开始之前先请他们解除封锁 |
+| 端口 25 **发信**可达 | 投递邮件。有些供应商封锁发信 25，迫使你走中继 |
 | 一个你控制的域 | 下文的 `example.com` |
 | Docker Engine 24+ 与 Compose 插件 | `docker compose`，不是 `docker-compose` |
 | 约 4 GB 内存、2 vCPU、20 GB 磁盘 | 够小型部署使用；邮件存储会持续增长 |
@@ -260,7 +261,7 @@ curl -s https://mta-sts.example.com/.well-known/mta-sts.txt
 dig +short 10.113.0.203.zen.spamhaus.org
 ```
 
-Admin 管理后台的 DNS Health 界面（`GET /api/v1/domains/:id/dns`，[api.md](api.md) §4.4）
+Admin 的 DNS Health 界面（`GET /api/v1/domains/:id/dns`，[api.md](api.md) §4.4）
 执行的正是这些检查，并返回一个满分 7 分的评分。
 
 ---
@@ -269,9 +270,9 @@ Admin 管理后台的 DNS Health 界面（`GET /api/v1/domains/:id/dns`，[api.m
 
 | 文件 | 用途 | TLS | Postgres | 镜像 | 额外内容 |
 |---|---|---|---|---|---|
-| `docker-compose.external-db.yml` | **服务器已有 PostgreSQL 与反向代理**（推荐，见 §3.1） | 由反向代理终结 HTTPS；Ferroma 自己终结 465/993 | **不要**：连本机 Postgres | `wesukilaye/ferroma:<tag>`，`docker pull` 或本机构建——整串引用就是 `FERROMA_IMAGE` | 每夜备份边车、`network_mode: host`、`.env` 即全部配置 |
+| `docker-compose.external-db.yml` | **服务器已有 PostgreSQL 与反向代理**（推荐，见 §3.1） | 由反向代理终结 HTTPS；Ferroma 自己终结 465/993 | **不要**：连本机 Postgres | `wesukilaye/ferroma:<tag>`，`docker pull` 或本机构建——整串引用就是 `FERROMA_IMAGE` | `network_mode: host`、`.env` 即全部配置；备份归你自己，见 §8 |
 | `docker-compose.yml` | 开发、单机、先看一眼 | 关闭；端口 25/587/143/8080 明文 | `postgres:16-alpine`，默认值 | 从 `Dockerfile` 本地构建，标记为 `wesukilaye/ferroma:dev` | — |
-| `docker-compose.prod.yml` | 真正的 MX，自带数据库 | 由 Ferroma 在 465/993 终结（HTTPS 交给反向代理） | 已调优（`shared_buffers=512MB`、`wal_compression=on` 等） | `wesukilaye/ferroma:${FERROMA_VERSION}`，发布标签，从不构建 | 每夜备份边车、资源限制、`restart: always`、日志上限、`ulimit nofile 65536` |
+| `docker-compose.prod.yml` | 真正的 MX，自带数据库 | 由 Ferroma 在 465/993 终结（HTTPS 交给反向代理） | 已调优（`shared_buffers=512MB`、`wal_compression=on` 等） | `wesukilaye/ferroma:${FERROMA_VERSION}`，发布标签，从不构建 | 资源限制、`restart: always`、日志上限、`ulimit nofile 65536`；备份归你自己，见 §8 |
 
 两者都通过 `FERROMA_REPO` 指向已发布的仓库，默认值是 `wesukilaye/ferroma`，也可以改成
 镜像站或私有 registry。仓库与标签刻意写成两个独立变量：Compose **不会**插值嵌套在另一个
@@ -279,8 +280,8 @@ Admin 管理后台的 DNS Health 界面（`GET /api/v1/domains/:id/dns`，[api.m
 默认值会插值成一个只剩冒号的字符串，而不是镜像引用。一旦它重新出现，
 `tools/check-deploy.mjs` 会直接让构建失败。
 
-不要在生产环境使用 `docker-compose.yml`。它以明文提供 IMAP 与 API，没有备份边车、没有
-资源限制，并且把端口 143 未加密地绑定到宿主机。
+不要在生产环境使用 `docker-compose.yml`。它以明文提供 IMAP 与 API，没有资源限制，
+并且把端口 143 未加密地绑定到宿主机。
 
 ### 3.1 服务器已经有 PostgreSQL：一条命令（推荐）
 
@@ -301,7 +302,7 @@ git clone … && cd Ferroma
 | 2. 收集配置 | 交互式问：邮件域、MX 主机名、管理员邮箱、数据库地址、API 端口（默认 `127.0.0.1:18080`） |
 | 3. 写 `.env` | 生成随机数据库密码与 `FERROMA_JWT_SECRET`，权限 600；**它是唯一的配置文件** |
 | 4. 建角色与库 | 依次尝试：`sudo -u postgres`（peer 认证）、本机 PostgreSQL **容器**里的 `psql`（1Panel 这类面板的常见形态，用 `docker exec`）、`--pg-password` 给出的超级用户；都做不到就打印可直接粘贴的 SQL（容器场景给 `docker exec` 形式）并停下 |
-| 5. 构建镜像 | 本机 `docker build`（首次 10–30 分钟）。加上 `--image wesukilaye/ferroma:0.1.0` 改为拉取已发布版本——同一条命令会完全跳过构建 |
+| 5. 构建镜像 | 本机 `docker build`（首次 10–30 分钟）。加上 `--image wesukilaye/ferroma:0.1.4` 改为拉取已发布版本——同一条命令会完全跳过构建 |
 | 6. 建表 | 在容器里跑 `ferroma database init`（库不存在时也会建） |
 | 7. 装证书 | 把证书以 uid 10001 装进 `./tls` 供 465/993 使用，并检查 SAN 是否覆盖 MX 主机名 |
 | 8. 启动 | `docker compose up -d`，最多等 3 分钟健康检查，超时自动打印日志 |
@@ -326,20 +327,23 @@ git clone … && cd Ferroma
   TLS 由代理终结——就是 §5.3 / §5.4 描述的做法。代理本身跑在容器里、或者公网端口不是
   443（例如容器内 80/443、宿主机发布成 180/1443）时，看 §5.4 末尾那一节：API 要绑到
   Docker 网桥地址，`--public-port` 也要一起给。
-* **备份是自带的长驻边车**：每 24 小时一次，保留 14 天，写进 `ferroma-backups` 卷。
+* **备份是你自己的事。** 这套部署什么都不替你备份：没有边车、没有定时器、没有脚本，
+  `scripts/deploy.sh` 也没有 `backup` 或 `restore` 子命令。用宿主机自带的工具导出
+  PostgreSQL 并复制 `ferroma-data` 卷，两半要放在一起——§8 有具体命令，也说明了备份必须
+  包含什么。
 
 常用子命令：
 
 ```bash
+./scripts/deploy.sh                     # 首次部署，或重新应用 .env 并重启
 ./scripts/deploy.sh status              # 容器 / 健康 / 数据库
-./scripts/deploy.sh logs
-./scripts/deploy.sh backup              # 立刻备份一次（每夜自动跑）
-./scripts/deploy.sh upgrade             # 先备份 → 重建镜像 → 重启 → 等健康
-./scripts/deploy.sh restore /backups/20260916T030000Z
+./scripts/deploy.sh logs                # 跟随 Ferroma 日志
+./scripts/deploy.sh upgrade             # 重建镜像 → 重启 → 等健康
 ./scripts/deploy.sh dkim --enable       # 发布 TXT 记录之后打开签名
 ./scripts/deploy.sh certs               # 续期后重装证书并重启监听器（certbot deploy hook 调它）
-./scripts/deploy.sh doctor
-./scripts/deploy.sh down [--volumes]
+./scripts/deploy.sh doctor              # 在容器里跑 `ferroma doctor`
+./scripts/deploy.sh down [--volumes]    # 停掉整个栈；--volumes 还会删除 ferroma-data
+./scripts/deploy.sh help                # 用法说明
 ```
 
 无人值守（cloud-init、CI）时每个提示都有对应开关：
@@ -398,21 +402,9 @@ FERROMA_DKIM_KEY: /etc/ferroma/dkim/${FERROMA_DKIM_SELECTOR:-default}.private
 Admin / API 由反向代理访问 `127.0.0.1:8080`——把 `127.0.0.1:8080:8080` 加进 `ports`
 即可，见 §5.3。
 
-它还挂载备份边车的输入：
-
-```yaml
-backup:
-  image: postgres:16-alpine
-  entrypoint: ['/bin/sh', '/usr/local/bin/backup.sh']
-  # 循环，而不是跑一次就退出：一次性脚本挂在 restart: always 下会在每次重启退避后
-  # 再写一份完整备份，直到磁盘写满。
-  command: ['--loop']
-  restart: unless-stopped
-  volumes:
-    - ./scripts/backup.sh:/usr/local/bin/backup.sh:ro
-    - ferroma-data:/mail:ro
-    - backups:/backups
-```
+没有任何东西替你备份这个栈，也没有 `backup` 服务可跑。邮件存储位于 `ferroma-data` 卷，
+关系型状态位于 `postgres` 容器拥有的 `ferroma-postgres-data` 卷；§8 有导出前者、归档后者的
+具体命令，两半必须放在一起。
 
 ### 3.4 你真正会敲的运维命令
 
@@ -442,6 +434,33 @@ docker compose -f docker-compose.prod.yml down
 
 ---
 
+### 3.5 在浏览器里选择数据库
+
+连不上 PostgreSQL 的服务器什么都提供不了——没有仓储、没有会话，连用来修它的那个页面也没有。
+所以它不再直接退出：当**没有人显式声明**连接（没有 `FERROMA_DATABASE__URL`、`ferroma.toml`
+里没有、`<data_dir>/database.json` 也不存在）时，它照样绑定 web 端口，只提供一个页面
+`http://<主机>:<端口>/admin/`，在那里询问连接信息。
+
+```
+No database is connected yet. Open http://0.0.0.0:8080/admin/ and enter:
+
+    address   postgres://user:password@host:5432/ferroma
+    code      7JVTQAHO
+```
+
+* **设置码是必需的。** 每次启动生成并打印到日志——否则任何能访问已发布 web 端口的人都能把这个实例
+  指向他选的数据库。用 `docker compose logs ferroma` 读取。
+* **数据库必须已经存在。** Ferroma 只做连接并应用表结构，绝不执行 `CREATE DATABASE`；因此你填的
+  角色只需要使用该库的权限。
+* **不需要重启。** 先测试连接、再应用表结构，随后**在同一个进程、同一个端口**继续启动——页面刷新后
+  直接进入首次运行向导。
+* **地址会被记住**在 `<data_dir>/database.json`（权限 0600，里面有密码），之后每次启动都使用它。
+  **不写** `DATABASE_URL` 就会走这套流程；一旦显式声明，部署方优先，与其他设置一致。
+
+已记住的地址失效时会再次回到这个页面，并附带服务器给出的拒绝原因——那是可以在浏览器里就地改正的
+密码错误。而部署方显式声明的地址连不上时，仍然是启动阶段响亮地失败：那属于你能看到的文件里的笔误。
+
+
 ## 4. 环境变量
 
 把 `.env.example` 复制为 `.env`。Compose 会对它做插值，几个 compose 文件在缺少必填项时
@@ -452,10 +471,14 @@ docker compose -f docker-compose.prod.yml down
 | 变量 | 示例 | 要求方 | 说明 |
 |---|---|---|---|
 | `POSTGRES_PASSWORD` | `openssl rand -base64 32` | 全部 | `${POSTGRES_PASSWORD:?…}`，缺它 compose 直接失败 |
-| `FERROMA_JWT_SECRET` | `openssl rand -base64 48` | 全部 | 签发访问/刷新令牌。缺它每次重启都会让所有会话失效 |
-| `FERROMA_HOSTNAME` | `mail.example.com` | prod（`:?`） | 必须与 PTR 记录一致 |
-| `FERROMA_PUBLIC_URL` | `https://mail.example.com` | prod（`:?`） | 用于 `.well-known/ferroma` 和链接中 |
-| `FERROMA_VERSION` | `0.1.0` | prod（`:?`） | 已发布的镜像标签；prod 从不构建 |
+| `FERROMA_JWT_SECRET` | `openssl rand -base64 48` | 可选 | 签发访问/刷新令牌。留空时服务器会生成一份写入数据卷并复用；只有在多实例共享密钥时才需要显式设置 |
+| `FERROMA_HOSTNAME` | `mail.example.com` | 可选 | 必须与 PTR 记录一致。留空则由首次运行向导询问，并在下次启动采用其存储值 |
+| `FERROMA_PUBLIC_URL` | `https://mail.example.com` | 可选 | 用于 `.well-known/ferroma` 和链接中。与主机名同理：除非部署显式声明，否则由向导负责 |
+
+这三项只要在环境里声明就优先于向导——这正是设计意图：清楚自己身份的部署声明一次，
+手工搭建的实例则被逐个询问。`scripts/deploy.sh --wizard`不写其中任何一项，因此全新
+容器只需要发布 web 端口，另加`POSTGRES_PASSWORD`（该脚本会自动生成）。
+| `FERROMA_VERSION` | `0.1.4` | prod（`:?`） | 已发布的镜像标签；prod 从不构建 |
 
 ### 4.2 常设变量
 
@@ -474,7 +497,6 @@ docker compose -f docker-compose.prod.yml down
 | `FERROMA_DKIM_SELECTOR` | `default` | `dkim.selector` |
 | `FERROMA_DKIM_KEY` | — | `dkim.private_key_path` |
 | `TRUST_PROXY_HEADERS` | `false` | `api.trust_proxy_headers` |
-| `BACKUP_RETENTION_DAYS` | `14` | `scripts/backup.sh` 的保留期 |
 | `SMTP_PORT`、`SUBMISSION_PORT`、`IMAP_PORT`、`HTTP_PORT` | 25、587、143、8080 | **仅开发环境**，发布端口的宿主机侧 |
 | `HTTPS_PORT` | 8443 | **已废弃**：`api.tls_port` 没有监听器，HTTPS 由反向代理终结，见 §5.3 |
 | `FERROMA_API_PORT` | 8080（external-db 栈默认 18080） | `api.port`，明文 HTTP API 的宿主侧端口 |
@@ -519,8 +541,11 @@ openssl rand -base64 32      # POSTGRES_PASSWORD
 openssl rand -base64 48      # FERROMA_JWT_SECRET
 ```
 
-`.env` 已在 gitignore 中。`scripts/backup.sh` 在配置归档中显式排除 `*.env` 与
-`credentials*`，因为备份卷通常比密钥存储保护得更弱。见 [security.md](security.md) §13。
+`.env` 已在 gitignore 中。任何复制 `ferroma-data` 卷的东西都**带密钥**，需要同等的
+小心：卷里有 `/var/lib/ferroma/dkim/<selector>.private` 处的 DKIM 私钥，而在通过浏览器
+连接数据库的部署上（§3.5），还有 `<data_dir>/database.json` 里的数据库地址与密码
+（权限 0600）。归档或快照要静态加密、限制可读范围，任何一份配置副本都不要包含 `*.env`
+与 `credentials*`。见 [security.md](security.md) §13。
 
 ---
 
@@ -576,7 +601,7 @@ tls.cert_path and tls.key_path must be set together (or enable self_signed_fallb
 
 `tls.self_signed_fallback = true` 会在启动时、未配置 PEM 的情况下用 `rcgen` 生成一张
 证书。它只用于本地开发与 CI，并且被 `tls.allow_insecure_dev_mode = true` 门控。使用自签
-证书的 MX 无法被任何发信服务器验证，因此它所有的出站 TLS 都会失败。
+证书的 MX 无法被任何发信服务器验证，因此它所有的发信 TLS 都会失败。
 
 ### 5.3 方案 B — 反向代理终结 HTTPS
 
@@ -787,7 +812,7 @@ docker compose -f docker-compose.prod.yml logs ferroma | tail -50
 一次健康的启动会记录解析后的配置摘要、每个监听器一行 `info`，以及
 `database.run_migrations = true` 时的迁移结果。
 
-### 6.2 设置向导
+### 6.2 首次运行向导
 
 在还没有 admin 时，`GET /api/v1/setup` 返回 `{ "required": true }`（[api.md](api.md)
 §4.7）。打开 `https://mail.example.com/`，Webmail 会重定向到 Admin 设置界面。
@@ -976,24 +1001,24 @@ docker compose -f docker-compose.prod.yml exec postgres \
 
 ## 8. 备份与恢复
 
-### 8.1 备份包含什么
+**Ferroma 不再随附任何备份工具。** 没有 `scripts/backup.sh`，没有 `scripts/restore.sh`，
+两个 compose 文件里都没有 `backup` 或 `restore` 服务，也没有 `ferroma-backups` 卷；
+`scripts/deploy.sh` 同样没有 `backup` 与 `restore` 子命令。备份这套部署是运维者的工作，
+用宿主机自带的工具完成：`pg_dump`、`tar` 或 `rsync`、`restic`/`borg`、文件系统或虚拟机
+快照、你已有的备份产品。
 
-`scripts/backup.sh` 每次运行写一个带时间戳的目录：
+### 8.1 备份必须包含什么
 
-```text
-/backups/20260916T030000Z/
-├── ferroma.dump      pg_dump --format=custom --compress=6
-├── schema.sql        pg_dump --schema-only：一个空但正确的结构
-├── maildir.tar.gz    邮件根目录的 tar -czf
-├── config.tar.gz     ferroma.toml、DKIM 密钥、TLS 材料
-├── MANIFEST          version、created_at、database、postgres_version、
-│                     ferroma_version、hostname
-└── SHA256SUMS        sha256sum ./*，这样恢复时可以证明归档完好
-```
+这套部署把状态放在两处，而它们**是同一份**备份：
 
-脚本自己的头部写明了支配其余一切的规则：
+| 一半 | 位置 | 装什么 |
+|---|---|---|
+| 数据库 | `postgres` 容器的 `ferroma-postgres-data` 卷，或你已有的 PostgreSQL 服务器 | 域、用户、邮箱、邮件元数据、队列、同步日志，以及 `domains.dkim_private_key` 里按域存放的密钥 |
+| `ferroma-data` 卷 | 挂载在 `/var/lib/ferroma`（`server.data_dir`） | Maildir、附件二进制对象、`/var/lib/ferroma/dkim/<selector>.private` 处的 DKIM 私钥，以及 `<data_dir>/database.json` |
 
-> 只包含前两项之一的备份不是备份：数据库说某封邮件存在，Maildir 存着它的字节，单独恢复
+支配其余一切的规则：
+
+> 只包含两半之一的备份不是备份：数据库说某封邮件存在，Maildir 存着它的字节，单独恢复
 > 任何一个，你得到的都是一个满是悬空行的邮箱，或一个满是孤立文件的目录。
 
 | 单独恢复 | 用户看到什么 |
@@ -1001,68 +1026,103 @@ docker compose -f docker-compose.prod.yml exec postgres \
 | 只有数据库 | 一个只有主题没有正文的收件箱，每次读取都是 `StorageError::BodyMissing` |
 | 只有 Maildir | 空的文件夹；字节在磁盘上，但没有任何东西知道它们 |
 
-### 8.2 运行它
+`<data_dir>/database.json` 是数据库在浏览器里被选定（§3.5）之后服务器记住的地址：权限
+0600，因为里面明文存着密码。因此这个卷和它旁边的 DKIM 私钥一样**带密钥**，任何保存它副本的
+东西——归档、快照或备份仓库——都必须至少和 `.env` 一样受保护：静态加密、限制可访问范围，
+并且不做成任何人都能读的文件。
 
-生产栈运行一个每夜的边车：
+### 8.2 做一次备份
 
-```yaml
-backup:
-  image: postgres:16-alpine
-  environment:
-    PGHOST: postgres
-    PGUSER: ${POSTGRES_USER:-ferroma}
-    PGPASSWORD: ${POSTGRES_PASSWORD}
-    PGDATABASE: ${POSTGRES_DB:-ferroma}
-    BACKUP_DIR: /backups
-    RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
-    BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
-  entrypoint: ['/bin/sh', '/usr/local/bin/backup.sh']
-  command: ['--loop']
-  restart: unless-stopped
-  volumes:
-    - ./scripts/backup.sh:/usr/local/bin/backup.sh:ro
-    - ferroma-data:/mail:ro
-    - backups:/backups
-```
-
-`command: ['--loop']` 不是装饰：一次性脚本挂在 `restart: always` 下会**每次重启都再写一份
-完整备份**，退避到一分钟一轮，直到磁盘写满。
-
-手工运行：
+给每一次运行一个带时间戳的目录，把两半都放进去：
 
 ```bash
-# 跑一遍就退出（--once 是显式的「只跑一次」）。
-docker compose -f docker-compose.prod.yml run --rm backup --once
-
-# 前台循环：每 24 小时一次，保留 14 天。
-docker compose -f docker-compose.prod.yml run --rm \
-  -e BACKUP_INTERVAL_SECONDS=86400 -e RETENTION_DAYS=14 \
-  backup --loop
-
-# 离机存放，这才让备份成为备份。从宿主机上运行它：
-docker run --rm -v ferroma-backups:/backups -v "$PWD:/out" alpine \
-  tar -czf /out/ferroma-backups-$(date -u +%Y%m%d).tar.gz -C /backups .
+# external-db 栈上，DATABASE_URL 与 POSTGRES_PASSWORD 在 .env 里。
+set -a; . ./.env; set +a
+STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+mkdir -p "/backups/$STAMP"
 ```
 
-用 §3.1 的栈时更短：`./scripts/deploy.sh backup`。
+**数据库那一半。** 用与服务器大版本一致的 `pg_dump`。
 
-边车以只读方式挂载邮件根目录（`ferroma-data:/mail:ro`），从不写它。把归档弄出这台机器：
-与邮件存储放在同一块盘上的备份不是备份，放在同一个云账号里而没有版本控制的也不是。
+```bash
+# external-db 栈，或任何自带 psql、已经在跑 PostgreSQL 的宿主机。
+# DATABASE_URL 是 Ferroma 连接用的地址。
+pg_dump --format=custom --compress=6 -d "$DATABASE_URL" \
+  > "/backups/$STAMP/ferroma.dump"
+
+# 宿主机没有 psql？用 scripts/deploy.sh 专门为此拉取的客户端镜像。它是客户端：
+# 绝不会从它启动服务器。--network host 让它能访问 127.0.0.1 上的数据库，
+# external-db 栈就是这么连的。
+docker run --rm --network host -i \
+  -e PGPASSWORD="$POSTGRES_PASSWORD" -e PGUSER="$POSTGRES_USER" -e PGDATABASE="$POSTGRES_DB" \
+  postgres:16-alpine \
+  pg_dump -h 127.0.0.1 --format=custom --compress=6 \
+  > "/backups/$STAMP/ferroma.dump"
+
+# 角色与其它集群级对象在集群里，不在数据库里。
+docker run --rm --network host -i -e PGPASSWORD="$POSTGRES_PASSWORD" \
+  postgres:16-alpine \
+  pg_dumpall -h 127.0.0.1 -U postgres --globals-only \
+  > "/backups/$STAMP/globals.sql"
+
+# prod 栈：PostgreSQL 就是 `postgres` 容器。这里用容器自己的
+# POSTGRES_USER/POSTGRES_DB，所以改过这两个名字的部署也能导出正确的库。
+docker compose -f docker-compose.prod.yml exec -T postgres \
+  sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom --compress=6' \
+  > "/backups/$STAMP/ferroma.dump"
+```
+
+**卷那一半**——Maildir、附件、DKIM 密钥，以及被记住的数据库地址。用一个临时容器读它，
+宿主机上什么都不用装：
+
+```bash
+# 在 dump 旁边打一个 tar。挂载是只读的：这里没有任何东西会写存储。
+docker run --rm \
+  -v ferroma-data:/data:ro \
+  -v "/backups/$STAMP:/out" \
+  alpine tar -czf /out/ferroma-data.tar.gz -C /data .
+
+# 存储很大、想要增量副本时用 rsync。Alpine 自带 tar 但不带 rsync，
+# 在临时容器里装一下。
+docker run --rm \
+  -v ferroma-data:/data:ro \
+  -v /backups/ferroma-data:/out \
+  alpine sh -c 'apk add --no-cache rsync >/dev/null && rsync -a --delete /data/ /out/'
+```
+
+**或者用快照**，本质相同，只是发生在文件系统或虚拟机层面，在大型存储上便宜得多。两半必须
+在同一时刻取快照——卷的挂载点与 PostgreSQL 的数据目录，或者整台虚拟机一次做完：
+
+```bash
+docker volume inspect -f '{{.Mountpoint}}' ferroma-data   # 卷实际在哪
+```
+
+**把副本弄出这台机器。** 与邮件存储放在同一块盘上的备份不是备份，放在同一个云账号里而没有
+版本控制的也不是。把你已经在用的东西——`restic`、`borg`、`rclone`、开了版本控制的对象
+存储——指向那个带时间戳的目录：
+
+```bash
+restic -r s3:s3.example.com/ferroma-offsite backup "/backups/$STAMP"
+restic -r s3:s3.example.com/ferroma-offsite forget --keep-daily 14 --prune
+```
+
+保留期现在是你要维护的策略，而不是 `.env` 里的变量：选一个窗口（14 天是合理值），在保存
+副本的工具里执行它。无论选什么，都要测试恢复（§8.6）——没测过的备份只是假设。
 
 ### 8.3 运行期间的一致性
 
 * **数据库那一半是一次单独的 `pg_dump`**，一个瞬间的一致性快照。
-* **Maildir 那一半是一次运行中的 `tar`。** Maildir 写入是原子重命名
-  （[storage.md](storage.md) §4.3），所以归档可能漏掉一次正在进行的投递，但绝不会包含
+* **Maildir 那一半是一次运行中的 `tar` 或 `rsync`。** Maildir 写入是原子重命名
+  （[storage.md](storage.md) §4.3），所以副本可能漏掉一次正在进行的投递，但绝不会包含
   写了一半的邮件。
 * 坏的方向不可能发生：Maildir 文件是在行*之前*写入的，所以运行中的备份可能产生一个孤立
   文件（无害，可清扫），但不会产生一行没有字节的记录。
 
-要得到完全一致的一对，就在此期间停掉服务：
+它们仍然是两个系统在两个时刻的两张快照。要得到完全一致的一对，就在此期间停掉服务：
 
 ```bash
 docker compose -f docker-compose.prod.yml stop ferroma
-docker compose -f docker-compose.prod.yml run --rm backup --once
+# 现在按 §8.2 取 pg_dump 与卷副本
 docker compose -f docker-compose.prod.yml start ferroma
 ```
 
@@ -1070,68 +1130,82 @@ docker compose -f docker-compose.prod.yml start ferroma
 
 ### 8.4 恢复
 
-`scripts/restore.sh` 遵循项目书 §47：**数据库、然后是邮件存储、最后是配置。** 数据库放第一
-位，因为它定义了应该存在什么；Maildir 第二位，这样服务器启动前每一行都已经有它的文件；
-配置放最后，这样一个做了一半的恢复不会留下一个运行中的服务器指向错误的证书。
+先停掉 Ferroma：恢复会在一个运行中的服务器底下**写入**两半，而一个指向恢复了一半的存储的
+服务器，比停着的服务器更糟。两半要取自**同一个**时间戳——数据库取自一天、卷取自另一天，
+正是 §8.1 警告的那种错配。
 
-恢复要**写**邮件存储，而每夜边车只以只读方式挂载它（这是有意的），所以恢复走一个单独的
-一次性容器：`docker-compose.external-db.yml` 里 `profiles: ['tools']` 的 `restore` 服务
-（prod 栈里可以用同样的方式，或者照下面这样覆盖 entrypoint）。
+顺序仍然重要，而且与备份相反：数据库放第一位，因为它定义了应该存在什么；卷放第二位，
+这样服务器启动前每一行都已经有它的文件。配置归档已经不存在，但哪一边都不在的文件仍然要紧：
+`.env`、`config/ferroma.toml`，以及在 prod 栈上以绑定挂载存在的 `./tls` 与 `./dkim`，
+它们都在宿主机上，属于你保存这份部署定义的一部分。在 external-db 栈上，DKIM 密钥就在
+`ferroma-data` 里，卷已经覆盖了它。
 
 ```bash
-# 只验证：检查校验和并打印清单，不恢复任何东西。服务可以照常运行。
-./scripts/deploy.sh restore /backups/20260916T030000Z --verify-only
+docker compose -f docker-compose.prod.yml stop ferroma
 
-# 完整恢复：脚本会先停 Ferroma，恢复完再拉起来并等健康检查。
-./scripts/deploy.sh restore /backups/20260916T030000Z
+# 1. 数据库。先重建一个空库：pg_restore 进一个非空数据库是合并而不是替换，
+#    而一次悄悄发生的合并，正是运维人员丢掉一周邮件的方式。
+docker compose -f docker-compose.prod.yml exec -T postgres \
+  sh -c 'dropdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
+docker compose -f docker-compose.prod.yml exec -T postgres \
+  sh -c 'createdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
+docker compose -f docker-compose.prod.yml exec -T postgres \
+  sh -c 'pg_restore --no-owner --no-privileges -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+  < "/backups/$STAMP/ferroma.dump"
 
-# 等价的原始命令（external-db 栈）。
+# 2. 卷。先清空，再解同一个时间戳的归档。tar 会保留存进去的属主，
+#    这是镜像需要的：它以 uid 10001 运行。
+docker volume create ferroma-data     # 只在卷彻底丢失时
+docker run --rm \
+  -v ferroma-data:/data \
+  -v "/backups/$STAMP:/in:ro" \
+  alpine sh -c 'rm -rf /data/* /data/.[!.]*; tar -xzf /in/ferroma-data.tar.gz -C /data'
+
+# 3. 启动它，并检查两半是否一致。
+docker compose -f docker-compose.prod.yml up -d ferroma
+docker compose -f docker-compose.prod.yml exec ferroma ferroma storage verify
+```
+
+两半都是普通的标准格式，所以恢复不需要这套部署处于运行状态：在新宿主机上做裸机恢复，
+就是同样三步、同样几个文件。
+
+external-db 栈上，数据库那一半走宿主机的 `psql` 或客户端容器，而不是
+`docker compose exec postgres`。那里没有 `postgres` 服务，也没有可用的
+`--profile tools` 恢复服务：
+
+```bash
 docker compose -f docker-compose.external-db.yml stop ferroma
-docker compose -f docker-compose.external-db.yml --profile tools run --rm \
-  restore /backups/20260916T030000Z
+docker run --rm --network host -i \
+  -e PGPASSWORD="$POSTGRES_PASSWORD" -e PGUSER="$POSTGRES_USER" -e PGDATABASE="$POSTGRES_DB" \
+  postgres:16-alpine \
+  pg_restore --no-owner --no-privileges --clean --if-exists -h 127.0.0.1 \
+  < "/backups/$STAMP/ferroma.dump"
 docker compose -f docker-compose.external-db.yml up -d ferroma
 ```
 
-脚本拒绝覆盖一个非空的数据库：
-
-```text
-database ferroma is not empty (19 tables). Set FORCE_RESTORE=1 to overwrite,
-or restore into a fresh database.
-```
-
-那道防线是文件里最有价值的一行。悄悄合并两个邮件存储，正是运维人员丢掉一周邮件的方式，
-而没有任何工具能分辨「覆盖式恢复」和「恢复错库」。真要覆盖时：
-
-```bash
-# external-db 栈：加一个 -e FORCE_RESTORE=1 就够了。
-docker compose -f docker-compose.external-db.yml stop ferroma
-docker compose -f docker-compose.external-db.yml --profile tools run --rm \
-  -e FORCE_RESTORE=1 restore /backups/20260916T030000Z
-docker compose -f docker-compose.external-db.yml up -d ferroma
-```
-
-为灾难恢复准备了部分模式，两者都会打印警告：
-
-```bash
-./scripts/deploy.sh restore /backups/20260916T030000Z --db-only
-./scripts/deploy.sh restore /backups/20260916T030000Z --mail-only
-```
+只恢复其中一半有时是正确的——旧二进制读不了的迁移只需要把数据库恢复回来（§9.2）——但要
+有意识地进行：行与文件从此不再描述同一时刻，此后收到的每封邮件要么是有行没有字节，要么是
+有字节没有行。无论哪种情况，之后都要跑 `ferroma storage verify`。
 
 ### 8.5 恢复之后
 
 ```bash
-# 1. 先做检查：没有正文的行、没有对应行的文件、计数器、uid_next。
-#    查询语句与 shell 循环见 docs/storage.md §9。
+# 1. 第一道体检：恢复回来的行描述了多少封存活的邮件。
+#    完整流程见 docs/storage.md §9。
 docker compose -f docker-compose.prod.yml exec ferroma sh -c '
   psql "$DATABASE_URL" -Atc "SELECT COUNT(*) FROM messages WHERE expunged_at IS NULL"'
 
-# 2. 校正那些允许漂移的计数器。
+# 2. 用二进制自带的完整性检查：没有正文的行、没有对应行的文件、计数器、uid_next。
+docker compose -f docker-compose.prod.yml exec ferroma \
+  ferroma storage verify --details
+
+# 3. 校正那些允许漂移的计数器。
 #    FoldersRepository::recount 与 MailboxesRepository::recompute_usage，
 #    通过 POST /api/v1/storage/gc（需要管理员令牌）与 Admin 存储界面触发。
 #    curl -s -X POST https://mail.example.com/api/v1/storage/gc \
 #      -H "Authorization: Bearer $TOKEN"
 
-# 3. 启动 Ferroma 并观察头一分钟的日志。
+# 4. 启动 Ferroma 并观察头一分钟的日志。
 docker compose -f docker-compose.prod.yml up -d ferroma
 docker compose -f docker-compose.prod.yml logs -f --tail=100 ferroma
 ```
@@ -1146,10 +1220,12 @@ docker compose -f docker-compose.prod.yml logs -f --tail=100 ferroma
 *"必须实际测试恢复"*，恢复必须真的被测过）。
 
 ```bash
-# 恢复到同一台宿主机上的临时数据库，不碰生产。
+# 把 dump 恢复到同一台宿主机上的临时数据库，不碰生产。
+# 卷那一半同样恢复，只是恢复进一个一次性卷。
 docker compose -f docker-compose.prod.yml exec postgres createdb -U ferroma ferroma_drill
-docker compose -f docker-compose.prod.yml exec postgres \
-  pg_restore --no-owner --no-privileges --dbname=ferroma_drill /backups/…/ferroma.dump
+docker compose -f docker-compose.prod.yml exec -T postgres \
+  pg_restore --no-owner --no-privileges --dbname=ferroma_drill \
+  < "/backups/$STAMP/ferroma.dump"
 docker compose -f docker-compose.prod.yml exec postgres \
   psql -U ferroma -d ferroma_drill -c 'SELECT COUNT(*) FROM messages;'
 docker compose -f docker-compose.prod.yml exec postgres dropdb -U ferroma ferroma_drill
@@ -1165,8 +1241,10 @@ docker compose -f docker-compose.prod.yml exec postgres dropdb -U ferroma ferrom
 
 ```bash
 # 1. 先备份。永远。升级是第二可能需要它的时刻。
-docker compose -f docker-compose.prod.yml run --rm backup --once
-# external-db 栈上一步到位：./scripts/deploy.sh upgrade（备份 → 重建 → 重启 → 等健康）
+#    按 §8.2 取两半——一份数据库 dump 加一份 ferroma-data 卷副本——并记下时间戳，
+#    §9.2 会用到它。
+# external-db 栈上 ./scripts/deploy.sh upgrade 会重建镜像、重启并等健康。
+# 它不会替你备份任何东西。
 
 # 2. 阅读发布说明里的迁移与配置变更。
 #    一个新的必填键，或一个被移除的键，会让新版本在启动时停下
@@ -1183,6 +1261,15 @@ docker compose -f docker-compose.prod.yml up -d ferroma
 docker compose -f docker-compose.prod.yml logs -f --tail=100 ferroma
 ```
 
+**从带备份边车的版本升级过来。** `./scripts/deploy.sh upgrade` 会用 `--remove-orphans`
+启动整套服务，从而清掉 compose 文件里已不存在的服务对应的容器——对 0.1.3 及更早版本来说，
+那就是 `ferroma-backup` 容器。`ferroma-backups` 卷不会随之删除（卷的生命周期长于服务），
+所以先用你自己的方式备份，再在不再需要那些旧归档时删掉它：
+
+```bash
+docker volume rm ferroma-backups
+```
+
 `database.run_migrations = true` 时迁移在启动时运行。它们只向前：`migrations/` 是一个
 有序列表（目前一个文件，`0001_initial.sql`），按顺序应用，没有向下迁移。这就是第 1 步
 之所以是第 1 步的原因。
@@ -1191,23 +1278,28 @@ docker compose -f docker-compose.prod.yml logs -f --tail=100 ferroma
 
 ```bash
 # 把镜像回滚。
-sed -i 's/^FERROMA_VERSION=.*/FERROMA_VERSION=0.1.0/' .env
+sed -i 's/^FERROMA_VERSION=.*/FERROMA_VERSION=0.1.4/' .env
 docker compose -f docker-compose.prod.yml pull ferroma
 docker compose -f docker-compose.prod.yml up -d ferroma
 ```
 
 镜像回滚**只有在模式兼容时**才有效。如果新版本应用了旧版本读不了的迁移，只回滚二进制
-文件不够，你必须从升级前的备份恢复数据库：
+文件不够，你必须从升级前的 dump 恢复数据库。在 external-db 栈上，那就是 §8.4 里的客户端
+镜像形式：
 
 ```bash
 docker compose -f docker-compose.external-db.yml stop ferroma
-docker compose -f docker-compose.external-db.yml --profile tools run --rm \
-  -e FORCE_RESTORE=1 restore /backups/<pre-upgrade-stamp>
+docker run --rm --network host -i -e PGPASSWORD="$POSTGRES_PASSWORD" \
+  postgres:16-alpine \
+  pg_restore --no-owner --no-privileges --clean --if-exists \
+  -h 127.0.0.1 -U ferroma -d ferroma \
+  < /backups/<pre-upgrade-stamp>/ferroma.dump
 docker compose -f docker-compose.external-db.yml up -d ferroma
 ```
 
-当只有数据库变了时，回滚邮件存储没有必要，而从升级前的备份恢复邮件存储会*丢掉*此后收到
-的每一封邮件，这就是为什么存在 `--db-only`，也是为什么它会打印警告。
+这里回滚邮件存储没有必要，因为 dump 与卷是两份独立的归档：只恢复数据库，备份之后收到的
+邮件就留在原处。不要把升级前的 `ferroma-data` 归档解到那之后一直在运行的存储上——那会
+*丢掉*这期间收到的每一封邮件。
 
 ### 9.3 不支持零停机
 
@@ -1222,7 +1314,7 @@ docker compose -f docker-compose.external-db.yml up -d ferroma
 
 ### 9.4 把版本发布到 Docker Hub
 
-镜像以 `wesukilaye/ferroma` 发布，覆盖 `linux/amd64` 与 `linux/arm64`，所以运维不必在邮件
+镜像以 `wesukilaye/ferroma` 发布，覆盖 `linux/amd64` 与 `linux/arm64`，所以运维者不必在邮件
 服务器上花 10–30 分钟编译 Rust。两条路径产出**同一个**构建；两者都由标签驱动，也都拒绝
 发布一个「标签与源码不符」的镜像。
 
@@ -1236,10 +1328,12 @@ git push origin main v0.2.0
 ```
 
 `.github/workflows/docker-publish.yml` 会先核对标签与 `Cargo.toml` 是否一致——在写着
-`0.1.0` 的树上打 `v0.2.0` 标签会在构建任何东西之前失败——再跑
-`node tools/check-deploy.mjs`，然后用 GitHub Actions 层缓存构建两个架构，推送 `0.2.0`、
-`0.2` 与 `latest`。预发布版本（`0.2.0-rc.1`）只推它自己的精确标签：让滚动标签 `latest`
-指向一个 rc，正是滚动标签本身要避免的意外。
+`0.1.4` 的树上打 `v0.2.0` 标签会在构建任何东西之前失败——再跑
+`node tools/check-deploy.mjs`，然后用 GitHub Actions 层缓存构建两个架构，推送 `0.2.0`
+与 `latest`。一次发布只推这两个标签：刻意没有滚动的次版本标签（`0.2`、`0.3`…），也没有
+`buildcache` 标签。预发布版本（`0.2.0-rc.1`）只推它自己的精确标签，并且绝不移动 `latest`：
+让 `latest` 指向一个 rc，正是这个标签本身要避免的意外。早先的流水线留在 Docker Hub 上的
+`0.1` 与 `buildcache` 标签已经删除，本仓库里也不再有会产出它们的东西。
 
 它需要两个仓库 secret，设置一次即可：
 
@@ -1255,7 +1349,8 @@ git push origin main v0.2.0
 ```bash
 docker login
 ./scripts/docker-publish.sh --dry-run       # 只打印确切的 buildx 命令，不推送
-./scripts/docker-publish.sh                 # 发布 0.2.0、0.2 与 latest
+./scripts/docker-publish.sh                 # 发布 0.2.0 与 latest
+./scripts/docker-publish.sh --no-latest     # 只发布 0.2.0
 ./scripts/docker-publish.sh --load          # 只构建本机架构，不推送
 ```
 
@@ -1281,8 +1376,10 @@ powershell -ExecutionPolicy Bypass -File scripts/docker-publish.ps1 --dry-run
 
 版本取自 `Cargo.toml`；工作区有未提交改动时它拒绝发布（否则 revision 标签会指向一个并不
 包含这份源码的提交，`--allow-dirty` 可覆盖，且会明确告知）；当前 buildx builder 无法推送多
-平台 manifest 时它会警告；层缓存放在 registry 的 `buildcache` 标签里，所以第二次发布不再是
-又一次冷编译。
+平台 manifest 时它会警告；层缓存**放在本地**的 `<repo>/.cache/buildx`（已 gitignore），
+所以同一台机器上的第二次构建不再是又一次冷编译，同时又什么都不发布；`--no-cache` 连这份
+本地缓存也跳过。registry 缓存意味着在发布仓库里多一个 `buildcache` 标签，所以没有它；
+CI 改用 GitHub 自己的缓存（见上文）。
 
 开始构建之前有两件事值得知道，因为它们在失败之前都看不见：
 
@@ -1315,7 +1412,7 @@ powershell -ExecutionPolicy Bypass -File scripts/docker-publish.ps1 --dry-run
 ```json
 {
   "status": "ok",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "protocol_version": 1,
   "uptime_secs": 84213,
   "database": { "ok": true, "server_version": "PostgreSQL 16.15",
@@ -1356,7 +1453,7 @@ docker compose -f docker-compose.prod.yml exec ferroma \
 | IMAP/SMTP 连接数 | `/api/v1/health` | 远低于 `limits.max_connections` | 顶在上限 |
 | 登录失败 | `login_attempts` | 涓涓细流 | 一阵爆发，或某个邮箱/IP 反复出现 |
 | 证书到期 | `openssl s_client`、`certbot certificates` | > 21 天 | < 21 天：在失效前续期 |
-| 备份新鲜度 | `/backups` 中最新的目录 | 不到 26 小时 | 超过 48 小时 |
+| 备份新鲜度 | 你自己的备份任务——`restic snapshots`、最新 dump 的时间戳 | 不到 26 小时 | 超过 48 小时 |
 
 ```bash
 # 队列，按状态分组。
@@ -1426,7 +1523,8 @@ docker compose -f docker-compose.prod.yml logs -f ferroma | grep -E 'WARN|ERROR'
 * `mail_queue.status = 'failed'` 超过你选定的阈值，
 * 磁盘占用超过 85 %，
 * 证书到期在 21 天以内，
-* 最新的备份目录超过 48 小时。
+* 最新的数据库 dump 或卷快照超过 48 小时——现在这是你的职责，部署里没有任何东西替你
+  检查它。
 
 ---
 
@@ -1695,5 +1793,7 @@ docker compose -f docker-compose.prod.yml exec postgres \
 | 同步模型与客户端的失败矩阵 | [sync.md](sync.md) |
 | 官方桌面客户端 | [client.md](client.md) |
 | crate 图与请求生命周期 | [architecture.md](architecture.md) |
-| 已发布的 Docker Hub 仓库页文案（英文，仅一份） | [../dockerhub.md](../dockerhub.md) |
-| 这台机器上的构建怪癖（代理、`CARGO_HOME`、PostgreSQL） | [../AGENTS.md](../../AGENTS.md) |
+| 每条术语及其规范写法 | [GLOSSARY.md](GLOSSARY.md) |
+| 还有哪些没做 | [../../TODO_zh.md](../../TODO_zh.md) |
+| 已发布的 Docker Hub 仓库页文案（中英双语，英文在前） | [../dockerhub.md](../dockerhub.md) |
+| 这台机器上的构建怪癖（代理、`CARGO_HOME`、PostgreSQL） | [../../AGENTS.md](../../AGENTS.md) |

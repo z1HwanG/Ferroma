@@ -46,7 +46,7 @@ export async function render(params) {
 
   const attentionCard = adminCard({
     title: t('Needs attention'),
-    subtitle: t('problems derived from the figures below; silent when there are none'),
+    subtitle: t('Conditions derived from the figures below; empty when none apply'),
     renderData: (node) => node,
   });
 
@@ -86,7 +86,7 @@ export async function render(params) {
 
   const historyCard = adminCard({
     title: t('Queue depth'),
-    subtitle: t('sampled in this browser, one point every 30 s while the console is open'),
+    subtitle: t('Sampled by this console, one point every 30 seconds while it is open'),
     // The five cards below hand `adminCard` a finished node, as `attentionCard`
     // already did. Declaring `data.node` here destructured a property no call site
     // sets, so these four cards rendered the string "undefined" and nothing else.
@@ -247,6 +247,7 @@ function renderStats(heroHost, statsHost, health, queueStats, storage) {
       value: stats.queuePending,
       note: t('waiting to be delivered'),
       hero: true,
+      icon: 'inbox',
     }),
     statTile({
       label: t('Failed deliveries'),
@@ -254,42 +255,49 @@ function renderStats(heroHost, statsHost, health, queueStats, storage) {
       note: num(failed) > 0 ? t('need a decision') : t('none'),
       hero: true,
       tone: num(failed) > 0 ? 'danger' : 'ok',
+      icon: 'warning',
     }),
-    statTile({ label: t('Mailboxes'), value: stats.users, note: t('accounts'), hero: true }),
+    statTile({ label: t('Mailboxes'), value: stats.users, note: t('accounts'), hero: true, icon: 'users' }),
     statTile({
       label: t('Mailbox storage'),
       value: stats.maildirBytes === undefined ? undefined : formatBytes(num(stats.maildirBytes)),
       note: t('Maildir on disk'),
       hero: true,
+      icon: 'storage',
     }),
   );
 
   statsHost.append(
-    statTile({ label: t('Domains'), value: stats.domains, note: t('hosted here') }),
-    statTile({ label: t('Received today'), value: stats.receivedToday }),
-    statTile({ label: t('Sent today'), value: stats.sentToday }),
+    statTile({ label: t('Domains'), value: stats.domains, note: t('hosted here'), icon: 'domains' }),
+    statTile({ label: t('Received today'), value: stats.receivedToday, icon: 'download' }),
+    statTile({ label: t('Sent today'), value: stats.sentToday, icon: 'sent' }),
     statTile({
       label: t('Queue retry'),
       value: stats.queueRetry,
       tone: num(stats.queueRetry) > 0 ? 'warn' : undefined,
+      icon: 'refresh',
     }),
     statTile({
       label: t('Attachments'),
       value: stats.attachmentBytes === undefined ? undefined : formatBytes(num(stats.attachmentBytes)),
       note: t('blob store'),
+      icon: 'clip',
     }),
     statTile({
       label: t('Database size'),
       value: stats.databaseBytes === undefined ? undefined : formatBytes(num(stats.databaseBytes)),
       note: database.server_version ? String(database.server_version) : '',
+      icon: 'database',
     }),
     statTile({
       label: t('Active client sessions'),
       value: stats.activeClientSessions,
+      icon: 'devices',
     }),
     statTile({
       label: t('Uptime'),
       value: stats.uptimeSecs === undefined ? undefined : formatUptime(num(stats.uptimeSecs)),
+      icon: 'clock',
     }),
     statTile({
       label: t('Connection pool'),
@@ -298,6 +306,7 @@ function renderStats(heroHost, statsHost, health, queueStats, storage) {
           ? undefined
           : `${num(pick(pool, ['size'], 0))} / ${num(pick(pool, ['max'], 0))}`,
       note: t('in use of max'),
+      icon: 'activity',
     }),
   );
 }

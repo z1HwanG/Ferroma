@@ -7,7 +7,14 @@
  *     which forbids scripts, forms, popups and top-level navigation;
  *   * attachment names are written with `textContent` and never used as markup.
  *
- * A message is marked seen once it has been visible for two seconds.
+ * A sandboxed frame has an opaque origin, so the parent cannot read its
+ * `contentDocument` and cannot grow it to fit its content. The frame therefore has a
+ * fixed, generous height from CSS (`styles.css`, `.reader-html`) and scrolls inside
+ * itself. Everything a message must not be able to do is still forbidden; what is
+ * given up is only the automatic height.
+ *
+ * A message is marked seen as soon as it is opened, unless the reader turned that
+ * preference off in Settings.
  */
 
 import { API_BASE, ApiError, download, request } from '../shared/api.js';
@@ -25,19 +32,55 @@ import { fileKind, formatBytes, fullStamp, timeElement } from '../shared/format.
 import { t } from '../shared/i18n.js';
 import { confirmDialog, openModal } from '../shared/modal.js';
 import { getPrefs, getState, mutate } from './store.js';
+import { onThemeChange } from '../shared/theme.js';
 import { toastError, toastSuccess } from '../shared/toast.js';
-
-const SEEN_DELAY_MS = 2000;
-const MAX_IFRAME_HEIGHT = 4000;
 
 /** @type {null | {onCompose: (mode: string, message: object) => void, onAfterChange: () => void, onBack: () => void}} */
 let handlers = null;
-/** @type {number} */
-let seenTimer = 0;
-/** @type {number} */
-let seenForId = 0;
-/** @type {IntersectionObserver|null} */
-let visibilityObserver = null;
+/**
+ * The stylesheet injected into the sandboxed frame when the client is in dark mode.
+ *
+ * A message is authored against white paper, and a white rectangle in the middle of a dark
+ * client is the one place the theme visibly stops. The frame's origin is opaque, so the
+ * parent cannot restyle it after load — but the parent *composes* the `srcdoc`, which is
+ * what makes this possible at all: the transform is applied where the document is built.
+ *
+ * Media is inverted back, so photographs, logos and screenshots keep their colours. A
+ * message that was already authored dark will come out light; that is the trade, and it is
+ * the same one every mail client that inverts makes.
+ */
+const DARK_MESSAGE_CSS =
+  '<style>' +
+  // The background goes on `html`, unfiltered, and only the *body* is inverted: a filter
+  // on the root element leaves the viewport canvas to the browser, which paints it white
+  // — the transform then applies to content that is already sitting on white paper.
+  'html{background:#14181f}' +
+  'body{filter:invert(0.92) hue-rotate(180deg)}' +
+  // Media is inverted back, so photographs, logos and screenshots keep their colours.
+  'img,video,picture,canvas,svg image{filter:invert(1) hue-rotate(180deg)}' +
+  '</style>';
+
+/** Whether the client is currently rendering in dark. */
+function darkMode() {
+  return document.documentElement.getAttribute('data-theme-resolved') === 'dark';
+}
+
+/**
+ * Every link in a message opens a new tab.
+ *
+ * A message is a document the reader did not navigate to, and following a link inside the
+ * reading pane would replace the message with the destination — there is no address bar to
+ * come back from. `<base target="_blank">` does it for every anchor at once, including the
+ * ones the sanitiser rewrote; the frame's `sandbox` allows the popup (and nothing else:
+ * scripts and same-origin access stay denied — see `docs/security.md` §10.2).
+ */
+const FRAME_BASE = '<base target="_blank">';
+
+/** A message body ready for `srcdoc`, in the colour scheme currently in force. */
+function frameSource(html) {
+  return (darkMode() ? DARK_MESSAGE_CSS : '') + FRAME_BASE + html;
+}
+
 /** @type {string} */
 let preferredPart = 'html';
 
@@ -70,23 +113,15 @@ export function initReader(options) {
     renderBody();
   });
 
-  const html = byId('reader-html');
-  html.addEventListener('load', () => {
-    sizeIframe(html);
-  });
+  // The HTML frame is sandboxed to an opaque origin, so `contentDocument` is `null`
+  // and its content height cannot be read from here. Its size therefore comes from CSS;
+  // see the module comment above.
 
-  if (typeof IntersectionObserver === 'function') {
-    visibilityObserver = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) scheduleSeen();
-          else cancelSeen();
-        }
-      },
-      { threshold: 0.25 },
-    );
-    visibilityObserver.observe(byId('reader-pane'));
-  }
+  // The dark-mode transform is part of the frame's `srcdoc`, so a theme change has to
+  // rebuild it; nothing else would repaint the message.
+  onThemeChange(() => {
+    if (getState().selected) renderBody();
+  });
 }
 
 /** @param {(message: object) => void} action */
@@ -103,7 +138,6 @@ function withMessage(action) {
  * @param {number} id
  */
 export async function openMessage(id) {
-  cancelSeen();
   const state = getState();
   const inList = state.messages.find((message) => message.id === id);
   mutate((draft) => {
@@ -134,7 +168,10 @@ export async function openMessage(id) {
     });
     renderReader();
     renderChrome();
-    scheduleSeen();
+    // Opening a message *is* reading it. This used to wait two seconds and only count if
+    // the pane was still on screen, which left a message the reader had plainly opened
+    // — and read — sitting in the list with its unread dot.
+    markSeen(id);
   } catch (error) {
     mutate((draft) => {
       draft.readerLoading = false;
@@ -150,7 +187,6 @@ export async function openMessage(id) {
 
 /** Close the reading pane (back button on narrow screens). */
 export function closeReader() {
-  cancelSeen();
   mutate((draft) => {
     draft.selectedId = 0;
     draft.selected = null;
@@ -257,15 +293,8 @@ function renderBody() {
   if (showHtml) {
     setHidden(textNode, true);
     setHidden(frame, false);
-    const html = message.html;
-    if (frame.getAttribute('srcdoc') !== html) {
-      frame.setAttribute('srcdoc', html);
-      // If the browser has already fired `load` for this document, size it now;
-      // the handler covers the asynchronous case.
-      window.requestAnimationFrame(() => sizeIframe(frame));
-    } else {
-      sizeIframe(frame);
-    }
+    const html = frameSource(message.html);
+    if (frame.getAttribute('srcdoc') !== html) frame.setAttribute('srcdoc', html);
     return;
   }
 
@@ -277,30 +306,16 @@ function renderBody() {
     (hasHtml ? t('This message has an HTML body only.') : t('This message has no body.'));
 }
 
-/** Grow the sandboxed frame to its content so the pane scrolls as one page. */
-function sizeIframe(frame) {
-  try {
-    const doc = frame.contentDocument;
-    if (!doc || !doc.documentElement) return;
-    const height = Math.max(
-      doc.documentElement.scrollHeight,
-      doc.body ? doc.body.scrollHeight : 0,
-      160,
-    );
-    frame.style.height = `${Math.min(height + 16, MAX_IFRAME_HEIGHT)}px`;
-    frame.style.overflow = height + 16 > MAX_IFRAME_HEIGHT ? 'auto' : 'hidden';
-  } catch {
-    frame.style.height = '420px';
-  }
-}
-
 /** Header bits that depend on the selected message (star state, archive). */
 export function renderChrome() {
   const state = getState();
   const message = state.selected;
   const star = byId('action-star');
   star.setAttribute('aria-pressed', message && message.flagged ? 'true' : 'false');
-  star.textContent = message && message.flagged ? t('Unstar') : t('Star');
+  // The label lives in its own span: assigning to the button's `textContent` would delete
+  // the icon beside it, which is exactly how this row lost its glyphs once before.
+  const starLabel = star.querySelector('.btn-label');
+  if (starLabel) setText(starLabel, message && message.flagged ? t('Unstar') : t('Star'));
   star.disabled = !message;
   byId('action-unread').disabled = !message;
   byId('action-archive').disabled = !message;
@@ -314,29 +329,19 @@ export function renderChrome() {
 
 /* ---------------------------------------------------------- auto mark as read */
 
-function scheduleSeen() {
-  const state = getState();
-  if (!state.selected) return;
-  if (!getPrefs().markReadOnOpen) return;
-  if (state.selected.seen) return;
-  if (seenForId === state.selected.id && seenTimer) return;
-  cancelSeen();
-  seenForId = state.selected.id;
-  const id = state.selected.id;
-  seenTimer = window.setTimeout(() => {
-    seenTimer = 0;
-    markSeen(id);
-  }, SEEN_DELAY_MS);
-}
-
-function cancelSeen() {
-  if (seenTimer) window.clearTimeout(seenTimer);
-  seenTimer = 0;
-  seenForId = 0;
-}
-
-/** @param {number} id */
+/**
+ * Mark a message read, the moment it is opened.
+ *
+ * The preference is a courtesy for readers who treat the pane as a preview and want a
+ * message to stay unread until they act on it; everything else about it is immediate.
+ * There is no timer and no visibility test any more — a message the reader has opened
+ * and read has been read, and the two-second delay only produced rows that stayed
+ * unread while the message behind them was plainly on screen.
+ *
+ * @param {number} id
+ */
 async function markSeen(id) {
+  if (!getPrefs().markReadOnOpen) return;
   const state = getState();
   if (!state.selected || state.selected.id !== id || state.selected.seen) return;
   try {
@@ -391,7 +396,6 @@ async function markUnread(message) {
       body: { seen: false },
       toast: false,
     });
-    cancelSeen();
     mutate((draft) => {
       draft.selected = Object.assign({}, draft.selected, { seen: false });
       draft.messages = draft.messages.map((candidate) =>

@@ -96,7 +96,7 @@ export async function render(params) {
   });
 
   const root = el('div', {}, [
-    viewHead(t('Audit log'), t('Who did what, and when'), [refreshButton]),
+    viewHead(t('Audit log'), t('Administrative actions, with actor and timestamp'), [refreshButton]),
     bar,
     card.node,
   ]);

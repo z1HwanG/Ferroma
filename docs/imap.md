@@ -311,7 +311,7 @@ Two numbers, two different jobs. Confusing them is the classic IMAP bug.
 |---|---|---|
 | Scope | unique and monotonically increasing **within one folder** | identifies a *generation* of a folder's UID space |
 | Storage | `messages.uid`, `UNIQUE (folder_id, uid)` | `folders.uid_validity` |
-| Allocator | `folders.uid_next` | assigned at mailbox creation, default `1` |
+| Allocator | `folders.uid_next` | assigned when the folder is created, default `1` |
 | Stable across | flag changes, moves *within* the same folder (there are none) | nothing — it changes only when the UID space is rebuilt |
 | Never reused | `MessagesRepository::move_to_folder` allocates a **fresh** UID in the destination; the old UID is never reissued | — |
 

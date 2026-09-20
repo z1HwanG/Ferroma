@@ -565,4 +565,6 @@ CREATE TABLE messages (
 | 威胁模型、控制措施、已知缺口 | [security.md](security.md) |
 | DNS、compose 文件、TLS、备份/恢复、故障排查 | [deployment.md](deployment.md) |
 | 官方桌面客户端 | [client.md](client.md) |
-| 这台机器上的构建怪癖 | [../AGENTS.md](../../AGENTS.md) |
+| 每条术语及其规范写法 | [GLOSSARY.md](GLOSSARY.md) |
+| 还有哪些没做 | [../../TODO_zh.md](../../TODO_zh.md) |
+| 这台机器上的构建怪癖 | [../../AGENTS.md](../../AGENTS.md) |

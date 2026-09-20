@@ -2,17 +2,25 @@
 # =============================================================================
 # Ferroma — build the release image and publish it to Docker Hub
 # =============================================================================
-#   ./scripts/docker-publish.sh                    # publish 0.1.0, 0.1, latest
+#   ./scripts/docker-publish.sh                    # publish 0.1.3 and latest
 #   ./scripts/docker-publish.sh --dry-run          # print the buildx command, push nothing
 #   ./scripts/docker-publish.sh --load             # single-arch, into the local daemon
 #   ./scripts/docker-publish.sh --platforms linux/amd64
+#   ./scripts/docker-publish.sh --no-cache         # ignore the local layer cache
 #   ./scripts/docker-publish.sh --version 0.2.0    # release a version other than Cargo.toml's
 #   ./scripts/docker-publish.sh --repo me/ferroma  # another namespace or registry
-#   ./scripts/docker-publish.sh --no-latest        # tags 0.1.0 and 0.1 only
+#   ./scripts/docker-publish.sh --no-latest        # tag 0.1.3 only, no `latest`
 #
 # Run `docker login` first. This script never handles credentials, reads no token
 # and stores none: every push is authenticated by the credential the Docker CLI
 # already holds for the target registry.
+#
+# A release publishes `X.Y.Z`, and — unless --no-latest or a pre-release —
+# `latest`. There is deliberately no rolling `X.Y` tag and no `buildcache` tag:
+# the repository holds runnable images and nothing else, so a tag in it always
+# means one specific release. Layer caching is local (`.cache/buildx`, which is
+# gitignored), so repeated builds on this machine are cheap without publishing
+# anything; CI uses GitHub's own cache instead.
 #
 # The same build is what `.github/workflows/docker-publish.yml` runs on a `v*` tag;
 # this script exists so a maintainer can cut a release without waiting on CI, and
@@ -30,6 +38,10 @@ DEFAULT_REPO="wesukilaye/ferroma"
 # usual VPS, arm64 the growing share of ARM hosts (Hetzner CAX, Ampere, Apple
 # silicon development boxes).
 DEFAULT_PLATFORMS="linux/amd64,linux/arm64"
+
+# The buildx local layer cache. Under `.cache/`, which `.gitignore` excludes, and
+# deliberately not a registry: a registry cache is a published `buildcache` tag.
+CACHE_DIR="$ROOT_DIR/.cache/buildx"
 
 REPO="${FERROMA_REPO:-$DEFAULT_REPO}"
 PLATFORMS="$DEFAULT_PLATFORMS"
@@ -65,7 +77,11 @@ need_value() {
 }
 
 usage() {
-    sed -n '3,18p' "$0" | sed 's/^# \{0,1\}//'
+    # The header block: from just after the first `# ===…` rule through the next
+    # one, which is the title plus the usage text. Read from the file rather than
+    # repeated in a here-doc, so the help cannot drift from the header.
+    awk 'NR == 1 { next } /^# =====/ { c++; next } c >= 1 && c < 3' "$0" \
+        | sed 's/^# \{0,1\}//'
     exit 0
 }
 
@@ -158,20 +174,19 @@ resolve_version() {
         *) die "'$VERSION' is not a x.y.z version" ;;
     esac
 
-    MINOR=$(printf '%s' "$VERSION" | sed 's/^\([0-9]*\.[0-9]*\)\..*/\1/')
-
-    # A pre-release moves no rolling tag: `latest` pointing at 0.2.0-rc.1 is exactly
-    # the surprise the tag is supposed to prevent.
+    # A pre-release never moves `latest`: pointing it at 0.2.0-rc.1 is exactly the
+    # surprise that tag is meant to prevent.
     PRERELEASE=0
     case "$VERSION" in *-*) PRERELEASE=1 ;; esac
 
+    # One tag per release, plus `latest`. The obvious extra — a rolling `X.Y` tag
+    # shared by every patch of a minor line — is deliberately absent: it is a
+    # second name for the same image, it silently rewrites a tag an operator may
+    # have pinned, and no deployment in docs/ ever needs it. Pin the full
+    # `X.Y.Z`, or the digest the report below prints.
     TAGS="$REPO:$VERSION"
-    if [ "$PRERELEASE" = 0 ]; then
-        if [ "$PUSH_LATEST" = 1 ]; then
-            TAGS="$TAGS $REPO:$MINOR $REPO:latest"
-        else
-            TAGS="$TAGS $REPO:$MINOR"
-        fi
+    if [ "$PRERELEASE" = 0 ] && [ "$PUSH_LATEST" = 1 ]; then
+        TAGS="$TAGS $REPO:latest"
     fi
 }
 
@@ -227,12 +242,14 @@ build() {
         set -- "$@" --tag "$_tag"
     done
 
-    # Registry-backed cache: the Rust release build is 10–30 minutes cold, and a
-    # cache that lives only on the publishing machine helps nobody else. It costs
-    # one extra tag (`buildcache`) in the repository.
-    if [ "$NO_CACHE" = 0 ] && [ "$DRY_RUN" = 0 ]; then
-        set -- "$@" --cache-from "type=registry,ref=$REPO:buildcache"
-        [ "$LOAD" = 1 ] || set -- "$@" --cache-to "type=registry,ref=$REPO:buildcache,mode=max"
+    # Local cache, never a registry one. `--cache-to type=registry` publishes a
+    # `buildcache` tag into the release repository: every operator sees it, it
+    # counts against that repository's storage, and it exists for this machine's
+    # benefit alone. The local backend keeps the same layer cache in `.cache/`
+    # (gitignored); `--no-cache` skips even that.
+    if [ "$NO_CACHE" = 0 ]; then
+        set -- "$@" --cache-from "type=local,src=$CACHE_DIR"
+        set -- "$@" --cache-to "type=local,dest=$CACHE_DIR,mode=max"
     fi
 
     if [ "$LOAD" = 1 ]; then

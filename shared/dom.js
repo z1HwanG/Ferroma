@@ -119,7 +119,14 @@ export function labelWithTitle(node, text, labelPrefix = '') {
   return node;
 }
 
-/** Inline SVG icon built from a path list; never parses markup from data. */
+/**
+ * Inline SVG icons, built from a path list; never parses markup from data.
+ *
+ * Every icon is a stroked 24×24 drawing with the same 1.8 weight and round joins, so a
+ * tray glyph beside a gear beside an arrow reads as one family rather than three. The
+ * few solid shapes a mail interface needs (a filled star, an unread dot) are listed in
+ * [`FILLED`] instead of being stroked.
+ */
 const ICONS = {
   inbox: ['M3 12h5l2 3h4l2-3h5', 'M3 12 5 5h14l2 7v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-6Z'],
   sent: ['m4 12 16-8-6 16-2-6-8-2Z'],
@@ -128,15 +135,55 @@ const ICONS = {
   junk: ['M12 3 3 20h18L12 3Z', 'M12 9v4M12 16h.01'],
   archive: ['M3 5h18v4H3z', 'M5 9v11h14V9M9 13h6'],
   folder: ['M3 6h6l2 2h10v11H3z'],
+  folderOpen: ['M3 6h6l2 2h9v3', 'M3 6v13h18l-2-9H8l-2 3H3'],
   clip: ['M8.5 12.5 14 7a3 3 0 0 1 4 4l-7.5 7.5a5 5 0 0 1-7-7L11 4'],
   star: ['m12 4 2.4 4.9 5.4.8-3.9 3.8.9 5.4-4.8-2.6-4.8 2.6.9-5.4L4.2 9.7l5.4-.8L12 4Z'],
+  starFilled: ['m12 4 2.4 4.9 5.4.8-3.9 3.8.9 5.4-4.8-2.6-4.8 2.6.9-5.4L4.2 9.7l5.4-.8L12 4Z'],
+  dot: ['M12 10.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z'],
   doc: ['M7 3h7l5 5v13H7z'],
+  reply: ['M9 14 4 9l5-5', 'M4 9h10a5 5 0 0 1 5 5v3'],
+  replyAll: ['M8 14 3 9l5-5', 'M13 14 8 9l5-5', 'M8 9h7a5 5 0 0 1 5 5v3'],
+  forward: ['m15 14 5-5-5-5', 'M20 9H10a5 5 0 0 0-5 5v3'],
+  mail: ['M3 6h18v12H3z', 'm3 7 9 6 9-6'],
+  move: ['M3 6h6l2 2h10v11H3z', 'M12 10v6M9.5 13.5 12 16l2.5-2.5'],
+  code: ['m8 8-4 4 4 4', 'm16 8 4 4-4 4', 'm13.5 5-3 14'],
+  refresh: ['M20 11a8 8 0 1 0-1.2 5.2', 'M20 5v6h-6'],
+  search: ['M11 17a6 6 0 1 0 0-12 6 6 0 0 0 0 12Z', 'M15.5 15.5 21 21'],
+  menu: ['M3 6h18M3 12h18M3 18h18'],
+  close: ['M6 6l12 12M18 6 6 18'],
+  check: ['m5 12.5 4.5 4.5L19 7'],
+  plus: ['M12 5v14M5 12h14'],
+  pencil: ['M4 20h4l10-10-4-4L4 16v4Z', 'm14 6 4 4'],
+  chevronDown: ['m6 9 6 6 6-6'],
+  chevron: ['m9 6 6 6-6 6'],
+  sun: ['M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z', 'M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.4 1.4M17.6 17.6 19 19M19 5l-1.4 1.4M6.4 17.6 5 19'],
+  moon: ['M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z'],
+  contrast: ['M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z', 'M12 3v18'],
+  // Sliders rather than a gear: at 16–18px a ring with eight spokes reads as a sun,
+  // and this icon sits beside a theme toggle in both front-ends.
+  settings: [
+    'M4 7h3M11 7h9',
+    'M4 12h9M17 12h3',
+    'M4 17h2M10 17h10',
+    'M9 5a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z',
+    'M15 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z',
+    'M8 15a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z',
+  ],
+  user: ['M12 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z', 'M4.5 20c0-3.4 3.4-5.4 7.5-5.4s7.5 2 7.5 5.4'],
+  warning: ['M12 4 3 20h18L12 4Z', 'M12 10v4M12 17h.01'],
+  info: ['M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z', 'M12 11v5M12 8h.01'],
+  clock: ['M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z', 'M12 7v5l3 2'],
+  download: ['M12 4v10', 'm8 11 4 4 4-4', 'M5 19h14'],
 };
+
+/** The icons drawn solid rather than stroked. */
+const FILLED = new Set(['starFilled', 'dot']);
 
 /**
  * @param {keyof typeof ICONS} name
  */
 export function svgIcon(name) {
+  const filled = FILLED.has(name);
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('viewBox', '0 0 24 24');
   svg.setAttribute('aria-hidden', 'true');
@@ -145,11 +192,15 @@ export function svgIcon(name) {
   for (const d of ICONS[name] || ICONS.doc) {
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     path.setAttribute('d', d);
-    path.setAttribute('fill', 'none');
-    path.setAttribute('stroke', 'currentColor');
-    path.setAttribute('stroke-width', '1.8');
-    path.setAttribute('stroke-linecap', 'round');
-    path.setAttribute('stroke-linejoin', 'round');
+    if (filled) {
+      path.setAttribute('fill', 'currentColor');
+    } else {
+      path.setAttribute('fill', 'none');
+      path.setAttribute('stroke', 'currentColor');
+      path.setAttribute('stroke-width', '1.8');
+      path.setAttribute('stroke-linecap', 'round');
+      path.setAttribute('stroke-linejoin', 'round');
+    }
     svg.append(path);
   }
   return svg;

@@ -4,6 +4,16 @@
  * `GET /api/v1/setup` reports `{ "required": true }` while no admin exists; the
  * section hides itself once an administrator is present, and both endpoints
  * return `409 conflict` after that.
+ *
+ * The wizard is the *installation's* configuration surface, not a shortcut for one
+ * command: everything an operator would otherwise pass as a flag or an environment
+ * variable — the domain, the hostname, the public URL, the API listener, the TLS files —
+ * is a field here, stored in the database and adopted by the server on its next start
+ * (see `apply_stored_settings`). Three things cannot move here, and the page says so
+ * rather than pretending otherwise: the database connection (a process has to reach
+ * PostgreSQL before it can serve a page, and the settings table lives in it), the
+ * container image, and the published ports (Docker fixes port mappings when the container
+ * is created).
  */
 
 import { API_BASE, ApiError, request, setTokens } from '../../shared/api.js';
@@ -11,7 +21,8 @@ import { el, setHidden, setText } from '../../shared/dom.js';
 import { t } from '../../shared/i18n.js';
 import { go } from '../router.js';
 import { toastSuccess } from '../../shared/toast.js';
-import { adminCard, badge, field, viewHead } from '../ui.js';
+import { firstRunHeader } from './first-run.js';
+import { badge, errorState, field, isValidDomain } from '../ui.js';
 
 /**
  * The state pill, showing a translated label.
@@ -32,88 +43,133 @@ function stateBadge(state, label) {
  * @returns {Promise<{node: Node, cleanup: () => void}>}
  */
 export async function render() {
-  const card = adminCard({
-    title: t('Setup'),
-    subtitle: 'GET /api/v1/setup',
-    actions: [],
-    renderData: (data) => data.node,
-  });
+  const root = el('div', { class: 'setup-view' });
 
-  const root = el('div', {}, [viewHead(t('First-run setup'), t('Create the first administrator')), card.node]);
-
-  await load();
-
-  async function load() {
-    card.setState({ state: 'loading' });
-    try {
-      const payload = await request(`${API_BASE}/setup`, { toast: false, retryOn401: false });
-      const required = Boolean(payload && payload.required);
-      if (!required) {
-        card.setState({
-          state: 'ready',
-          data: {
-            node: el('div', {}, [
-              el('p', {}, [
-                stateBadge('completed', t('Completed')),
-                el('span', { text: ` ${t('An administrator already exists.')}` }),
-              ]),
-              el('p', {
-                class: 'view-sub',
-                text: t('Both setup endpoints answer 409 conflict from now on. Use Users to add more accounts.'),
-              }),
-              el('div', { class: 'card-actions' }, [linkButton(t('Go to Users'), () => go('users'))]),
-            ]),
-          },
-        });
-        return;
-      }
-      card.setState({ state: 'ready', data: { node: renderWizard(onDone) } });
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 404) {
-        card.setState({
-          state: 'ready',
-          data: {
-            node: el('div', {}, [
-              el('p', {}, [stateBadge('disabled', t('Disabled'))]),
-              el('p', {
-                class: 'view-sub',
-                text: t('The setup wizard is disabled (api.enable_setup_wizard = false) or unimplemented on this build.'),
-              }),
-            ]),
-          },
-        });
-        return;
-      }
-      card.setState({
-        state: 'error',
-        message: error instanceof ApiError ? error.message : t('Setup state could not be read.'),
-      });
+  try {
+    const payload = await request(`${API_BASE}/setup`, { toast: false, retryOn401: false });
+    if (payload && payload.required) {
+      root.append(renderWizard(payload));
+    } else {
+      root.append(
+        el('div', { class: 'setup-done' }, [
+          el('p', {}, [
+            stateBadge('completed', t('Completed')),
+            el('span', { text: ` ${t('An administrator already exists.')}` }),
+          ]),
+          el('p', {
+            class: 'view-sub',
+            text: t('Both setup endpoints answer 409 conflict from now on. Use Users to add more accounts.'),
+          }),
+          el('div', { class: 'card-actions' }, [linkButton(t('Go to Users'), () => go('users'))]),
+        ]),
+      );
     }
-  }
-
-  async function onDone() {
-    toastSuccess(t('Administrator created. Welcome to Ferroma.'));
-    await load();
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      root.append(
+        el('div', { class: 'setup-done' }, [
+          el('p', {}, [stateBadge('disabled', t('Disabled'))]),
+          el('p', {
+            class: 'view-sub',
+            text: t('The setup wizard is disabled (api.enable_setup_wizard = false) or unimplemented on this build.'),
+          }),
+        ]),
+      );
+    } else {
+      root.append(errorState(error instanceof ApiError ? error.message : t('Setup state could not be read.')));
+    }
   }
 
   return { node: root, cleanup() {} };
 }
 
-function renderWizard(onDone) {
-  const email = el('input', { class: 'input', id: 'setup-email', type: 'email', autocomplete: 'off' });
-  const password = el('input', { class: 'input', id: 'setup-password', type: 'password', autocomplete: 'new-password' });
+/**
+ * The wizard form.
+ *
+ * @param {Record<string, unknown>} status the `GET /setup` body the form prefills from
+ */
+function renderWizard(status) {
+  const email = el('input', {
+    class: 'input',
+    id: 'setup-email',
+    type: 'email',
+    autocomplete: 'off',
+    placeholder: 'admin@example.com',
+  });
+  const password = el('input', {
+    class: 'input',
+    id: 'setup-password',
+    type: 'password',
+    autocomplete: 'new-password',
+  });
+  const domain = el('input', {
+    class: 'input',
+    id: 'setup-domain',
+    type: 'text',
+    autocomplete: 'off',
+    placeholder: 'example.com',
+  });
+  const description = el('input', {
+    class: 'input',
+    id: 'setup-domain-description',
+    type: 'text',
+    autocomplete: 'off',
+  });
   const hostname = el('input', { class: 'input', id: 'setup-hostname', type: 'text', autocomplete: 'off' });
-  const domain = el('input', { class: 'input', id: 'setup-domain', type: 'text', autocomplete: 'off' });
-  hostname.value = window.location.hostname || 'localhost';
-  const error = el('p', { class: 'field-error', id: 'setup-error', hidden: true });
+  const publicUrl = el('input', { class: 'input', id: 'setup-public-url', type: 'url', autocomplete: 'off' });
+  const apiHost = el('input', { class: 'input', id: 'setup-api-host', type: 'text', autocomplete: 'off' });
+  const apiPort = el('input', { class: 'input', id: 'setup-api-port', type: 'number', min: '1', max: '65535' });
+  const tlsEnabled = el('input', { type: 'checkbox', id: 'setup-tls-enabled' });
+  const tlsCert = el('input', { class: 'input', id: 'setup-tls-cert', type: 'text', autocomplete: 'off' });
+  const tlsKey = el('input', { class: 'input', id: 'setup-tls-key', type: 'text', autocomplete: 'off' });
 
-  const submit = el('button', { type: 'button', class: 'btn btn-primary', text: t('Create administrator') });
+  const meta = status || {};
+  hostname.value = String(meta.hostname || window.location.hostname || 'localhost');
+  publicUrl.value = String(meta.public_url || window.location.origin || '');
+  apiHost.value = String(meta.api_host || '0.0.0.0');
+  apiPort.value = String(meta.api_port || 8080);
+  tlsEnabled.checked = Boolean(meta.tls_enabled);
+  tlsCert.value = String(meta.tls_cert || '');
+  tlsKey.value = String(meta.tls_key || '');
+
+  const tlsFields = el('div', { class: 'setup-tls-fields' }, [
+    field(t('Certificate bundle (leaf first)'), tlsCert, t('A PEM file, as the process sees it — inside a container that is the mounted path.')),
+    field(t('Private key'), tlsKey),
+  ]);
+  const syncTls = () => setHidden(tlsFields, !tlsEnabled.checked);
+  tlsEnabled.addEventListener('change', syncTls);
+  syncTls();
+
+  const error = el('p', { class: 'field-error', id: 'setup-error', hidden: true });
+  const notice = el('div', { class: 'setup-notice', hidden: true });
+
+  // The administrator's address has to live inside the domain being created, so the email
+  // field keeps offering that domain as its placeholder while it is being typed.
+  const syncPlaceholder = () => {
+    email.placeholder = `admin@${domain.value.trim().toLowerCase()}`;
+  };
+  domain.addEventListener('input', syncPlaceholder);
+  syncPlaceholder();
+
+  const submit = el('button', { type: 'button', class: 'btn btn-primary btn-large', text: t('Create administrator') });
+  // Once the wizard has succeeded the account exists; a second click can only answer
+  // "setup already completed", which reads like a failure. The button therefore stays
+  // disabled, and the restart notice carries its own way forward.
+  let finished = false;
   submit.addEventListener('click', async () => {
+    if (finished) return;
     const values = {
       email: email.value.trim(),
       password: password.value,
-      hostname: hostname.value.trim(),
       domain: domain.value.trim().toLowerCase(),
+      domain_description: description.value.trim(),
+      hostname: hostname.value.trim(),
+      public_url: publicUrl.value.trim(),
+      api_host: apiHost.value.trim(),
+      api_port: Number.parseInt(apiPort.value, 10),
+      tls_enabled: tlsEnabled.checked,
+      tls_cert: tlsCert.value.trim(),
+      tls_key: tlsKey.value.trim(),
     };
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.email)) {
       show(t('Enter a valid administrator email address.'));
@@ -123,12 +179,32 @@ function renderWizard(onDone) {
       show(t('The password needs at least 8 characters.'));
       return;
     }
-    if (values.hostname === '') {
+    if (!isValidDomain(values.domain)) {
+      show(t('Enter the mail domain to create, for example example.com.'));
+      return;
+    }
+    if (!values.email.toLowerCase().endsWith(`@${values.domain}`)) {
+      show(t('The administrator address must be inside {domain}.', { domain: values.domain }));
+      return;
+    }
+    if (values.hostname === '' || !isValidDomain(values.hostname)) {
       show(t('Enter the hostname this server answers on.'));
       return;
     }
-    if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(values.domain)) {
-      show(t('Enter the mail domain to create, for example example.com.'));
+    if (values.public_url !== '' && !/^https?:\/\//.test(values.public_url)) {
+      show(t('The public URL must start with http:// or https://.'));
+      return;
+    }
+    if (values.api_host === '') {
+      show(t('Enter the address the API should listen on.'));
+      return;
+    }
+    if (!Number.isInteger(values.api_port) || values.api_port < 1 || values.api_port > 65535) {
+      show(t('The API port must be between 1 and 65535.'));
+      return;
+    }
+    if (values.tls_enabled && (values.tls_cert === '' || values.tls_key === '')) {
+      show(t('TLS needs both a certificate and its key.'));
       return;
     }
 
@@ -137,43 +213,125 @@ function renderWizard(onDone) {
     try {
       const payload = await request(`${API_BASE}/setup`, { method: 'POST', body: values, toast: false });
       if (payload) setTokens(payload);
-      onDone();
+      const applied = payload && payload.applied ? payload.applied : null;
+      finished = true;
+      if (applied && applied.restart_required) {
+        // The session exists and the administrator is usable; the hostname, the URL and
+        // the listener wait for a restart, so the operator is told rather than reloaded
+        // into a console that looks like the values went nowhere.
+        showRestartNotice(applied);
+        return;
+      }
+      toastSuccess(t('Administrator created. Welcome to Ferroma.'));
+      // A reload is what leaves the setup mode: the console boots with the session this
+      // form just created and renders its real sections.
+      window.setTimeout(() => window.location.reload(), 600);
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
+        // Someone else finished the wizard between the page load and this click. The
+        // account exists, so there is nothing left to submit.
+        finished = true;
         show(t('Setup has already been completed. Reload the console.'));
       } else {
         show(err instanceof ApiError ? err.message : t('Setup failed.'));
       }
     } finally {
-      submit.disabled = false;
+      submit.disabled = finished;
       setText(submit, t('Create administrator'));
     }
   });
+
+  function showRestartNotice(applied) {
+    const rows = [
+      applied.hostname ? [t('Hostname'), applied.hostname] : null,
+      applied.public_url ? [t('Public URL'), applied.public_url] : null,
+      applied.api_host ? [t('Listen address'), applied.api_host] : null,
+      applied.api_port ? [t('Listen port'), String(applied.api_port)] : null,
+      applied.tls_enabled === undefined ? null : [t('TLS'), applied.tls_enabled ? t('on') : t('off')],
+      applied.tls_cert ? [t('Certificate bundle (leaf first)'), applied.tls_cert] : null,
+      applied.tls_key ? [t('Private key'), applied.tls_key] : null,
+    ].filter(Boolean);
+
+    notice.replaceChildren(
+      el('p', {
+        text: t('The administrator was created. These settings are stored and take effect after the next restart of Ferroma (or its container):'),
+      }),
+      el('ul', { class: 'setup-summary' }, rows.map(([label, value]) => summaryItem(label, value))),
+      el('div', { class: 'card-actions' }, [
+        linkButton(t('Continue to the console'), () => window.location.reload()),
+      ]),
+    );
+    setHidden(notice, false);
+    setHidden(error, true);
+    toastSuccess(t('Administrator created.'));
+  }
 
   function show(message) {
     setText(error, message);
     setHidden(error, false);
   }
 
-  return el('div', {}, [
-    el('p', {
-      class: 'view-sub',
-      text: t('No administrator exists yet. This creates the first admin, the domain and its primary address.'),
-    }),
-    el('div', {}, [
-      labelled(t('Administrator email'), email),
-      labelled(t('Password'), password),
-      labelled(t('Server hostname'), hostname),
-      labelled(t('Primary mail domain'), domain),
+  return el('div', { class: 'setup' }, [
+    firstRunHeader(
+      t('Welcome to Ferroma'),
+      t('Three steps to get started. The rest lives in the console.'),
+    ),
+
+    el('div', { class: 'setup-form' }, [
+      setupStep(1, t('Administrator account'), t('The account that signs in here, and the first mailbox.'), [
+        el('div', { class: 'row' }, [
+          field(t('Administrator email'), email),
+          field(t('Password'), password, t('At least 8 characters.')),
+        ]),
+      ]),
+      setupStep(2, t('Mail domain'), t('The domain this server receives mail for. Addresses, DKIM and the DNS checks are all grouped by it.'), [
+        el('div', { class: 'row' }, [
+          field(t('Primary mail domain'), domain),
+          field(t('Description'), description, t('Optional, shown in the domain list.')),
+        ]),
+      ]),
+      setupStep(3, t('Server and access'), t('Stored in the database and applied on the next restart. A value given by the deployment — a flag or an environment variable — always wins over these.'), [
+        el('div', { class: 'row' }, [
+          field(t('Server hostname'), hostname, t('The name this server announces in SMTP and message headers.')),
+          field(t('Public URL'), publicUrl, t('Where this server is reached, e.g. https://mail.example.com. Used in autoconfiguration and generated links.')),
+        ]),
+        el('div', { class: 'row' }, [
+          field(t('Listen address'), apiHost, t('0.0.0.0 reaches the API from outside the container; 127.0.0.1 keeps it on the loopback behind a proxy.')),
+          field(t('Listen port'), apiPort),
+        ]),
+        el('label', { class: 'checkbox', for: 'setup-tls-enabled' }, [
+          tlsEnabled,
+          el('span', { text: t('Serve TLS from this process') }),
+        ]),
+        tlsFields,
+      ]),
+      error,
+      notice,
+      el('div', { class: 'setup-actions' }, [submit]),
     ]),
-    error,
-    el('div', { class: 'card-actions' }, [submit]),
   ]);
 }
 
-/** Label + control, using the shared field helper without a table. */
-function labelled(label, control) {
-  return field(label, control);
+/** One numbered step of the form. */
+function setupStep(number, title, lede, children) {
+  return el('section', { class: 'setup-step' }, [
+    el('header', { class: 'setup-step-head' }, [
+      el('span', { class: 'setup-step-no', text: String(number) }),
+      el('div', {}, [
+        el('h2', { class: 'setup-step-title', text: title }),
+        el('p', { class: 'setup-step-lede', text: lede }),
+      ]),
+    ]),
+    el('div', { class: 'setup-step-body' }, children),
+  ]);
+}
+
+/** One `label — value` line of the summary or the restart notice. */
+function summaryItem(label, value) {
+  return el('li', {}, [
+    el('span', { class: 'setup-summary-label', text: label }),
+    el('span', { class: 'setup-summary-value', text: value }),
+  ]);
 }
 
 function linkButton(label, onClick) {

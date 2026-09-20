@@ -47,7 +47,7 @@ export async function render() {
   });
 
   const root = el('div', {}, [
-    viewHead(t('Storage'), t('What this server is holding, and how much room is left'), [refreshButton, gcButton]),
+    viewHead(t('Storage'), t('Space used by mail, attachments and the database'), [refreshButton, gcButton]),
     countsHost,
     used,
     resultLine,

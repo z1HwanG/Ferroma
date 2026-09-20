@@ -113,6 +113,211 @@ pub fn run(config: &Config, args: &ServeArgs, log_sink: ferroma_api::LogSink) ->
     runtime.block_on(serve(config, args, log_sink))
 }
 
+/// Adopt the configuration values the first-run wizard stored in the `settings` table.
+///
+/// The wizard is a browser form, and it can only persist what it can reach: the
+/// database. Its `server.hostname` and `api.public_url` rows are therefore read back
+/// here, before any service is built, so the operator does not have to put them in
+/// `ferroma.toml` or the environment to finish an install.
+///
+/// Precedence is `ferroma.toml` / environment, then these rows, then the built-in
+/// default — a row never overrides a value the operator stated. That is decidable
+/// without recording where each value came from: a value that still equals the default
+/// is one nobody set.
+async fn apply_stored_settings(config: &mut Config, repos: &Repositories) {
+    let default = Config::default();
+
+    if config.server.hostname == default.server.hostname {
+        if let Some(hostname) = stored_string(repos, "server.hostname").await {
+            tracing::info!(hostname, "adopting the hostname stored by the setup wizard");
+            config.server.hostname = hostname;
+        }
+    }
+
+    if config.api.public_url == default.api.public_url {
+        if let Some(public_url) = stored_string(repos, "api.public_url").await {
+            tracing::info!(public_url, "adopting the public URL stored by the setup wizard");
+            config.api.public_url = public_url;
+        }
+    }
+
+    // The listener and TLS are the same arrangement: the wizard is a browser form, so it
+    // can only persist these, and they are adopted on the next start — unless the
+    // deployment stated them itself, which always wins.
+    if config.api.host == default.api.host {
+        if let Some(host) = stored_string(repos, "api.host").await {
+            tracing::info!(host, "adopting the API listen address stored by the setup wizard");
+            config.api.host = host;
+        }
+    }
+
+    if config.api.port == default.api.port {
+        if let Some(port) = stored_u16(repos, "api.port").await {
+            tracing::info!(port, "adopting the API port stored by the setup wizard");
+            config.api.port = port;
+        }
+    }
+
+    // TLS is the one group whose stored value can make an instance unusable. A path that
+    // no longer exists — a volume that was not mounted, a typo saved from the wizard,
+    // material rotated out from under the server — turns a strict configuration check
+    // into a refusal to start, and that locks the operator out of the very console that
+    // would let them fix it. So only settings that can actually be used are adopted;
+    // anything else is a warning, and TLS stays off. A value stated by the deployment is
+    // still validated strictly, because that one the operator can see and change.
+    let stored_cert = stored_string(repos, "tls.cert_path").await;
+    let stored_key = stored_string(repos, "tls.key_path").await;
+    let material_usable = match (&stored_cert, &stored_key) {
+        (Some(cert), Some(key)) => {
+            std::path::Path::new(cert).is_file() && std::path::Path::new(key).is_file()
+        }
+        _ => false,
+    };
+
+    if config.tls.cert_path.is_none() && config.tls.key_path.is_none() {
+        if let (Some(cert), Some(key)) = (&stored_cert, &stored_key) {
+            if material_usable {
+                tracing::info!(cert, key, "adopting the TLS material stored by the setup wizard");
+                config.tls.cert_path = Some(cert.into());
+                config.tls.key_path = Some(key.into());
+            } else {
+                tracing::warn!(
+                    cert,
+                    key,
+                    "ignoring the TLS material stored by the setup wizard: it is not on disk"
+                );
+            }
+        }
+    }
+
+    if config.tls.enabled == default.tls.enabled {
+        if let Some(enabled) = stored_bool(repos, "tls.enabled").await {
+            // Enabling is adopted when the material is usable or when none was stored at
+            // all — the latter is the self-signed fallback, which is a working server.
+            let has_stored_material = stored_cert.is_some() || stored_key.is_some();
+            if !enabled || material_usable || !has_stored_material {
+                tracing::info!(enabled, "adopting the TLS switch stored by the setup wizard");
+                config.tls.enabled = enabled;
+            } else {
+                tracing::warn!(
+                    "not enabling TLS from the stored setting: the certificate it names is \
+                     not on disk"
+                );
+            }
+        }
+    }
+}
+
+/// One setting, when it is a number that fits the field it belongs to.
+async fn stored_u16(repos: &Repositories, key: &str) -> Option<u16> {
+    match repos.settings.get(key).await {
+        Ok(Some(value)) => value.as_u64().and_then(|number| u16::try_from(number).ok()),
+        Ok(_) => None,
+        Err(err) => {
+            tracing::warn!(key, error = %err, "could not read a stored setting");
+            None
+        }
+    }
+}
+
+/// One setting, when it is a boolean.
+async fn stored_bool(repos: &Repositories, key: &str) -> Option<bool> {
+    match repos.settings.get(key).await {
+        Ok(Some(value)) => value.as_bool(),
+        Ok(_) => None,
+        Err(err) => {
+            tracing::warn!(key, error = %err, "could not read a stored setting");
+            None
+        }
+    }
+}
+
+/// One setting, when it is a non-blank string.
+async fn stored_string(repos: &Repositories, key: &str) -> Option<String> {
+    match repos.settings.get(key).await {
+        Ok(Some(serde_json::Value::String(value))) => {
+            let trimmed = value.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        }
+        Ok(_) => None,
+        Err(err) => {
+            // A settings read failure must not stop a server from starting: the file and
+            // the environment are still a complete configuration without this row.
+            tracing::warn!(key, error = %err, "could not read a stored setting");
+            None
+        }
+    }
+}
+
+/// Give `api.jwt_secret` a value, keeping the generated one across restarts.
+///
+/// Configuring the secret in the environment is the right thing in production, and the
+/// server still prefers it. What it no longer does when the variable is absent is
+/// generate a secret and throw it away: that logged every session out on every restart,
+/// and it made `FERROMA_JWT_SECRET` a startup item nobody could skip. The generated
+/// secret is written to `<data_dir>/jwt_secret` with owner-only permissions and reused.
+fn ensure_jwt_secret(config: &mut Config) -> Result<()> {
+    if config
+        .api
+        .jwt_secret
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|secret| !secret.is_empty())
+    {
+        return Ok(());
+    }
+
+    let path = config.server.data_dir.join("jwt_secret");
+    if let Some(existing) = std::fs::read_to_string(&path)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| value.len() >= 32)
+    {
+        config.api.jwt_secret = Some(existing);
+        return Ok(());
+    }
+
+    let secret = ferroma_auth::TokenService::generate_secret();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    write_private_file(&path, &secret)
+        .with_context(|| format!("writing {}", path.display()))?;
+    tracing::info!(
+        path = %path.display(),
+        "api.jwt_secret is not configured: generated one and stored it for later restarts"
+    );
+    config.api.jwt_secret = Some(secret);
+    Ok(())
+}
+
+/// Write a small secret file that only its owner may read.
+#[cfg(unix)]
+pub(crate) fn write_private_file(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(contents.as_bytes())?;
+    file.write_all(b"\n")
+}
+
+/// The same, for a host without POSIX permissions.
+#[cfg(not(unix))]
+fn write_private_file(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    std::fs::write(path, format!("{contents}\n"))
+}
+
 /// The IMAP server's view of the configuration.
 ///
 /// The TLS fields have to be carried across here rather than only attached
@@ -142,6 +347,57 @@ fn imap_server_config(config: &Config) -> ImapServerConfig {
     }
 }
 
+/// Bind the HTTP port before the database exists.
+///
+/// The bootstrap page *is* the API's port: the operator is told one address, and the page
+/// they open there is the one that changes what the process does next.
+async fn bind_api(config: &Config) -> Result<tokio::net::TcpListener> {
+    let address = format!("{}:{}", config.api.host, config.api.port);
+    tokio::net::TcpListener::bind(&address)
+        .await
+        .with_context(|| format!("binding the HTTP API to {address}"))
+}
+
+/// Where the database connection came from, which decides how a failure is handled.
+///
+/// A deployment that *stated* an address gets a fast, loud failure — that is a mistake in a
+/// file or an environment variable, and the operator can see it. An address this server
+/// remembered from the wizard, or the absence of one, gets the bootstrap page instead: there
+/// is nothing to quote at a log reader, and the tool that fixes it can be served right here.
+enum DatabaseSource {
+    /// From `ferroma.toml`, `FERROMA_DATABASE__URL`, or a flag.
+    Stated,
+    /// From `<data_dir>/database.json`, written by the wizard.
+    Remembered(String),
+    /// Nowhere yet.
+    Missing,
+}
+
+/// Classify the configured connection.
+fn database_source(config: &Config) -> DatabaseSource {
+    let default = ferroma_core::config::DatabaseConfig::default();
+    if config.database.url.trim() != default.url.trim() {
+        return DatabaseSource::Stated;
+    }
+    match crate::bootstrap::stored_url(&config.server.data_dir) {
+        Some(url) if !url.trim().is_empty() => DatabaseSource::Remembered(url),
+        _ => DatabaseSource::Missing,
+    }
+}
+
+/// What the connect attempt told us, in one place so bootstrap mode can quote it.
+async fn database_reachable(url: &str) -> std::result::Result<(), String> {
+    let mut database_config = ferroma_core::config::DatabaseConfig {
+        url: url.to_string(),
+        ..Default::default()
+    };
+    database_config.max_connections = 2;
+    match Database::connect(&database_config).await {
+        Ok(_) => Ok(()),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
 async fn serve(config: &Config, args: &ServeArgs, log_sink: ferroma_api::LogSink) -> Result<ExitCode> {
     let selection = Selection::resolve(config, &args.only);
     if selection.names().is_empty() {
@@ -151,6 +407,34 @@ async fn serve(config: &Config, args: &ServeArgs, log_sink: ferroma_api::LogSink
     }
 
     // --- storage ------------------------------------------------------------
+    // The address may come from the wizard's file rather than from a flag, and when there
+    // is none at all this is where the operator is handed the page that asks for one. The
+    // listener it already bound comes back with it, so the API carries on serving on the
+    // same socket instead of racing a rebind.
+    let mut config = config.clone();
+    let mut bootstrap_listener: Option<tokio::net::TcpListener> = None;
+    match database_source(&config) {
+        DatabaseSource::Stated => {}
+        DatabaseSource::Remembered(url) => match database_reachable(&url).await {
+            Ok(()) => {
+                tracing::info!(url = %crate::bootstrap::redact_url(&url), "using the database the setup page remembered");
+                config.database.url = url;
+            }
+            Err(problem) => {
+                let listener = bind_api(&config).await?;
+                let (url, listener) = crate::bootstrap::run(config.clone(), Some(problem), listener).await?;
+                config.database.url = url;
+                bootstrap_listener = Some(listener);
+            }
+        },
+        DatabaseSource::Missing => {
+            let listener = bind_api(&config).await?;
+            let (url, listener) = crate::bootstrap::run(config.clone(), None, listener).await?;
+            config.database.url = url;
+            bootstrap_listener = Some(listener);
+        }
+    }
+
     let database = Arc::new(Database::connect(&config.database).await.map_err(|err| {
         let message = err.to_string();
         // The single most common first-run failure. Name the command that fixes it
@@ -171,6 +455,13 @@ async fn serve(config: &Config, args: &ServeArgs, log_sink: ferroma_api::LogSink
     }
     let (migrations_total, migrations_applied) = database.migration_status().await?;
     let repos: Repositories = database.repositories();
+
+    // From here on the configuration is a local copy, because two things may complete it
+    // at startup: the values the first-run wizard stored in the `settings` table, and a
+    // signing secret provisioned into the data directory so a session survives a restart.
+    // Only the values nobody stated explicitly are adopted; see `apply_stored_settings`.
+    apply_stored_settings(&mut config, &repos).await;
+    ensure_jwt_secret(&mut config)?;
 
     let maildir = Maildir::new(
         config.maildir_root(),
@@ -194,7 +485,7 @@ async fn serve(config: &Config, args: &ServeArgs, log_sink: ferroma_api::LogSink
     ));
 
     // --- TLS ----------------------------------------------------------------
-    let tls = tls::build(config)?;
+    let tls = tls::build(&config)?;
     if let Some(material) = &tls {
         if !material.source().is_trusted() {
             // A self-signed certificate on a public MX is worse than no TLS: clients
@@ -278,8 +569,8 @@ async fn serve(config: &Config, args: &ServeArgs, log_sink: ferroma_api::LogSink
         let resolver = resolver
             .clone()
             .expect("the resolver is built whenever the queue is selected");
-        let client = SmtpClient::new(SmtpClientConfig::from_config(config));
-        let queue_view = QueueConfigView::from_config(config);
+        let client = SmtpClient::new(SmtpClientConfig::from_config(&config));
+        let queue_view = QueueConfigView::from_config(&config);
         // Named in the startup banner: an operator who configured a relay has to be
         // able to see that it is carrying the mail, rather than the MX path.
         let relay_host = queue_view.relay.as_ref().map(|relay| relay.host.clone());
@@ -311,7 +602,7 @@ async fn serve(config: &Config, args: &ServeArgs, log_sink: ferroma_api::LogSink
 
     // --- IMAP ---------------------------------------------------------------
     if selection.imap {
-        let imap_config = imap_server_config(config);
+        let imap_config = imap_server_config(&config);
 
         let mut server = ImapServer::new(
             imap_config,
@@ -364,9 +655,14 @@ async fn serve(config: &Config, args: &ServeArgs, log_sink: ferroma_api::LogSink
         let router = ferroma_api::build(state);
         let address = format!("{}:{}", config.api.host, config.api.port);
 
-        let listener = tokio::net::TcpListener::bind(&address)
-            .await
-            .with_context(|| format!("binding the HTTP API to {address}"))?;
+        // Bootstrap mode already bound this port and served the page that produced the
+        // database; taking that listener back means the port is never briefly unlistened.
+        let listener = match bootstrap_listener.take() {
+            Some(listener) => listener,
+            None => tokio::net::TcpListener::bind(&address)
+                .await
+                .with_context(|| format!("binding the HTTP API to {address}"))?,
+        };
         let bound = listener.local_addr()?;
         println!("http      http://{bound}{}", config.api.base_path);
         if config.api.serve_frontend {
@@ -465,6 +761,50 @@ async fn wait_for_shutdown() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_generated_jwt_secret_is_kept_and_reused() {
+        // Regression: an unconfigured `api.jwt_secret` was generated and thrown away at
+        // every boot, which logged every session out on every restart and made
+        // `FERROMA_JWT_SECRET` an unavoidable startup item.
+        let dir = std::env::temp_dir().join(format!("ferroma-jwt-secret-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut first = Config::default();
+        first.server.data_dir = dir.clone();
+        ensure_jwt_secret(&mut first).expect("a secret must be provisioned");
+        let secret = first.api.jwt_secret.clone().expect("the config must carry it");
+        assert!(secret.len() >= 32, "a short secret is refused by TokenService");
+
+        // The next boot reads the same file rather than minting a new one.
+        let mut second = Config::default();
+        second.server.data_dir = dir.clone();
+        ensure_jwt_secret(&mut second).expect("the stored secret must be reused");
+        assert_eq!(second.api.jwt_secret.as_deref(), Some(secret.as_str()));
+
+        // A configured secret always wins: the file is a convenience, not an override.
+        let mut configured = Config::default();
+        configured.server.data_dir = dir.clone();
+        configured.api.jwt_secret = Some("a-configured-secret-long-enough-to-pass".to_string());
+        ensure_jwt_secret(&mut configured).expect("nothing to do");
+        assert_eq!(
+            configured.api.jwt_secret.as_deref(),
+            Some("a-configured-secret-long-enough-to-pass")
+        );
+
+        // On a POSIX host the file must not be world-readable.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.join("jwt_secret"))
+                .expect("the secret file")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o077, 0, "the secret must be owner-only: {mode:o}");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn an_enabled_imaps_port_reaches_the_imap_configuration() {

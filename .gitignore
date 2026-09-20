@@ -18,6 +18,10 @@
 
 # Runtime data
 /data
+# Machine-local data directories used while exercising a fresh boot or the demo
+# seeders (`tools/first-run.mjs`, `tools/seed-demo-data.mjs`): one checkout's
+# throwaway state, never part of a release.
+/data-*/
 /var
 *.log
 

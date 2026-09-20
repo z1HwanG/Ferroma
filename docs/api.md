@@ -4,14 +4,14 @@ Two audiences share one router:
 
 | Surface | Base path | Who uses it |
 |---|---|---|
-| **Management API** | `/api/v1` | Webmail, the Admin panel, scripts |
+| **Management API** | `/api/v1` | Webmail, the Admin console, scripts |
 | **Client API (FCP)** | `/api/v1/client` | the official desktop clients |
 
 Both are plain JSON over HTTP/1.1 and HTTP/2. TLS is terminated by Ferroma itself
 (`api.tls_port`) or by a reverse proxy in front of it.
 
 Everything on this page is implemented by `ferroma-api`; the protocol-level details
-of the client surface (versions, cursors, realtime framing) live in
+of the client surface (versions, cursors, real-time framing) live in
 [`fcp.md`](fcp.md).
 
 ---
@@ -145,7 +145,7 @@ RFC 3339 / ISO 8601 in UTC, e.g. `2026-09-16T12:00:00Z`. IDs are integers except
 
 ### `GET /api/v1/health`
 
-No authentication. Drives the container healthcheck.
+No authentication. Drives the container health check.
 
 ```json
 {
@@ -258,7 +258,7 @@ Admin-only. `403 forbidden` for ordinary users.
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/api/v1/users` | `?query=&limit=&offset=` |
-| `POST` | `/api/v1/users` | `{email, password, display_name?, is_admin?, quota_bytes?}` |
+| `POST` | `/api/v1/users` | `{email, password, display_name?, is_admin?, quota_bytes?}` — also creates the primary address when the email's domain already exists (`mailboxes` in the response; empty when it does not) |
 | `GET` | `/api/v1/users/:id` | |
 | `PATCH` | `/api/v1/users/:id` | any of `display_name`, `enabled`, `is_admin`, `quota_bytes`, `password` |
 | `DELETE` | `/api/v1/users/:id` | cascades: addresses, folders, messages, queue rows |
@@ -360,16 +360,47 @@ report is omitted from the object rather than sent as `0`.
 
 ### 4.7 First-run setup
 
-`GET /api/v1/setup` → `{ "required": true, "hostname": "mail.example.com" }` while
-no admin exists. `hostname` is the value the running configuration advertises, so a
-client can present it for confirmation instead of guessing.
+`GET /api/v1/setup` → `{ "required": true, "hostname": "mail.example.com",
+"public_url": "https://mail.example.com" }` while no admin exists. `hostname` and
+`public_url` are the values the running configuration advertises, so a client can
+present them for confirmation instead of guessing.
 
-`POST /api/v1/setup` → `{email, password, hostname, domain}` creates the first
-admin, the domain and its primary address, then returns a normal token pair. The
-`hostname` is optional; when it is present and disagrees with `server.hostname` the
-request is `400 invalid_input` naming the setting to change, because the running
-configuration cannot be rewritten underneath the process and silently ignoring the
-value leaves the operator's DNS panel contradicting what they just typed.
+`POST /api/v1/setup` creates the first admin, the domain and its primary address, then
+returns a normal token pair (flattened at the top level) plus an `applied` object:
+
+```json
+{
+  "access_token": "…", "refresh_token": "…", "token_type": "Bearer", "expires_in": 3600,
+  "user": { "…": "…" },
+  "applied": {
+    "hostname": "mail.example.com",
+    "public_url": "https://mail.example.com",
+    "api_host": "0.0.0.0",
+    "api_port": 8080,
+    "tls_enabled": true,
+    "tls_cert": "/etc/ferroma/tls/fullchain.pem",
+    "tls_key": "/etc/ferroma/tls/privkey.pem",
+    "restart_required": true
+  }
+}
+```
+
+The body is `{email, password, domain, domain_description?, hostname?, public_url?,
+api_host?, api_port?, tls_enabled?, tls_cert?, tls_key?}`. `GET /api/v1/setup` reports
+the running values for the same fields, so the wizard can prefill itself.
+
+Every field except the administrator and the domain is optional, and every one of them is
+*stored* rather than applied: a running process cannot move its own socket or re-read a
+PEM file, so the values are written to `settings` and the server adopts whatever the
+deployment left at its default on the next start (see the server's
+`apply_stored_settings`). `applied` lists exactly what was stored, and `restart_required`
+says whether anything needs one. A `tls_cert`/`tls_key` that is not a file *on the server*
+is refused with `400`, because the path is read by the process, not by the browser.
+configuration is written to the `settings` table as `server.hostname` /
+`api.public_url` and adopted on the next start — the running process cannot rewrite
+its own configuration — and `applied.restart_required` says whether that happened.
+`ferroma.toml` and the environment still win over a stored row, so a deployment that
+states its hostname explicitly is never overridden by a stale wizard submission.
 
 `POST /api/v1/setup` answers `409 conflict` once an admin exists. Both endpoints
 answer `404 not_found` when `api.enable_setup_wizard = false`: a disabled wizard is
@@ -378,7 +409,7 @@ an endpoint that is not there, which is how a client tells "disabled" apart from
 
 ### 4.8 System logs and devices
 
-The Admin panel's "System Logs" and "Devices" screens (specification §36) need a
+The Admin console's "System Logs" and "Devices" screens (specification §36) need a
 management-side view; the client-API device routes are bearer-only and scoped to one
 account.
 
@@ -481,7 +512,7 @@ that will fail its TLS handshakes while the configuration looks correct.
 | `GET` | `/api/v1/mailboxes` | the caller's addresses |
 | `GET` | `/api/v1/mailboxes/:id/folders` | IMAP folders with `message_count`, `unseen_count`, `special_use` |
 | `POST` | `/api/v1/mailboxes/:id/folders` | `{name, parent?}` |
-| `PATCH` | `/api/v1/folders/:id` | `{name?, subscribed?}` |
+| `PATCH` | `/api/v1/folders/:id` | `{name?, parent_id?, subscribed?}`. `parent_id: null` moves the folder to the top level, a number moves it inside that folder, and omitting the field leaves the parent alone. A move re-paths the folder and its descendants — the name is the path — and is refused when it would put a folder inside itself |
 | `DELETE` | `/api/v1/folders/:id` | refuses `INBOX` |
 
 ### 5.2 Messages
@@ -607,7 +638,7 @@ mid-upload sends only the gap.
 ## 6. Client API (FCP)
 
 The official clients use this surface exclusively. Full protocol semantics —
-including the sync cursor, realtime framing and chunked uploads — are in
+including the sync cursor, real-time framing and chunked uploads — are in
 [`fcp.md`](fcp.md); this is the endpoint index from specification §19.
 
 | Method | Path |

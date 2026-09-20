@@ -11,24 +11,24 @@ matters here because this app is served from `/admin`, so `/styles.css` would mi
 
 ```text
 admin/
-  index.html            107 lines  shell: sidebar navigation, topbar, login card, modal + toast hosts
-  styles.css            1471 lines  tokens, light/dark themes, tables, stat grid, badges, responsive
-  main.js               438 lines  boot, sign-in, health poll, section navigation, view dispatcher
-  ui.js                 595 lines  view heads, state-driven cards, tables, pagers, badges, clipboard
+  index.html            110 lines  shell: docked sidebar, topbar, login card, modal + toast hosts
+  styles.css            2341 lines  tokens, light/dark themes, tables, stat grid, badges, responsive
+  main.js               479 lines  boot, first-run wizard, sign-in, health poll, view dispatcher
+  ui.js                 599 lines  view heads, state-driven cards, tables, pagers, badges, clipboard
   router.js             73 lines  `#/<section>?<params>` sections
   store.js              29 lines  signed-in operator, health snapshot, queue-depth history
-  views/dashboard.js    453 lines  health / queue stats / storage + browser-sampled SVG sparkline
-  views/domains.js      595 lines  domain CRUD + DNS Health panel + DKIM record with copy button
-  views/users.js        619 lines  user list/search/paging, create/edit/delete, per-user addresses
-  views/aliases.js      428 lines  aliases per domain
-  views/queue.js        565 lines  queue filter, retry, cancel, per-attempt delivery log
+  views/dashboard.js    505 lines  health / queue stats / storage + browser-sampled SVG sparkline
+  views/domains.js      599 lines  domain CRUD + DNS Health panel + DKIM record with copy button
+  views/users.js        636 lines  user list/search/paging, create/edit/delete, per-user addresses
+  views/aliases.js      432 lines  aliases per domain
+  views/queue.js        569 lines  queue filter, retry, cancel, per-attempt delivery log
   views/logs.js         376 lines  System Logs: the in-process ring, with level/target/message filters
   views/storage.js      210 lines  Storage: bytes on disk, row counts, garbage collection
-  views/devices.js      437 lines  Devices: every installation, filter by owner, revoke
+  views/devices.js      441 lines  Devices: every installation, filter by owner, revoke
   views/tls.js          295 lines  TLS: configured PEM files as the host sees them, and the ports
   views/audit.js        332 lines  audit log with actor/action/since filters
-  views/settings.js     241 lines  DB-backed settings
-  views/setup.js        183 lines  first-run setup wizard
+  views/settings.js     254 lines  DB-backed settings and the language picker
+  views/setup.js        247 lines  first-run setup wizard (admin, domain, hostname, public URL)
   tools/check.mjs       782 lines  the static regression check (see §4)
 ```
 
@@ -42,10 +42,18 @@ the directory is; the container image sets it.
 ```text
 shared/
   i18n.js               locale registry, `t()` / `tn()`, the language picker's rules
+  diag.js               the blank-page guard, loaded before each app's `main.js`
   locales/zh-CN.js      the Simplified Chinese catalog (English is its own catalog)
   api.js data.js dom.js format.js modal.js net.js theme.js toast.js
                         imported by both apps
 ```
+
+`diag.js` is the one shared module each `index.html` loads *before* its own entry, and
+the one that imports nothing: it exists for the case where the entry module, or one of
+its imports, never loads. Both shells start with every view hidden, so that failure would
+otherwise be a blank page indistinguishable from an unreachable server. It reveals the
+sign-in panel with the failure named — including the URL that failed to load — and
+disarms itself once a shell calls `window.__ferromaReady()`.
 
 
 ## 2. Serving it
@@ -97,8 +105,8 @@ returns.
 | `GET` | `/api/v1/auth/me` | identity + admin check (a non-admin is refused) |
 | `GET` | `/api/v1/health` | dashboard, sidebar status, 30 s poll |
 | `GET` | `/api/v1/version` | sidebar footer |
-| `GET` | `/api/v1/setup` | wizard gate (`required: true`) |
-| `POST` | `/api/v1/setup` | create the first admin |
+| `GET` | `/api/v1/setup` | wizard gate (`required: true`); also decides whether this console boots straight into the wizard |
+| `POST` | `/api/v1/setup` | create the first admin, the domain and its primary address; a differing hostname/public URL is stored for the next start |
 | `GET` | `/api/v1/domains` | Domains, Aliases picker, address dialog |
 | `POST` | `/api/v1/domains` | create domain |
 | `PATCH` | `/api/v1/domains/:id` | enable/disable, description |
@@ -208,8 +216,10 @@ Sections are `<button>`s in a `<nav>` with `aria-current`; every table has a
 header row with `scope="col"`; dialogs carry `role="dialog"` + `aria-modal`, trap
 Tab, close on `Escape` and on a click outside, and restore focus; loading, empty
 and error states are announced (`role="status"` / `role="alert"`); the topbar
-status and every toast live in live regions. The sidebar collapses to a drawer
-below 860 px. Animations are disabled under `prefers-reduced-motion: reduce`.
+status and every toast live in live regions. The sidebar is always docked: it has no
+collapse toggle and no drawer, because a navigation that can disappear makes the
+operator hunt for the button that brings it back, and mobile is out of scope.
+Animations are disabled under `prefers-reduced-motion: reduce`.
 
 ## 6. Known limitations
 

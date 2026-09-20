@@ -228,7 +228,15 @@ impl Maildir {
         let src = self.folder_dir(domain, local_part, from)?;
         let dst = self.folder_dir(domain, local_part, to)?;
         if !src.exists() {
-            return Err(StorageError::NotFound(format!("folder {from}")));
+            // The database is the authority on which folders exist; a directory that is
+            // missing is a folder whose mail was never delivered, or one a hand-edit
+            // removed. Refusing the rename made a folder unreachable from the console
+            // for a reason the operator could neither see nor act on, so the destination
+            // is simply created and the caller's database row is renamed as asked.
+            for sub in SUBDIRS {
+                std::fs::create_dir_all(dst.join(sub))?;
+            }
+            return Ok(());
         }
         if dst.exists() {
             return Err(StorageError::Conflict(format!("folder {to} already exists")));

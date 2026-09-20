@@ -153,7 +153,7 @@ export async function render(params) {
   const bufferLine = el('p', { class: 'view-sub', id: 'logs-buffer' });
 
   const root = el('div', {}, [
-    viewHead(t('System logs'), t('The most recent events this process has emitted'), [refreshButton]),
+    viewHead(t('System logs'), t('Recent events emitted by this process'), [refreshButton]),
     bar,
     bufferLine,
     card.node,

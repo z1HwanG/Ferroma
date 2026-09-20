@@ -47,7 +47,7 @@ pub struct ServerConfig {
     pub name: String,
     /// FQDN this server identifies itself as (SMTP `EHLO`, `Message-ID`, `Received`).
     pub hostname: String,
-    /// Root of all Ferroma state: maildir, attachments, TLS material, backups.
+    /// Root of all Ferroma state: maildir, attachments, TLS material.
     pub data_dir: PathBuf,
     /// `tracing` filter directive, e.g. `info` or `ferroma_smtp=debug,info`.
     pub log_level: String,

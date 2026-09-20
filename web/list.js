@@ -37,6 +37,8 @@ export function initList(options) {
   list.addEventListener('click', onRowClick);
   list.addEventListener('keydown', onListKeydown);
 
+  byId('list-select-all').addEventListener('change', () => toggleAllChecked());
+
   loadMore.addEventListener('click', () => {
     loadMoreMessages();
   });
@@ -82,7 +84,6 @@ export async function loadMessages(options = {}) {
   const offset = options.reset ? 0 : state.messages.length;
   mutate((draft) => {
     draft.listLoading = true;
-    if (draft.messages.length === 0) setHidden(byId('list-skeleton'), false);
   });
 
   const params = {
@@ -114,8 +115,6 @@ export async function loadMessages(options = {}) {
       setText(byId('list-empty'), error.message);
       setHidden(byId('list-empty'), false);
     }
-  } finally {
-    setHidden(byId('list-skeleton'), true);
   }
 }
 
@@ -128,6 +127,36 @@ async function loadMoreMessages() {
 
 /* --------------------------------------------------------------------- render */
 
+/**
+ * What the list currently draws, as one comparable string.
+ *
+ * It has to include each row's *flags*, not just the shape of the list: marking a
+ * message read, starring it, or the reading pane doing the same, changes nothing about
+ * the length, the total or the selection — so a signature built only from those left
+ * `renderList` returning early and the row kept its unread dot and bold subject after
+ * the server had already recorded `\Seen`. Every flag `renderRow` reads belongs here.
+ *
+ * @param {ReturnType<typeof getState>} state
+ */
+function listSignature(state) {
+  const flags = state.messages
+    .map((message) => `${message.id}${message.seen ? 's' : ''}${message.flagged ? 'f' : ''}${message.hasAttachments ? 'a' : ''}`)
+    .join(',');
+  // The checked *ids*, not just how many: moving the selection from one row to another
+  // keeps the count at one, and the row that gained or lost its tick never repainted.
+  const checked = Array.from(state.checked).sort((a, b) => a - b).join('.');
+  return [
+    state.messages.length,
+    state.total,
+    state.selectedId,
+    state.checked.size,
+    checked,
+    state.listLoading ? 1 : 0,
+    state.hasMore ? 1 : 0,
+    flags,
+  ].join(':');
+}
+
 export function renderList() {
   const state = getState();
   const list = byId('message-list');
@@ -136,16 +165,16 @@ export function renderList() {
 
   // Repainting on every state change would drop the row a keyboard user is on;
   // only a change to what the list actually shows is worth rebuilding for.
-  const signature = [
-    state.messages.length,
-    state.total,
-    state.selectedId,
-    state.checked.size,
-    state.listLoading ? 1 : 0,
-    state.hasMore ? 1 : 0,
-  ].join(':');
+  const signature = listSignature(state);
   if (signature === renderedSignature) return;
   renderedSignature = signature;
+
+  const allChecked = state.messages.length > 0 && state.messages.every((message) => state.checked.has(message.id));
+  const someChecked = state.messages.some((message) => state.checked.has(message.id));
+  const selectAll = byId('list-select-all');
+  selectAll.disabled = state.messages.length === 0;
+  selectAll.checked = allChecked;
+  selectAll.indeterminate = someChecked && !allChecked;
 
   const previouslyFocused = document.activeElement instanceof Element ? document.activeElement : null;
   const keepFocus =
@@ -196,12 +225,23 @@ export function renderList() {
 }
 
 /** Keep the list header and bulk bar in step with state. */
+/**
+ * Update the bulk-action bar.
+ *
+ * The bar is part of the pane rather than a pop-up: it keeps its place whether or not
+ * anything is selected, so ticking a row never shoves the messages down under the
+ * pointer. With nothing selected its actions are simply disabled, and its tone stays
+ * neutral until the selection makes it relevant.
+ */
 function renderBulkBar() {
   const state = getState();
   const bar = byId('bulk-bar');
   const count = state.checked.size;
-  setHidden(bar, count === 0);
   setText(byId('bulk-count'), t('{count} selected', { count }));
+  bar.classList.toggle('is-active', count > 0);
+  for (const button of bar.querySelectorAll('[data-bulk]')) {
+    button.disabled = count === 0;
+  }
 }
 
 /**
@@ -223,6 +263,21 @@ function renderRow(message, index, state) {
   });
   row.dataset.id = String(message.id);
   row.dataset.index = String(index);
+
+  // The checkbox is the discoverable half of multi-select; Ctrl/Shift-click and Space
+  // still work for a keyboard or a habit, but a control nobody can see is not a
+  // feature. It stops the click so the row does not also open the message.
+  const check = el('input', {
+    type: 'checkbox',
+    class: 'row-check',
+    'aria-label': t('Select “{subject}”', { subject: message.subject }),
+  });
+  check.checked = checked;
+  check.addEventListener('click', (event) => {
+    event.stopPropagation();
+    toggleRowChecked(message.id, index, { range: event.shiftKey });
+  });
+  check.addEventListener('dblclick', (event) => event.stopPropagation());
 
   const dot = el('span', { class: 'row-dot' });
   if (!message.seen) dot.append(el('span', { class: 'dot' }));
@@ -257,8 +312,9 @@ function renderRow(message, index, state) {
       : t('Star “{subject}”', { subject: message.subject }),
     title: message.flagged ? t('Remove star') : t('Add star'),
   });
-  star.append(svgIcon('star'));
-  if (!message.flagged) star.style.visibility = 'hidden';
+  star.append(svgIcon(message.flagged ? 'starFilled' : 'star'));
+  // The star is always there and dim until the row is hovered or it is set: a control
+  // that appears out of nowhere on hover is a control nobody finds with a keyboard.
   star.addEventListener('click', (event) => {
     event.stopPropagation();
     if (handlers) handlers.onToggleStar(message);
@@ -266,11 +322,54 @@ function renderRow(message, index, state) {
 
   const sideWrap = el('span', { class: 'row-side' }, [star, side]);
 
-  row.append(dot, el('span', { class: 'row-main' }, [line, snippet]), sideWrap);
+  row.append(check, dot, el('span', { class: 'row-main' }, [line, snippet]), sideWrap);
   return row;
 }
 
 /* ------------------------------------------------------------------ selection */
+
+/**
+ * Add or remove one row from the selection, or extend it on Shift.
+ *
+ * @param {number} id
+ * @param {number} index the row's position in the loaded page, for a range
+ * @param {{range?: boolean}} [options]
+ */
+function toggleRowChecked(id, index, options = {}) {
+  mutate((draft) => {
+    draft.checked = new Set(draft.checked);
+    if (options.range && draft.lastCheckedIndex >= 0 && draft.lastCheckedIndex !== index) {
+      const [from, to] = [draft.lastCheckedIndex, index].sort((a, b) => a - b);
+      for (let i = from; i <= to; i += 1) {
+        const candidate = draft.messages[i];
+        if (candidate) draft.checked.add(candidate.id);
+      }
+    } else if (draft.checked.has(id)) {
+      draft.checked.delete(id);
+    } else {
+      draft.checked.add(id);
+    }
+    draft.lastCheckedIndex = index;
+  });
+  renderList();
+}
+
+/** Select every loaded row, or clear the selection when they all are. */
+function toggleAllChecked() {
+  const state = getState();
+  const all = state.messages.length > 0 && state.messages.every((message) => state.checked.has(message.id));
+  mutate((draft) => {
+    if (all) {
+      draft.checked = new Set();
+    } else {
+      // Only the page that is loaded: "select all" cannot mean rows the client has
+      // never seen, and the bulk endpoints take an explicit id list.
+      draft.checked = new Set(draft.messages.map((message) => message.id));
+    }
+    draft.lastCheckedIndex = draft.messages.length - 1;
+  });
+  renderList();
+}
 
 function onRowClick(event) {
   const target = event.target instanceof Element ? event.target : null;

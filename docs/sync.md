@@ -678,7 +678,7 @@ and codes are the ones in [api.md](api.md) §1.3 and [fcp.md](fcp.md) §11.
 | **`404 not_found`** | `404` | the target is gone. Drop the operation, apply the server's state on the next sync | removed | unchanged |
 | **`409 conflict` from `/sync`** | `409` | cursor too old ⇒ discard the folder cache, sync from `0` (§6) | unaffected | reset to `0` |
 | **`409 conflict` from a mutation** | `409` | a replayed `operation_id` (the cached response should have been replayed instead) or a state violation ⇒ surface it | marked failed | unchanged |
-| **`413 limit_exceeded`** | `413` | tell the user what is too big; keep the draft | removed from the send queue, draft retained | unchanged |
+| **`413 limit_exceeded`** | `413` | tell the user what is too big; keep the draft | removed from the Outbox, draft retained | unchanged |
 | **`426 unsupported`** | `426` | refuse to run; prompt for an upgrade. A client below `client.min_protocol_version` cannot be served | frozen | frozen |
 | **`429 rate_limited`** | `429` + `Retry-After` | honour `Retry-After` exactly; queue locally | retained | unchanged |
 | **`500 storage_error` / `internal_error`** | `500` | treat as temporary; back off; never lose the operation | retained | unchanged |

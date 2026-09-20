@@ -9,6 +9,7 @@ import { el } from '../../shared/dom.js';
 import { formatLogStamp } from '../../shared/format.js';
 import { t, tn } from '../../shared/i18n.js';
 import { confirmDialog } from '../../shared/modal.js';
+import { icon } from '../icons.js';
 import { go } from '../router.js';
 import { toastError, toastSuccess } from '../../shared/toast.js';
 import {
@@ -129,7 +130,7 @@ export async function render(params) {
   refreshButton.addEventListener('click', () => refresh());
 
   const root = el('div', {}, [
-    viewHead(t('Mail queue'), t('Outbound delivery, attempt by attempt'), [refreshButton]),
+    viewHead(t('Mail queue'), t('Outbound delivery attempts and their outcome'), [refreshButton]),
     bar,
     card.node,
   ]);
@@ -268,9 +269,9 @@ function renderTable(entries, handlers, total, offset) {
       ),
       truncateCell(entry.lastError),
       actions(
-        button(t('Details'), () => handlers.onDetails(entry)),
-        retryable(entry) ? button(t('Retry'), () => handlers.onRetry(entry)) : null,
-        cancelable(entry) ? button(t('Cancel'), () => handlers.onCancel(entry), 'btn-danger') : null,
+        button(t('Details'), () => handlers.onDetails(entry), '', 'details'),
+        retryable(entry) ? button(t('Retry'), () => handlers.onRetry(entry), '', 'refresh') : null,
+        cancelable(entry) ? button(t('Cancel'), () => handlers.onCancel(entry), 'btn-danger', 'close') : null,
       ),
     ],
   }));
@@ -552,8 +553,11 @@ function stampValue(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function button(label, onClick, className = '') {
-  const node = el('button', { type: 'button', class: `btn btn-small ${className}`.trim(), text: label });
+function button(label, onClick, className = '', glyph = '') {
+  const node = el('button', { type: 'button', class: `btn btn-small ${className}`.trim() }, [
+    glyph ? icon(glyph, 'icon') : null,
+    el('span', { text: label }),
+  ]);
   node.addEventListener('click', onClick);
   return node;
 }

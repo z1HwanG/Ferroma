@@ -24,7 +24,7 @@ name = "Ferroma"
 # FQDN this server identifies itself as. Used in the SMTP EHLO, in `Received:`
 # headers and in generated `Message-ID`s. Set this to your real MX hostname.
 hostname = "localhost"
-# Root of all Ferroma state: Maildir, attachments, TLS material, backups.
+# Root of all Ferroma state: Maildir, attachments, TLS material.
 data_dir = "./data"
 # tracing filter directive. Examples: "info", "debug",
 # "ferroma_smtp=debug,ferroma_core=info,warn".

@@ -57,7 +57,7 @@ Admin 端点额外要求用户具有`is_admin`。
 
 `message`遵循`Accept-Language`（RFC 9110）：任何地区的`zh`都选择简体中文
 词表，其余情况（包括完全没有该请求头）一律返回英文；尚未提供译文的
-消息按英文原样返回，而不是被丢掉。`code`不随语言变化，因此客户端的
+信息按英文原样返回，而不是被丢掉。`code`不随语言变化，因此客户端的
 分支逻辑与语言无关：
 
 ```http
@@ -255,7 +255,7 @@ UTC 下的 RFC 3339 / ISO 8601，例如`2026-09-16T12:00:00Z`。除
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET` | `/api/v1/users` | `?query=&limit=&offset=` |
-| `POST` | `/api/v1/users` | `{email, password, display_name?, is_admin?, quota_bytes?}` |
+| `POST` | `/api/v1/users` | `{email, password, display_name?, is_admin?, quota_bytes?}`；当邮箱域名已存在时同时创建主地址（响应中的 `mailboxes`；域名不存在时为空数组） |
 | `GET` | `/api/v1/users/:id` | |
 | `PATCH` | `/api/v1/users/:id` | `display_name`、`enabled`、`is_admin`、`quota_bytes`、`password`中的任意一项 |
 | `DELETE` | `/api/v1/users/:id` | 级联：地址、文件夹、邮件、队列行 |
@@ -357,15 +357,41 @@ UTC 下的 RFC 3339 / ISO 8601，例如`2026-09-16T12:00:00Z`。除
 
 ### 4.7 首次运行设置
 
-`GET /api/v1/setup` → `{ "required": true, "hostname": "mail.example.com" }`
-（在尚无管理员存在期间）。`hostname`是运行中的配置所对外声明的值，客户端
-可以直接拿它给操作者确认，而不必猜测。
+`GET /api/v1/setup` → `{ "required": true, "hostname": "mail.example.com",
+"public_url": "https://mail.example.com" }`（在尚无管理员存在期间）。
+`hostname`与`public_url`是运行中的配置所对外声明的值，客户端可以直接拿它们给
+运维者确认，而不必猜测。
 
-`POST /api/v1/setup` → `{email, password, hostname, domain}`创建第一个
-管理员、域名及其主地址，然后返回一对普通令牌。`hostname`可省略；一旦提供
-且与`server.hostname`不一致，请求返回`400 invalid_input`并指出该改哪个配置
-项——运行中的配置无法在进程底下被改写，而悄悄忽略这个值会让操作者刚填完
-就在 DNS 面板上看到自相矛盾的结论。
+`POST /api/v1/setup`创建第一个管理员、域名及其主地址，然后返回一对普通令牌
+（平铺在顶层）以及一个`applied`对象：
+
+```json
+{
+  "access_token": "…", "refresh_token": "…", "token_type": "Bearer", "expires_in": 3600,
+  "user": { "…": "…" },
+  "applied": {
+    "hostname": "mail.example.com",
+    "public_url": "https://mail.example.com",
+    "api_host": "0.0.0.0",
+    "api_port": 8080,
+    "tls_enabled": true,
+    "tls_cert": "/etc/ferroma/tls/fullchain.pem",
+    "tls_key": "/etc/ferroma/tls/privkey.pem",
+    "restart_required": true
+  }
+}
+```
+
+请求体为`{email, password, domain, domain_description?, hostname?, public_url?,
+api_host?, api_port?, tls_enabled?, tls_cert?, tls_key?}`；`GET /api/v1/setup`会返回
+同样字段的当前值，供首次运行向导预填。
+
+除管理员与域名外全部可选，并且全部是**「存下来」而不是「立即生效」**：运行中的进程
+既不能挪动自己的监听套接字，也不能重新读取 PEM 文件，因此这些值写入`settings`表，
+由服务器在下次启动时采用那些部署方未显式声明的项（见服务器端的
+`apply_stored_settings`）。`applied`列出实际写入的项，`restart_required`说明是否
+需要重启。`tls_cert` / `tls_key`若在**服务器上**不是真实文件会直接以`400`拒绝——
+该路径由进程读取，而不是浏览器。
 
 管理员一旦存在，`POST /api/v1/setup`返回`409 conflict`。把
 `api.enable_setup_wizard = false`则两个端点都返回`404 not_found`：被停用的
@@ -421,7 +447,7 @@ Admin 面板的「System Logs」与「Devices」界面（项目书 §36）需要
 
 ### 4.9 TLS
 
-`GET /api/v1/tls`支撑管理后台的“TLS”界面：配置了什么 TLS、进程能否真正读到
+`GET /api/v1/tls`支撑 Admin 的“TLS”界面：配置了什么 TLS、进程能否真正读到
 PEM 文件，以及哪些端口提供 TLS。
 
 ```json
@@ -472,7 +498,7 @@ PEM 文件，以及哪些端口提供 TLS。
 | `GET` | `/api/v1/mailboxes` | 调用者的地址 |
 | `GET` | `/api/v1/mailboxes/:id/folders` | 带`message_count`、`unseen_count`、`special_use`的 IMAP 文件夹 |
 | `POST` | `/api/v1/mailboxes/:id/folders` | `{name, parent?}` |
-| `PATCH` | `/api/v1/folders/:id` | `{name?, subscribed?}` |
+| `PATCH` | `/api/v1/folders/:id` | `{name?, parent_id?, subscribed?}`。`parent_id: null` 表示移到顶层，数字表示移入该文件夹，省略该字段则父目录不变。移动会同时改写自身与所有子文件夹的路径（名字即路径）；若会形成「文件夹放进自己内部」的环则被拒绝 |
 | `DELETE` | `/api/v1/folders/:id` | 拒绝`INBOX` |
 
 ### 5.2 邮件

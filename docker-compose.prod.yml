@@ -3,12 +3,19 @@
 # =============================================================================
 #   docker compose -f docker-compose.prod.yml up -d
 #
+#   docker compose -f docker-compose.prod.yml up -d   # needs POSTGRES_PASSWORD and
+#                                                      # FERROMA_VERSION, nothing else
+#
+# The mail domain, the hostname, the public URL, the API listener and TLS are collected by
+# the first-run wizard at /admin/ — see docs/deployment.md §3.2.
+#
 # Differences from docker-compose.yml:
 #   * TLS terminated by Ferroma itself on 465 / 993 / 8443
 #   * PostgreSQL tuned for a real workload and not merely "the defaults"
 #   * host port 25 / 587 / 143 still bound, but the implicit-TLS ports are added
 #   * resource limits, restart policies and bounded logs on every service
-#   * a nightly backup sidecar that writes into a mounted volume
+#   * no backup service: back the database container and the ferroma-data volume up
+#     with the host's own tooling (docs/deployment.md §8)
 #
 # Before the first boot, read docs/deployment.md: DNS (MX/A/PTR/SPF/DKIM/DMARC)
 # has to be in place or your mail will be rejected no matter how correct Ferroma is.
@@ -83,49 +90,64 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      # Only what a *process* needs to exist before it can serve a page is set here.
+      # Everything else — the mail domain, the hostname, the public URL, the API listener,
+      # TLS — is collected by the first-run wizard at https://…/admin/ and stored in the
+      # database, which the server adopts on its next start. That is why FERROMA_HOSTNAME,
+      # FERROMA_API_PUBLIC_URL and FERROMA_JWT_SECRET are absent: leaving them unset is what
+      # makes the wizard's answers authoritative, and the JWT secret is generated once into
+      # the data volume and reused (see `ensure_jwt_secret`).
       DATABASE_URL: postgres://${POSTGRES_USER:-ferroma}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ferroma}
-      FERROMA_HOSTNAME: ${FERROMA_HOSTNAME:?set FERROMA_HOSTNAME in .env}
       FERROMA_DATA_DIR: /var/lib/ferroma
       FERROMA_LOG_LEVEL: ${FERROMA_LOG_LEVEL:-info}
       FERROMA_LOG_FORMAT: ${FERROMA_LOG_FORMAT:-json}
-      FERROMA_API_PUBLIC_URL: ${FERROMA_PUBLIC_URL:?set FERROMA_PUBLIC_URL in .env}
-      FERROMA_JWT_SECRET: ${FERROMA_JWT_SECRET:?set FERROMA_JWT_SECRET in .env}
-      # Ferroma terminates TLS itself in this stack.
-      FERROMA_TLS_ENABLED: 'true'
-      FERROMA_TLS_CERT: /etc/ferroma/tls/fullchain.pem
-      FERROMA_TLS_KEY: /etc/ferroma/tls/privkey.pem
-      # Cookies must be Secure once TLS is on.
-      FERROMA__API__SECURE_COOKIES: 'true'
+      # The certificate paths are stated, the switch is not: drop the PEMs into ./tls and
+      # tick "Serve TLS from this process" in the wizard. Enabling TLS before the files
+      # exist is refused with an explanation rather than applied and failing at the next
+      # boot.
+      FERROMA_TLS_ENABLED: '${FERROMA_TLS_ENABLED:-false}'
+      FERROMA_TLS_CERT: ${FERROMA_TLS_CERT:-/etc/ferroma/tls/fullchain.pem}
+      FERROMA_TLS_KEY: ${FERROMA_TLS_KEY:-/etc/ferroma/tls/privkey.pem}
+      # `Secure` cookies are dropped by the browser over plain HTTP, which would make the
+      # very first sign-in fail. Set SECURE_COOKIES=true in .env once the reverse proxy
+      # serves HTTPS — which is the production arrangement, and what scripts/deploy.sh
+      # writes. (Compose cannot nest one default inside another, so this is its own knob.)
+      FERROMA__API__SECURE_COOKIES: '${SECURE_COOKIES:-false}'
       # Behind a load balancer or reverse proxy, honour X-Forwarded-For.
       FERROMA__API__TRUST_PROXY_HEADERS: '${TRUST_PROXY_HEADERS:-false}'
-      # Refuse SASL over an unencrypted socket.
-      FERROMA__SMTP__REQUIRE_TLS_FOR_AUTH: 'true'
-      FERROMA__IMAP__REQUIRE_TLS_FOR_LOGIN: 'true'
+      # Refusing SASL on an unencrypted socket is right *when there is TLS*. It follows the
+      # TLS switch, because requiring TLS while no TLS listener exists locks every mail
+      # client out — including the one the operator is trying to configure.
+      FERROMA__SMTP__REQUIRE_TLS_FOR_AUTH: '${FERROMA_TLS_ENABLED:-false}'
+      FERROMA__IMAP__REQUIRE_TLS_FOR_LOGIN: '${FERROMA_TLS_ENABLED:-false}'
       # Bind the implicit-TLS listeners. Both are 0 (off) in the shipped default
       # configuration, so without these two lines the published 465 and 993 map
       # ports nothing is listening on — a connection that is refused rather than
-      # an error anyone can see.
+      # an error anyone can see. They answer once TLS is on.
       FERROMA__SMTP__SMTPS_PORT: '465'
       FERROMA__IMAP__IMAPS_PORT: '993'
       FERROMA_DKIM_ENABLED: ${FERROMA_DKIM_ENABLED:-false}
       FERROMA_DKIM_SELECTOR: ${FERROMA_DKIM_SELECTOR:-default}
       FERROMA_DKIM_KEY: /etc/ferroma/dkim/${FERROMA_DKIM_SELECTOR:-default}.private
     ports:
+      # The one port a first install has to publish: the wizard, the Webmail and the API.
+      # Put a reverse proxy in front of it for HTTPS (docs/deployment.md §5.3), or reach it
+      # directly while setting the instance up.
+      - '${WEB_PORT:-8080}:8080'
+      # Mail ports: fixed defaults, nothing to decide. Publishing them at container
+      # creation is the only way inbound mail can arrive at all — Docker cannot add a
+      # published port to a running container, which is also why the wizard governs
+      # everything *except* these.
       - '25:25'     # inbound MX — must be reachable from the internet
       - '587:587'   # submission (STARTTLS)
       - '465:465'   # SMTPS
       - '143:143'   # IMAP (STARTTLS)
       - '993:993'   # IMAPS
-      # There is no HTTPS port here on purpose. Ferroma has no HTTPS listener —
-      # `api.tls_port` is read by the configuration and never bound — so Webmail,
-      # Admin and the API are reached through a reverse proxy that talks to 8080
-      # on the loopback interface. docs/deployment.md §5.3 has the server block.
     volumes:
       - ferroma-data:/var/lib/ferroma
       - ./config/ferroma.toml:/etc/ferroma/ferroma.toml:ro
       - ./tls:/etc/ferroma/tls:ro
       - ./dkim:/etc/ferroma/dkim:ro
-      - backups:/var/lib/ferroma/backups
     healthcheck:
       test: ['CMD', 'ferroma', 'healthcheck', '--url', 'http://127.0.0.1:8080/api/v1/health']
       interval: 30s
@@ -146,48 +168,18 @@ services:
         limits:
           memory: 2g
 
-  # Nightly logical backup of PostgreSQL plus an incremental copy of the mail store.
-  # See scripts/backup.sh — it deliberately keeps database and maildir backups in
-  # step, because restoring one without the other loses messages.
-  #
-  # It *loops* rather than running once and exiting: a one-shot script under
-  # `restart: always` is restarted as soon as it finishes, which writes a full
-  # backup on every restart backoff until the disk fills.
-  backup:
-    image: postgres:16-alpine
-    container_name: ferroma-backup
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      PGHOST: postgres
-      PGUSER: ${POSTGRES_USER:-ferroma}
-      PGPASSWORD: ${POSTGRES_PASSWORD}
-      PGDATABASE: ${POSTGRES_DB:-ferroma}
-      BACKUP_DIR: /backups
-      MAIL_DIR: /mail
-      CONFIG_DIR: /etc/ferroma
-      RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
-      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
-    entrypoint: ['/bin/sh', '/usr/local/bin/backup.sh']
-    command: ['--loop']
-    volumes:
-      - ./scripts/backup.sh:/usr/local/bin/backup.sh:ro
-      - ./scripts/restore.sh:/usr/local/bin/restore.sh:ro
-      - ferroma-data:/mail:ro
-      - ./tls:/etc/ferroma/tls:ro
-      - backups:/backups
-    logging: *default-logging
-    networks: [ferroma-internal]
+  # No backup service ships here on purpose. Ferroma keeps no backup tooling in the
+  # deployment: back up the database container and the ferroma-data volume with
+  # whatever the host already uses (pg_dump + restic/borg/rsync, a hypervisor
+  # snapshot, a storage-level snapshot). Both halves are needed together — a
+  # database restored without its Maildir loses messages and vice versa.
+  # docs/deployment.md §8 has the commands and what a backup must contain.
 
 volumes:
   postgres-data:
     name: ferroma-postgres-data
   ferroma-data:
     name: ferroma-data
-  backups:
-    name: ferroma-backups
 
 networks:
   ferroma-internal:

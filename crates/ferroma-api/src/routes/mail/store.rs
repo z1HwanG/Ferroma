@@ -613,6 +613,13 @@ fn find_tag_end(chars: &[char], start: usize) -> Option<usize> {
 }
 
 /// Skip past `</name>` starting at `from`.
+///
+/// A missing closer must not swallow the rest of the document. HTML permits `</head>`
+/// to be omitted — the parser ends the head at `<body>` — and mail is full of HTML that
+/// omits it. Dropping everything from `<head>` to the end emptied the body of any such
+/// message, which the reader then reported as "this message has no body". So a `<head>`
+/// without a closer is ended at `<body>` when there is one, and otherwise the remainder
+/// is kept: showing a stray title is recoverable, showing nothing is not.
 fn skip_element(chars: &[char], from: usize, name: &str) -> usize {
     let closer = format!("</{name}");
     let text: String = chars[from..].iter().collect::<String>().to_ascii_lowercase();
@@ -625,7 +632,15 @@ fn skip_element(chars: &[char], from: usize, name: &str) -> usize {
                 None => chars.len(),
             }
         }
-        None => chars.len(),
+        None => {
+            if name == "head" {
+                if let Some(offset) = text.find("<body") {
+                    return from + offset;
+                }
+            }
+            // Unterminated: drop the opening tag only, never the document behind it.
+            from
+        }
     }
 }
 
@@ -892,6 +907,27 @@ mod tests {
     fn sanitize_keeps_an_unclosed_tag_from_swallowing_the_message() {
         let cleaned = sanitize_html("<b>bold but never closed");
         assert!(cleaned.contains("bold but never closed"), "{cleaned}");
+    }
+
+    #[test]
+    fn sanitize_survives_an_html_mail_that_omits_its_head_closer() {
+        // HTML permits `</head>` to be omitted; the head ends at `<body>`. Treating the
+        // missing closer as "drop the rest of the document" emptied the body of every
+        // such message, and the reader reported it as having no body at all.
+        let cleaned = sanitize_html(
+            "<html><head><style>.x{color:red}</style><body><p>Body after an unclosed head.</p></body></html>",
+        );
+        assert!(
+            cleaned.contains("Body after an unclosed head."),
+            "the body was swallowed: {cleaned:?}"
+        );
+        assert!(!cleaned.contains("color:red"), "the CSS leaked: {cleaned:?}");
+    }
+
+    #[test]
+    fn sanitize_does_not_drop_a_document_after_an_unterminated_style() {
+        let cleaned = sanitize_html("<style>p{color:red}<p>kept</p>");
+        assert!(cleaned.contains("kept"), "{cleaned}");
     }
 
     #[test]

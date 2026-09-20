@@ -10,18 +10,18 @@ CDN**. Vanilla ES modules, hand-written CSS, relative asset paths only.
 
 ```text
 web/
-  index.html            230 lines  app shell: three panes, login card, modal + toast hosts
-  styles.css            1326 lines  tokens, light/dark themes, responsive panes, prefers-reduced-motion
-  main.js               605 lines  boot, auth, routing, keyboard map, bulk-action bar
+  index.html            305 lines  app shell: three panes, login card, modal + toast hosts
+  styles.css            2383 lines  tokens, light/dark themes, responsive panes, prefers-reduced-motion
+  main.js               665 lines  boot, auth, routing, keyboard map, bulk-action bar
   store.js              98 lines  observable state + localStorage preferences
   router.js             114 lines  `#/f/<folder>[/m/<id>]` and `#/search/<query>`
   login.js              99 lines  `POST /auth/login` panel
   address.js            182 lines  the address-chip field compose uses for To / Cc / Bcc
-  folders.js            296 lines  address picker, folder tree (create / rename / delete)
-  list.js               434 lines  paginated list, infinite scroll, selection, bulk bar glue
-  reader.js             579 lines  reading pane, sandboxed HTML frame, raw source dialog, 2 s auto-mark-read
+  folders.js            434 lines  address picker, folder tree (create / rename / delete)
+  list.js               529 lines  paginated list, infinite scroll, selection, bulk bar glue
+  reader.js             532 lines  reading pane, sandboxed HTML frame, raw source dialog, mark-read-on-open
   compose.js            655 lines  compose modal: chips, rich text, uploads, reply/forward, drafts
-  settings.js           248 lines  settings dialog: preferences and the account password
+  settings.js           308 lines  settings dialog: preferences and the account password
   tools/check.mjs       782 lines  the static regression check (see §4)
 ```
 
@@ -35,10 +35,18 @@ the directory is; the container image sets it.
 ```text
 shared/
   i18n.js               locale registry, `t()` / `tn()`, the language picker's rules
+  diag.js               the blank-page guard, loaded before each app's `main.js`
   locales/zh-CN.js      the Simplified Chinese catalog (English is its own catalog)
   api.js data.js dom.js format.js modal.js net.js theme.js toast.js
                         imported by both apps
 ```
+
+`diag.js` is the one shared module each `index.html` loads *before* its own entry, and
+the one that imports nothing: it exists for the case where the entry module, or one of
+its imports, never loads. Both shells start with every view hidden, so that failure would
+otherwise be a blank page indistinguishable from an unreachable server. It reveals the
+sign-in panel with the failure named — including the URL that failed to load — and
+disarms itself once a shell calls `window.__ferromaReady()`.
 
 
 ## 2. Serving it
@@ -220,7 +228,10 @@ names truncate with an ellipsis and carry the full value in `title` and
   subscribe toggle would control nothing a user could observe.
 * Message bodies are never injected as markup. The text part goes into a `<pre>`
   via `textContent`; the HTML part is rendered only inside
-  `<iframe sandbox="" srcdoc=…>` and sized from its own `scrollHeight`. The same
+  `<iframe sandbox="allow-popups allow-popups-to-escape-sandbox" srcdoc=…>` with a
+  `<base target="_blank">` so a link opens in a new tab. A sandboxed frame has an opaque origin, so the
+  parent cannot read its content height to size it; the frame takes a fixed, generous
+  height from `.reader-html` and scrolls inside itself. The same
   rule covers the "Source" dialog, which writes the raw bytes with `textContent`.
   If the server serves the app behind a CSP that forbids `srcdoc`, the HTML part
   must be fetched as text and set the same way instead.
@@ -260,12 +271,16 @@ el('p', { text: tn(n, '{count} message', '{count} messages', { count: n }) });
 
 Details worth knowing:
 
-* **The picker reloads the page.** Every view here builds its DOM once and keeps the
-  reference, so re-rendering from the settings dialog would leave the text already on
-  screen — including the dialog itself — in the old language. The choice is kept in
-  `localStorage` under `ferroma.locale`.
-* **The first visit follows the browser.** `navigator.languages` is matched against the
-  shipped tags; any Chinese region selects Simplified, and anything else gets English.
+* **The picker applies when Save is pressed, and then reloads.** Every view here builds
+  its DOM once and keeps the reference, so re-rendering from the settings dialog would
+  leave the text already on screen — including the dialog itself — in the old language.
+  Staging the choice until Save is what stops the arrow keys from swapping the interface
+  before the operator has decided. The choice is kept in `localStorage` under
+  `ferroma.locale`.
+* **The first visit is English, whatever the browser asks for.** `navigator.languages` is
+  deliberately ignored: one instance is usually reached by several people, and a UI that
+  changes language because somebody re-installed their laptop is a UI nobody can give
+  instructions for. The picker is on the sign-in card and in Settings.
 * **`Accept-Language` follows the picker.** `api.js` sends the chosen locale, so a
   server error arrives in the same language as the interface around it rather than in
   the browser's language.

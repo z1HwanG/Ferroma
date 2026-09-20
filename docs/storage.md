@@ -19,9 +19,9 @@ story.
 > `crates/ferroma-storage/src/repository/*.rs`. The schema is
 > `migrations/0001_initial.sql`, which is the single migration in the repository
 > and the source of every table and column named below.
-> Two things are _(planned)_: the `ferroma storage` CLI subcommands and the API
-> endpoints that drive GC and integrity checks. Where a `pg_dump`/`psql` command
-> is given instead, it is a real command you can run today.
+> `ferroma storage stats|verify|gc` and the API's `GET /api/v1/storage` and
+> `POST /api/v1/storage/gc` exist today. Where a `pg_dump`/`psql` command is given
+> instead, it is a real command you can run today.
 
 ---
 
@@ -399,7 +399,7 @@ Argon2 work, so a credential flood cannot burn the CPU.
 #### `settings`
 
 `key TEXT PRIMARY KEY`, `value JSONB NOT NULL`, `updated_at`. DB-backed settings
-that the Admin panel can change without a restart. They do **not** override
+that the Admin console can change without a restart. They do **not** override
 `ferroma.toml`: a value here is a runtime knob, not configuration, and nothing in
 `Config` reads this table.
 
@@ -695,7 +695,7 @@ for every file under the blob root:
 
 The `keep` set is produced by `AttachmentsRepository::referenced_paths()`
 (`SELECT DISTINCT storage_path FROM attachments`), and the caller is
-`POST /api/v1/storage/gc` _(planned)_ or, today, a direct call. Two rules for
+`POST /api/v1/storage/gc` (or `ferroma storage gc` on the host). Two rules for
 anyone re-implementing it:
 
 * **Collect the keep-set before scanning, not during.** Reading `attachments`
@@ -830,114 +830,162 @@ silently stored absolute path.
 
 ## 8. Backup and restore
 
-Full operator procedure is in [deployment.md](deployment.md) §8. The principle
-belongs here.
+**Ferroma ships no backup tooling.** No compose file defines a `backup` or a
+`restore` service, there is no `ferroma-backups` volume, and `scripts/deploy.sh`
+has no `backup` or `restore` subcommand: a backup is the operator's job, taken with
+whatever the host already has — `pg_dump`/`pg_dumpall`, `tar`, `rsync`, `restic`,
+`borg`, a storage-level snapshot. What belongs here is what such a backup must
+contain, why the two halves cannot be separated, and the order to restore in; the
+step-by-step operator walkthrough is in [deployment.md](deployment.md) §8.
 
-### 8.1 Restore the two halves together
+### 8.1 The two halves, and why neither alone is a backup
 
-`scripts/backup.sh` produces one timestamped directory containing:
+Ferroma keeps two stores (§1), so a backup is two halves, and they are kept
+together:
 
-| File | Contents |
+| Half | What it holds |
 |---|---|
-| `ferroma.dump` | `pg_dump --format=custom --compress=6` — the whole database |
-| `schema.sql` | `pg_dump --schema-only` — an empty but correct structure |
-| `maildir.tar.gz` | `tar -czf` of the mail root |
-| `config.tar.gz` | `ferroma.toml`, DKIM keys, TLS material (excluding `*.env` and `credentials*`) |
-| `MANIFEST` | `ferroma_backup_version=1`, `created_at`, `database`, `postgres_version`, `ferroma_version`, `hostname` |
-| `SHA256SUMS` | `sha256sum ./*`, so a restore can prove the archive survived the trip |
+| The PostgreSQL database | every fact the application queries: `mailboxes`, `folders`, `messages`, `attachments`, `mail_queue`, the change log |
+| The `ferroma-data` volume | the bytes: the Maildir, the attachment blob store, the DKIM private key, and the data directory's own files — `<data_dir>/database.json` (the database address this instance remembers) and `<data_dir>/jwt_secret` when the secret was generated rather than configured |
 
-The script's own header states the rule:
-
-> A backup that contains only one of the first two is not a backup: the database
-> says a message exists and the Maildir holds its bytes, and restoring either
-> alone gives you a mailbox full of dangling rows or a directory of orphaned
-> files.
-
-Concretely, the two failure modes are:
-
-| Restored | Result |
+| Restored alone | Result |
 |---|---|
 | Database only | every `messages.storage_path` points at a file that is not there. Every read is `StorageError::BodyMissing`; users see an inbox of subjects with no bodies |
 | Maildir only | the files exist and nothing knows about them. Folders appear empty; the bytes are invisible until an operator re-imports them by hand |
 
-Neither is recoverable by the application, which is why
-`scripts/restore.sh` prints a warning when you ask for `--db-only` or
-`--mail-only` and why the compose backup sidecar mounts both.
+The database is authoritative for *what exists* and the filesystem for *the bytes*,
+and neither can be reconstructed from the other — which is why a backup that
+contains only one of the two is not a backup. Whatever backs up the volume must
+treat it as secret-bearing: it carries the DKIM private key, and usually
+`<data_dir>/jwt_secret` as well. See [security.md](security.md) §13.
 
 ### 8.2 Consistency of a live backup
 
 * **The database half is a single `pg_dump`**, so it is a consistent snapshot of
   one point in time.
-* **The Maildir half is a live `tar`.** Maildir writes are atomic renames, so the
-  archive can miss a delivery that was in flight but can never contain a
-  half-written file. A message delivered during the dump may therefore be present
-  in the Maildir and absent from the database (an orphan file) or — much less
-  likely, and worse — present in neither, in which case the SMTP transaction that
-  delivered it had not yet been acknowledged and the sender will retry.
-* **The orphan direction is the safe one**, which is exactly why the delivery
-  algorithm writes the file before the row. `Maildir::sweep_tmp` and the
-  integrity report are how orphans are found.
+* **The volume half is a live copy.** Maildir writes are atomic renames, so a
+  `tar` of the volume can miss a delivery that was in flight but can never contain
+  a half-written file: a message delivered during the copy may be present as a
+  file and absent from the database (an orphan), or — much less likely — absent
+  from both, in which case the SMTP transaction that delivered it had not yet been
+  acknowledged and the sender will retry.
+* **The two halves are not the same instant.** The order decides which way the
+  mismatch points: take the database dump **first** and copy the volume **second** —
+  a message delivered in between is then an extra file with no row, the safe
+  direction, and the same one the delivery algorithm takes when it writes
+  the file before the row. Reverse the order and the window instead leaves rows
+  whose files are missing: `BodyMissing` for the user, with no bytes to recover
+  from. Do not pair a filesystem snapshot of the volume with a live `pg_dump` and
+  assume the two agree.
 
-If you need a perfectly consistent pair, stop the container:
+If you need the halves to be exactly one instant, stop the application for the
+whole window:
 
 ```bash
 docker compose stop ferroma
-docker compose run --rm backup
+docker compose exec -T postgres sh -c \
+  'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom --compress=6' > ferroma.dump
+docker run --rm -v ferroma-data:/data -v "$PWD":/backup alpine \
+  tar -czf /backup/ferroma-data.tar.gz -C /data .
 docker compose start ferroma
 ```
 
-That is the only way to guarantee no in-flight transaction is split across the two
-halves. For most deployments the live backup is correct enough, because an orphan
-file is benign and a missed message is retried by the sending MTA.
+`docker compose stop` stops only the application: mail already accepted into the
+queue is in the database, and a peer MTA whose connection drops retries, so the
+window costs a delivery delay rather than a message.
 
-### 8.3 Restore ordering
+The external-database shape has no `postgres` service to `exec` into, so take the
+database half with a throwaway client container instead — same order:
 
-`scripts/restore.sh` follows specification §47 and does it in the order the
-dependency graph demands:
+```bash
+docker run --rm --network host -e PGPASSWORD postgres:16-alpine \
+  pg_dump -h 127.0.0.1 -U ferroma -d ferroma --format=custom --compress=6 > ferroma.dump
+```
+
+`PGPASSWORD` comes from the environment (`.env`), and `-U`/`-d` are that file's
+`POSTGRES_USER`/`POSTGRES_DB` (both `ferroma` by default); everything about the
+volume half is unchanged.
+
+For most deployments the live pair is correct enough, because an orphan file is
+benign and a missed message is retried by the sending MTA — but it is a pair to
+verify rather than assume (see §8.3).
+
+### 8.3 Restore ordering, and verifying afterwards
+
+Restore in the order the dependency graph demands:
 
 ```text
-0. verify      sha256sum -c SHA256SUMS   (abort on mismatch)
-               print MANIFEST
-1. database    pg_restore --no-owner --no-privileges --exit-on-error
-               refuses a non-empty database unless FORCE_RESTORE=1
-2. mail store  tar -xzf maildir.tar.gz
-3. config      tar -xzf config.tar.gz
+1. database   pg_restore --no-owner --no-privileges --exit-on-error, into an empty database
+2. volume     tar -xzf, over the ferroma-data volume
+3. secrets    .env, TLS material, and the rest of §8.4
 ```
 
 The database goes first because it is the half that defines what should exist; the
-Maildir second so that by the time the server starts, every row already has its
-file. Configuration last, so a restore that fails halfway does not leave a
-running server pointed at the wrong TLS certificate.
+volume second so that by the time the server starts, every row already has its
+file. Secrets and configuration last, so a restore that fails halfway does not
+leave a running server pointed at the wrong TLS certificate.
 
-`restore_db` refuses to restore over a populated database, with a message that
-names the count of tables it found:
+```bash
+docker compose stop ferroma
 
-```text
-database ferroma is not empty (19 tables). Set FORCE_RESTORE=1 to overwrite,
-or restore into a fresh database.
+# 1. the database, into an empty database of its own
+docker compose exec -T postgres sh -c \
+  'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-privileges --exit-on-error' < ferroma.dump
+
+# 2. the volume; the tar was written as root, so a root extraction restores the
+#    uid 10001 ownership the service needs
+docker run --rm -v ferroma-data:/data -v "$PWD":/backup alpine \
+  sh -c 'tar -xzf /backup/ferroma-data.tar.gz -C /data && chown -R 10001:10001 /data'
+
+docker compose start ferroma
 ```
 
-(19 is the number of tables `0001_initial.sql` creates; the count in the real
-message is whatever `information_schema.tables` reports for `public`.)
+`pg_restore` is for a `--format=custom` dump; a `pg_dumpall` or plain-SQL dump is
+fed to `psql` instead. Restore into a database that is empty: `pg_restore` reports
+every object that already exists as an error, and silently merging two mail stores
+is how an operator loses a week of mail — no tool can tell "restore on top" from
+"oops, wrong database". If the target is not empty, stop and check it first.
 
-That guard is the single most valuable line in the script. Silently merging two
-mail stores is how an operator loses a week of mail, and no automated tool can
-tell "restore on top" from "oops, wrong database".
+Then verify the pair against §9's invariants, from inside the application
+container:
+
+```bash
+docker compose exec ferroma ferroma storage verify --details
+```
+
+It reports how many message rows it checked, how many are missing their file, and
+any size mismatch; `--details` prints the first 50 of each, and the run also
+sweeps abandoned `tmp/` files older than an hour. A non-zero exit means the mail
+store is not consistent. Two outcomes matter:
+
+* **A missing body** means the two halves do not belong together — the backup was
+  inconsistent, or the volume half was not restored. Do not serve mail until it is
+  resolved; no row can be turned back into RFC 5322 bytes.
+* **Orphan files** are the expected residue of a live backup (files delivered
+  after the dump) and of an interrupted delivery. `ferroma storage verify` does
+  not enumerate them; §9.2's `comm` listing is how to see them. Do not delete one
+  before you are sure the restore was complete. `ferroma storage gc --dry-run` is
+  a different inventory — unreferenced attachment blobs, not Maildir files.
+
+Checksums, counters and `uid_next` are not part of `verify`; §9.3 and §9.4 cover
+them for the cases where a matching size is not enough.
 
 ### 8.4 What else you must keep
 
 | Item | Why | Where it lives |
 |---|---|---|
 | `ferroma.toml` | limits, ports, TLS paths, `api.public_url`, `server.hostname` | `config/ferroma.toml`, mounted read-only |
-| `[api] jwt_secret` / `FERROMA_JWT_SECRET` | without it every session is invalidated on restart | environment, **not** in the config archive |
-| DKIM private keys | losing them means every signature breaks and DMARC starts failing | `domains.dkim_private_key` **and** `/etc/ferroma/dkim/*.private` |
-| TLS certificate and key | losing them means a TLS outage until reissue | `/etc/ferroma/tls/` |
-| PostgreSQL role and database | a restore needs somewhere to restore into | the `postgres` service |
+| `[api] jwt_secret` / `FERROMA_JWT_SECRET` | without it every session is invalidated on restart | the environment, or `<data_dir>/jwt_secret` inside the volume when it was generated rather than configured |
+| DKIM private keys | losing them means every signature breaks and DMARC starts failing | `domains.dkim_private_key` **and** the file at `dkim.private_key_path` — `/var/lib/ferroma/dkim/<selector>.private` in the volume, or the `./dkim` read-only mount |
+| TLS certificate and key | losing them means a TLS outage until reissue | `/etc/ferroma/tls/`, a `./tls` bind mount — not the data volume |
+| `.env` | `POSTGRES_PASSWORD` for the database service, and often `FERROMA_JWT_SECRET` | gitignored, on the host; no shipped tooling excludes it for you |
+| PostgreSQL role and database | a restore needs somewhere to restore into | the `postgres` service, or the host's own server |
 
-The JWT secret is deliberately excluded from `config.tar.gz`
-(`--exclude='*.env' --exclude='credentials*'`) because the backup volume may be
-less protected than the secret store. Keep it in whatever you use for secrets —
-see [security.md](security.md) §10 and [deployment.md](deployment.md) §4.
+An archive of the `ferroma-data` volume is secret-bearing — the DKIM private key
+and usually `<data_dir>/jwt_secret` are inside it — and no script excludes
+anything on your behalf any more. Encrypt the archive, keep it where you keep
+secrets, and treat a copy of the volume with the same care as the database. See
+[security.md](security.md) §13 and [deployment.md](deployment.md) §4.
 
 ---
 
@@ -1044,12 +1092,12 @@ rejects it — which is a loud failure, not a silent overwrite, because of
 | Unreferenced blob | `AttachmentStore::gc` with a freshly collected keep-set |
 | Leftover `tmp/` file | `Maildir::sweep_tmp(3600)` on a live server, `sweep_tmp(0)` on a stopped one |
 
-The scripts and the API refer to a `ferroma storage verify` subcommand that wraps
-all of the above and a `POST /api/v1/storage/gc` endpoint that runs the blob
-collector. Both are _(planned)_ — the `ferroma` binary does not implement a
-subcommand interface yet (`server/src/main.rs` prints the build banner and
-exits). Until they exist, the `psql` and shell snippets in this section are the
-procedure.
+`ferroma storage verify` covers the missing-body and size findings in the table
+above and sweeps abandoned `tmp/` files older than an hour; it does not enumerate
+the orphan files of §9.2. `POST /api/v1/storage/gc` runs the blob collector and
+sweeps the `tmp/` areas of both the blob and Maildir roots. The remaining checks —
+orphans, checksums, counter drift and `uid_next` — are still the `psql` and shell
+snippets in this section.
 
 ---
 

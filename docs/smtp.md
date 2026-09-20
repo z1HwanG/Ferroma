@@ -579,10 +579,10 @@ What it does and does not change:
 * **DKIM signing happens before the hand-off**, so the signature still carries your
   own domain and DMARC alignment is untouched; SPF needs the relay's sending domain
   `include:`d in your record ([security.md](security.md) §8).
-* When the relay wants `AUTH`, credentials are sent **only over an encrypted
-  channel**: `relay_tls = "none"` together with credentials is rejected by the boot
-  check. `AUTH PLAIN` with an initial response is preferred, falling back to
-  `AUTH LOGIN` when that is all the relay offers.
+* When the relay wants `AUTH`, credentials are sent
+  **only over an encrypted channel**: `relay_tls = "none"` together with credentials
+  is rejected by the boot check. `AUTH PLAIN` with an initial response is preferred,
+  falling back to `AUTH LOGIN` when that is all the relay offers.
 * **A rejected `AUTH` is a temporary failure, never a bounce**: a wrong password is a
   configuration mistake, and bouncing the queue over it destroys mail a corrected
   password would have delivered.

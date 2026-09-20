@@ -8,14 +8,15 @@ the first boot, which compose file to use and when, the environment variables th
 must be set, the port table, the TLS options (Ferroma-terminated versus a reverse
 proxy) and how to get a Let's Encrypt certificate, first-run setup, creating
 domains and users, generating and publishing a DKIM key, the backup and restore
-procedure and why the ordering matters, monitoring and health checks, upgrades and
+procedure you run with the host's own tooling and why the two halves belong
+together, monitoring and health checks, upgrades and
 rollback, and a troubleshooting section keyed by symptom with the command that
 diagnoses each one.
 
 > **Status:** the deployment artefacts are real and complete —
 > `Dockerfile`, `docker-compose.yml`, `docker-compose.prod.yml`,
 > `docker-compose.external-db.yml`, `.env.example`, `config/ferroma.toml`,
-> `scripts/deploy.sh`, `scripts/backup.sh`, `scripts/restore.sh`.
+> `scripts/deploy.sh`.
 > The `ferroma` binary implements every subcommand this document uses: `serve`,
 > `config check|show|default`, `database init|status`, `migrate`, `user`, `domain`,
 > `dkim`, `storage`, `sync`, `healthcheck`, `doctor`, `version`.
@@ -50,7 +51,8 @@ diagnoses each one.
                   ┌────────▼────────┐            ┌─────────▼──────────┐
                   │ postgres:16     │            │ volume ferroma-data│
                   │ (internal only) │            │  mail/ attachments/│
-                  └─────────────────┘            │  tls/ backups/     │
+                  └─────────────────┘            │  dkim/ private key │
+                                                 │  database.json     │
                                                  └────────────────────┘
 ```
 
@@ -59,8 +61,8 @@ Two containers minimum. PostgreSQL is never published to the host: it is on
 
 > **If this host already runs PostgreSQL** (and a reverse proxy for 443), do not
 > start a second database container: use `docker-compose.external-db.yml` and
-> `./scripts/deploy.sh` from §3.1 — that is Ferroma itself, a backup sidecar, and
-> the database you already have.
+> `./scripts/deploy.sh` from §3.1 — that is Ferroma itself and the database you
+> already have; backing it up is your own job, see §8.
 
 Requirements before you start:
 
@@ -123,7 +125,7 @@ mail            IN  A       203.0.113.10
 ; --- sender authentication ---
 @               IN  TXT     "v=spf1 mx -all"
 
-; DKIM: paste the p= value from `ferroma dkim generate` / the Admin panel.
+; DKIM: paste the p= value from `ferroma dkim generate` / the Admin console.
 default._domainkey IN TXT  "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA..."
 
 ; DMARC. Start at p=none to collect reports, then tighten.
@@ -273,7 +275,7 @@ curl -s https://mta-sts.example.com/.well-known/mta-sts.txt
 dig +short 10.113.0.203.zen.spamhaus.org
 ```
 
-The Admin panel's DNS Health screen (`GET /api/v1/domains/:id/dns`,
+The Admin console's DNS Health screen (`GET /api/v1/domains/:id/dns`,
 [api.md](api.md) §4.4) runs exactly these checks and returns a score out of 7.
 
 ---
@@ -282,9 +284,9 @@ The Admin panel's DNS Health screen (`GET /api/v1/domains/:id/dns`,
 
 | File | Use it for | TLS | Postgres | Images | Extra |
 |---|---|---|---|---|---|
-| `docker-compose.external-db.yml` | **a host that already runs PostgreSQL and a reverse proxy** (recommended, see §3.1) | the reverse proxy terminates HTTPS; Ferroma terminates 465/993 | **none** — it uses the host's Postgres | `wesukilaye/ferroma:<tag>`, `docker pull`ed or built here — the whole reference is `FERROMA_IMAGE` | nightly backup sidecar, `network_mode: host`, `.env` is the whole configuration |
+| `docker-compose.external-db.yml` | **a host that already runs PostgreSQL and a reverse proxy** (recommended, see §3.1) | the reverse proxy terminates HTTPS; Ferroma terminates 465/993 | **none** — it uses the host's Postgres | `wesukilaye/ferroma:<tag>`, `docker pull`ed or built here — the whole reference is `FERROMA_IMAGE` | `network_mode: host`, `.env` is the whole configuration; backups stay yours, see §8 |
 | `docker-compose.yml` | development, a single host, a first look | off; ports 25/587/143/8080 plaintext | `postgres:16-alpine`, defaults | built locally from `Dockerfile`, tagged `wesukilaye/ferroma:dev` | — |
-| `docker-compose.prod.yml` | a real MX | terminated by Ferroma on 465/993 (HTTPS goes to the reverse proxy) | tuned (`shared_buffers=512MB`, `wal_compression=on`, …) | `wesukilaye/ferroma:${FERROMA_VERSION}` — a released tag, never built | nightly backup sidecar, resource limits, `restart: always`, bounded logs, `ulimit nofile 65536` |
+| `docker-compose.prod.yml` | a real MX | terminated by Ferroma on 465/993 (HTTPS goes to the reverse proxy) | tuned (`shared_buffers=512MB`, `wal_compression=on`, …) | `wesukilaye/ferroma:${FERROMA_VERSION}` — a released tag, never built | resource limits, `restart: always`, bounded logs, `ulimit nofile 65536`; backups stay yours, see §8 |
 
 Both reference the published repository through `FERROMA_REPO`, which defaults to
 `wesukilaye/ferroma` and can point at a mirror or a private registry instead. The
@@ -295,8 +297,7 @@ interpolate a `${…}` nested inside another, so a nested default such as
 fails the build if one reappears.
 
 Do not use `docker-compose.yml` in production. It serves IMAP and the API in
-plaintext, has no backup sidecar and no resource limits, and it binds port 143 to
-the host unencrypted.
+plaintext, has no resource limits, and it binds port 143 to the host unencrypted.
 
 ### 3.1 A host that already runs PostgreSQL: one command (recommended)
 
@@ -319,7 +320,7 @@ fixes it rather than leaving you to guess:
 | 2. Collect configuration | asks interactively: mail domain, MX hostname, admin address, database address, API port (default `127.0.0.1:18080`) |
 | 3. Write `.env` | generates a random database password and `FERROMA_JWT_SECRET`, mode 600; **it is the only configuration file** |
 | 4. Create the role and the database | tries, in order: `sudo -u postgres` (peer auth), the `psql` **inside a PostgreSQL container on this host** (how 1Panel and similar panels run it, through `docker exec`), and the superuser named by `--pg-password`; if none works it prints SQL you can paste — in the `docker exec` form when the database is a container |
-| 5. Build the image | a local `docker build` (10–30 minutes the first time). Pass `--image wesukilaye/ferroma:0.1.0` to pull the release instead — the same command skips the build entirely |
+| 5. Build the image | a local `docker build` (10–30 minutes the first time). Pass `--image wesukilaye/ferroma:0.1.4` to pull the release instead — the same command skips the build entirely |
 | 6. Create the schema | runs `ferroma database init` in the container (which also creates the database when it is missing) |
 | 7. Install the certificate | installs the certificate into `./tls` as uid 10001 for 465/993, and checks that the SAN covers the MX hostname |
 | 8. Start | `docker compose up -d`, waiting up to 3 minutes for the health check and printing the log on timeout |
@@ -349,21 +350,24 @@ The trade-offs that matter:
   the public port is not 443 (container on 80/443, host publishing 180/1443), read
   the last part of §5.4: the API has to be bound to the Docker bridge address and
   `--public-port` has to be passed with it.
-* **Backup is a long-running sidecar it ships with**: every 24 hours, 14 days of
-  retention, written into the `ferroma-backups` volume.
+* **Backups are yours.** Nothing in this deployment backs anything up: no sidecar,
+  no timer, no script, and `scripts/deploy.sh` has no `backup` or `restore`
+  subcommand. Dump PostgreSQL and copy the `ferroma-data` volume with the host's own
+  tooling, and keep the two halves together — §8 has the commands and says what a
+  backup must contain.
 
 The sub-commands you will use:
 
 ```bash
+./scripts/deploy.sh                     # first deployment, or re-apply .env and restart
 ./scripts/deploy.sh status              # containers / health / database
-./scripts/deploy.sh logs
-./scripts/deploy.sh backup              # back up once, now (the nightly run is automatic)
-./scripts/deploy.sh upgrade             # back up → rebuild the image → restart → wait for health
-./scripts/deploy.sh restore /backups/20260916T030000Z
+./scripts/deploy.sh logs                # follow the Ferroma log
+./scripts/deploy.sh upgrade             # rebuild the image → restart → wait for health
 ./scripts/deploy.sh dkim --enable       # turn signing on after the TXT record is published
 ./scripts/deploy.sh certs               # re-install a renewed certificate and restart (used by the certbot hook)
-./scripts/deploy.sh doctor
-./scripts/deploy.sh down [--volumes]
+./scripts/deploy.sh doctor              # run `ferroma doctor` inside the container
+./scripts/deploy.sh down [--volumes]    # stop the stack; --volumes also deletes ferroma-data
+./scripts/deploy.sh help                # the usage text
 ```
 
 An unattended run (cloud-init, CI) has a flag for every prompt:
@@ -426,21 +430,11 @@ note at the top of this file), and Webmail / Admin / API are reached by the reve
 proxy at `127.0.0.1:8080` — add `127.0.0.1:8080:8080` to `ports` to do that, see
 §5.3.
 
-It also mounts the backup sidecar's inputs:
-
-```yaml
-backup:
-  image: postgres:16-alpine
-  entrypoint: ['/bin/sh', '/usr/local/bin/backup.sh']
-  # A loop, not a one-shot: a one-shot script under restart: always writes another
-  # full backup on every restart backoff, until the disk fills.
-  command: ['--loop']
-  restart: unless-stopped
-  volumes:
-    - ./scripts/backup.sh:/usr/local/bin/backup.sh:ro
-    - ferroma-data:/mail:ro
-    - backups:/backups
-```
+Nothing backs this stack up for you, and there is no `backup` service to run. The
+mail store lives in the `ferroma-data` volume and the relational state in the
+`ferroma-postgres-data` volume owned by the `postgres` container; §8 has the
+commands that dump the one and archive the other, and both halves are needed
+together.
 
 ### 3.4 Operating commands you will actually type
 
@@ -470,6 +464,39 @@ docker compose -f docker-compose.prod.yml down
 
 ---
 
+### 3.5 Choosing the database in the browser
+
+A server that cannot reach PostgreSQL has nothing to serve — no repositories, no session,
+not even the page that would let you fix it. So it does not exit: when no connection was
+*stated* (no `FERROMA_DATABASE__URL`, nothing in `ferroma.toml`, nothing in
+`<data_dir>/database.json`), it binds the web port anyway and serves one page, at
+`http://<host>:<port>/admin/`, that asks for the connection.
+
+```
+No database is connected yet. Open http://0.0.0.0:8080/admin/ and enter:
+
+    address   postgres://user:password@host:5432/ferroma
+    code      7JVTQAHO
+```
+
+* **The code is required.** It is generated at every start and printed to the log, because
+  otherwise anyone who can reach the published web port could point this instance at a
+  database of their choosing. Read it with `docker compose logs ferroma`.
+* **The database must already exist.** Ferroma connects and applies its schema; it never
+  runs `CREATE DATABASE`, so the role you name only needs the rights to use that database.
+* **There is no restart.** The connection is tested, the schema applied, and the boot
+  continues in the same process on the same port — the page reloads straight into the
+  first-run wizard.
+* **The address is remembered** in `<data_dir>/database.json` (mode 0600: it holds a
+  password) and used on every later start. Leave `DATABASE_URL` out of `.env` to get this
+  behaviour; state it and the deployment wins, as everywhere else.
+
+A remembered address that stops working brings the page back, with the server's own
+explanation of why it was refused — that is a wrong password you can fix from the browser.
+An address stated by the deployment is still a hard, loud failure at startup, because that
+one is a mistake in a file you can see.
+
+
 ## 4. Environment variables
 
 Copy `.env.example` to `.env`. Compose interpolates it, and the compose files
@@ -480,10 +507,15 @@ refuse to start without the required ones.
 | Variable | Example | Required by | Notes |
 |---|---|---|---|
 | `POSTGRES_PASSWORD` | `openssl rand -base64 32` | all | `${POSTGRES_PASSWORD:?…}` — compose fails without it |
-| `FERROMA_JWT_SECRET` | `openssl rand -base64 48` | all | signs access/refresh tokens. Without it every session dies on restart |
-| `FERROMA_HOSTNAME` | `mail.example.com` | prod (`:?`) | must equal the PTR record |
-| `FERROMA_PUBLIC_URL` | `https://mail.example.com` | prod (`:?`) | used in `.well-known/ferroma` and in links |
-| `FERROMA_VERSION` | `0.1.0` | prod (`:?`) | a released image tag; prod never builds |
+| `FERROMA_JWT_SECRET` | `openssl rand -base64 48` | optional | signs access/refresh tokens. Leave it unset and the server generates one into the data volume and reuses it; set it only to share the secret across instances |
+| `FERROMA_HOSTNAME` | `mail.example.com` | optional | must equal the PTR record. Absent, the first-run wizard asks for it and the stored value is adopted at the next start |
+| `FERROMA_PUBLIC_URL` | `https://mail.example.com` | optional | used in `.well-known/ferroma` and in links. Same arrangement as the hostname: the wizard owns it unless the deployment states it |
+
+Stating any of these in the environment wins over the wizard, which is the point: a
+deployment that knows its identity sets it once, and an instance being set up by hand gets
+asked. `scripts/deploy.sh --wizard` writes none of them, so a fresh container needs only
+the web port published — plus `POSTGRES_PASSWORD`, which the script generates.
+| `FERROMA_VERSION` | `0.1.4` | prod (`:?`) | a released image tag; prod never builds |
 
 ### 4.2 Commonly set
 
@@ -502,7 +534,6 @@ refuse to start without the required ones.
 | `FERROMA_DKIM_SELECTOR` | `default` | `dkim.selector` |
 | `FERROMA_DKIM_KEY` | — | `dkim.private_key_path` |
 | `TRUST_PROXY_HEADERS` | `false` | `api.trust_proxy_headers` |
-| `BACKUP_RETENTION_DAYS` | `14` | `scripts/backup.sh` retention |
 | `SMTP_PORT`, `SUBMISSION_PORT`, `IMAP_PORT`, `HTTP_PORT` | 25, 587, 143, 8080 | **dev only** — the host side of the published ports |
 | `FERROMA_API_PORT` | 8080 (18080 in the external-db stack) | `api.port` — the host side of the plaintext HTTP API |
 
@@ -550,9 +581,13 @@ openssl rand -base64 32      # POSTGRES_PASSWORD
 openssl rand -base64 48      # FERROMA_JWT_SECRET
 ```
 
-`.env` is gitignored. `scripts/backup.sh` explicitly excludes `*.env` and
-`credentials*` from the configuration archive, because the backup volume is
-usually less protected than the secret store. See [security.md](security.md) §13.
+`.env` is gitignored. Anything that copies the `ferroma-data` volume is
+**secret-bearing** and deserves the same care: it holds the DKIM private key at
+`/var/lib/ferroma/dkim/<selector>.private` and, on a deployment that connected the
+database through the browser (§3.5), the database address and password inside
+`<data_dir>/database.json` (mode 0600). Encrypt the archive or snapshot at rest,
+restrict who can read it, and keep `*.env` and `credentials*` out of any copy of the
+configuration. See [security.md](security.md) §13.
 
 ---
 
@@ -567,7 +602,7 @@ usually less protected than the secret store. See [security.md](security.md) §1
 | 465 | SMTPS (implicit TLS) | `smtp.smtps_port` | not published | published | requires `tls.enabled` **and** `smtps_port = 465` (the default is 0, i.e. off) |
 | 143 | IMAP, `STARTTLS` | `imap.port` | published | published | |
 | 993 | IMAPS (implicit TLS) | `imap.imaps_port` | not published | published | requires `tls.enabled` **and** `imaps_port = 993` (the default is 0, i.e. off) |
-| 8080 | HTTP API + Webmail + Admin | `api.port` | published | loopback only | the healthcheck runs against it; the reverse proxy terminates HTTPS on the public side |
+| 8080 | HTTP API + Webmail + Admin | `api.port` | published | loopback only | the health check runs against it; the reverse proxy terminates HTTPS on the public side |
 | 8443 | *_(not implemented)_* | `api.tls_port` | — | — | the key exists in the configuration but there is **no listener**: HTTPS for the API / Webmail / Admin belongs to the reverse proxy, see §5.3 |
 | 5432 | PostgreSQL | — | `expose` only | `expose` only | never publish this |
 
@@ -848,7 +883,7 @@ docker compose -f docker-compose.prod.yml logs ferroma | tail -50
 A healthy start logs the resolved configuration summary, an `info` line per
 listener, and the migration outcome when `database.run_migrations = true`.
 
-### 6.2 The setup wizard
+### 6.2 The first-run wizard
 
 While no admin exists, `GET /api/v1/setup` returns `{ "required": true }`
 ([api.md](api.md) §4.7). Open `https://mail.example.com/` and the Webmail
@@ -1048,100 +1083,141 @@ docker compose -f docker-compose.prod.yml exec postgres \
 
 ## 8. Backup and restore
 
-### 8.1 What the backup contains
+**Ferroma ships no backup tooling.** There is no `scripts/backup.sh`, no
+`scripts/restore.sh`, no `backup` or `restore` service in either compose file, and
+no `ferroma-backups` volume. `scripts/deploy.sh` has no `backup` and no `restore`
+subcommand either. Backing this deployment up is the operator's job, done with the
+host's own tools: `pg_dump`, `tar` or `rsync`, `restic`/`borg`, a filesystem or
+hypervisor snapshot, your existing backup product.
 
-`scripts/backup.sh` writes one timestamped directory per run:
+### 8.1 What a backup must contain
 
-```text
-/backups/20260916T030000Z/
-├── ferroma.dump      pg_dump --format=custom --compress=6
-├── schema.sql        pg_dump --schema-only: an empty but correct structure
-├── maildir.tar.gz    tar -czf of the mail root
-├── config.tar.gz     ferroma.toml, DKIM keys, TLS material
-├── MANIFEST          version, created_at, database, postgres_version,
-│                     ferroma_version, hostname
-└── SHA256SUMS        sha256sum ./*, so a restore can prove the archive survived
-```
+The deployment keeps its state in two places, and they are **one** backup:
 
-The script's own header states the rule that governs everything else:
+| Half | Where | What it holds |
+|---|---|---|
+| Database | the `postgres` container's volume (`ferroma-postgres-data`), or the PostgreSQL server you already run | domains, users, mailboxes, message metadata, the queue, the sync log, and the per-domain key in `domains.dkim_private_key` |
+| Volume `ferroma-data` | mounted at `/var/lib/ferroma` (`server.data_dir`) | the Maildir, the attachment blobs, the DKIM private key at `/var/lib/ferroma/dkim/<selector>.private`, and `<data_dir>/database.json` |
 
-> A backup that contains only one of the first two is not a backup: the database
-> says a message exists and the Maildir holds its bytes, and restoring either
-> alone gives you a mailbox full of dangling rows or a directory of orphaned
-> files.
+The rule that governs everything else:
+
+> A backup that contains only one of the two is not a backup: the database says a
+> message exists and the Maildir holds its bytes, and restoring either alone gives
+> you a mailbox full of dangling rows or a directory of orphaned files.
 
 | Restored alone | What the user sees |
 |---|---|
 | Database only | an inbox of subjects with no bodies — every read is `StorageError::BodyMissing` |
 | Maildir only | empty folders; the bytes are on disk and nothing knows about them |
 
-### 8.2 Running it
+`<data_dir>/database.json` is the address the server remembered when the database
+was chosen in the browser (§3.5): mode 0600, because it holds the password in
+clear. The volume is therefore **secret-bearing** exactly like the DKIM key beside
+it, and whatever stores a copy of it — archive, snapshot or backup repository — has
+to be at least as protected as `.env`: encrypted at rest, access-controlled, and
+kept out of anything world-readable.
 
-The production stack runs a nightly sidecar:
+### 8.2 Taking a backup
 
-```yaml
-backup:
-  image: postgres:16-alpine
-  environment:
-    PGHOST: postgres
-    PGUSER: ${POSTGRES_USER:-ferroma}
-    PGPASSWORD: ${POSTGRES_PASSWORD}
-    PGDATABASE: ${POSTGRES_DB:-ferroma}
-    BACKUP_DIR: /backups
-    RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
-    BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
-  entrypoint: ['/bin/sh', '/usr/local/bin/backup.sh']
-  command: ['--loop']
-  restart: unless-stopped
-  volumes:
-    - ./scripts/backup.sh:/usr/local/bin/backup.sh:ro
-    - ferroma-data:/mail:ro
-    - backups:/backups
-```
-
-`command: ['--loop']` is not decoration: a one-shot script under `restart: always`
-writes **a full backup again on every restart**, backing off to one a minute, until
-the disk fills.
-
-By hand:
+Give every run one timestamped directory and put both halves in it:
 
 ```bash
-# One pass, then exit (--once is the explicit "run once").
-docker compose -f docker-compose.prod.yml run --rm backup --once
-
-# A loop in the foreground: every 24 h, retention 14 days.
-docker compose -f docker-compose.prod.yml run --rm \
-  -e BACKUP_INTERVAL_SECONDS=86400 -e RETENTION_DAYS=14 \
-  backup --loop
-
-# Off-host, which is what makes a backup a backup. Run it from the host:
-docker run --rm -v ferroma-backups:/backups -v "$PWD:/out" alpine \
-  tar -czf /out/ferroma-backups-$(date -u +%Y%m%d).tar.gz -C /backups .
+# DATABASE_URL and POSTGRES_PASSWORD live in .env on the external-db stack.
+set -a; . ./.env; set +a
+STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+mkdir -p "/backups/$STAMP"
 ```
 
-With the §3.1 stack it is shorter: `./scripts/deploy.sh backup`.
+**The database half.** Use a `pg_dump` whose major version matches the server's.
 
-The sidecar mounts the mail root read-only (`ferroma-data:/mail:ro`) and never
-writes to it. Get the archives off the machine: a backup on the same disk as the
-mail store is not a backup, and neither is one in the same cloud account without
-versioning.
+```bash
+# The external-db stack, or any host that already runs PostgreSQL with a psql of
+# its own. DATABASE_URL is the address Ferroma connects with.
+pg_dump --format=custom --compress=6 -d "$DATABASE_URL" \
+  > "/backups/$STAMP/ferroma.dump"
+
+# No host psql? Use the client image scripts/deploy.sh pulls for exactly this. It
+# is a client: no server is ever started from it. --network host lets it reach the
+# database at 127.0.0.1, which is how the external-db stack connects.
+docker run --rm --network host -i \
+  -e PGPASSWORD="$POSTGRES_PASSWORD" -e PGUSER="$POSTGRES_USER" -e PGDATABASE="$POSTGRES_DB" \
+  postgres:16-alpine \
+  pg_dump -h 127.0.0.1 --format=custom --compress=6 \
+  > "/backups/$STAMP/ferroma.dump"
+
+# Roles and other cluster-wide objects live in the cluster, not in the database.
+docker run --rm --network host -i -e PGPASSWORD="$POSTGRES_PASSWORD" \
+  postgres:16-alpine \
+  pg_dumpall -h 127.0.0.1 -U postgres --globals-only \
+  > "/backups/$STAMP/globals.sql"
+
+# The prod stack, where PostgreSQL is the `postgres` container. The container's own
+# POSTGRES_USER/POSTGRES_DB are used, so a deployment that renamed either still
+# dumps the right database.
+docker compose -f docker-compose.prod.yml exec -T postgres \
+  sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom --compress=6' \
+  > "/backups/$STAMP/ferroma.dump"
+```
+
+**The volume half** — the Maildir, the attachments, the DKIM key and the
+remembered database address. A throwaway container reads it without installing
+anything on the host:
+
+```bash
+# One tar beside the dump. The mount is read-only: nothing here writes to the store.
+docker run --rm \
+  -v ferroma-data:/data:ro \
+  -v "/backups/$STAMP:/out" \
+  alpine tar -czf /out/ferroma-data.tar.gz -C /data .
+
+# rsync, when the store is large and you want an incremental copy instead. Alpine
+# ships tar but not rsync, so install it inside the throwaway container.
+docker run --rm \
+  -v ferroma-data:/data:ro \
+  -v /backups/ferroma-data:/out \
+  alpine sh -c 'apk add --no-cache rsync >/dev/null && rsync -a --delete /data/ /out/'
+```
+
+**Or a snapshot**, which is the same idea at the filesystem or hypervisor level and
+much cheaper on a large store. Snapshots have to be taken for **both** halves at
+the same moment — the volume's mountpoint and PostgreSQL's data directory, or the
+whole VM at once:
+
+```bash
+docker volume inspect -f '{{.Mountpoint}}' ferroma-data   # where the volume really is
+```
+
+**Get the copies off the machine.** A backup on the same disk as the mail store is
+not a backup, and neither is one in the same cloud account without versioning. Point
+whatever you already run — `restic`, `borg`, `rclone`, an object store with
+versioning — at the timestamped directory:
+
+```bash
+restic -r s3:s3.example.com/ferroma-offsite backup "/backups/$STAMP"
+restic -r s3:s3.example.com/ferroma-offsite forget --keep-daily 14 --prune
+```
+
+Retention is now a policy you own rather than a variable in `.env`: pick a window
+(14 days is reasonable) and enforce it in the tool that holds the copies. Whatever
+you choose, test the restore (§8.6) — an untested backup is a hypothesis.
 
 ### 8.3 Consistency while live
 
 * The **database half is a single `pg_dump`** — a consistent snapshot of one
   instant.
-* The **Maildir half is a live `tar`.** Maildir writes are atomic renames
-  ([storage.md](storage.md) §4.3), so the archive can miss an in-flight delivery
-  but can never contain a half-written message.
+* The **Maildir half is a live `tar` or `rsync`.** Maildir writes are atomic
+  renames ([storage.md](storage.md) §4.3), so the copy can miss an in-flight
+  delivery but can never contain a half-written message.
 * The bad direction cannot happen: the Maildir file is written *before* the row,
   so a live backup can produce an orphan file (benign, sweepable) but not a row
   without bytes.
 
-For a perfectly consistent pair, stop the service for the duration:
+They are still two snapshots of two systems taken at two moments. For a perfectly
+consistent pair, stop the service for the duration:
 
 ```bash
 docker compose -f docker-compose.prod.yml stop ferroma
-docker compose -f docker-compose.prod.yml run --rm backup --once
+# take the pg_dump and the volume copy now (§8.2)
 docker compose -f docker-compose.prod.yml start ferroma
 ```
 
@@ -1150,75 +1226,91 @@ and it takes seconds on a small store.
 
 ### 8.4 Restore
 
-`scripts/restore.sh` follows specification §47: **database, then mail store, then
-configuration.** The database goes first because it defines what should exist; the
-Maildir second so every row has its file before the server starts; configuration
-last so a half-finished restore does not leave a running server pointed at the
-wrong certificate.
+Stop Ferroma first: a restore **writes** both halves underneath a running server,
+and a server pointed at a half-restored store is worse than a stopped one. Restore
+from the **same** timestamp on both sides — a database from one day and a volume
+from another is exactly the mismatch §8.1 warns about.
 
-A restore **writes** to the mail store, and the nightly sidecar mounts that
-read-only (deliberately), so a restore runs as a separate one-off container: the
-`restore` service with `profiles: ['tools']` in `docker-compose.external-db.yml`
-(the prod stack can do the same, with an entrypoint override).
+The order still matters, and it is the reverse of taking the backup: the database
+first, because it defines what should exist; the volume second, so every row has
+its file before the server starts. There is no configuration archive any more, but
+the files that are in neither store still matter: `.env`, `config/ferroma.toml`,
+and — on the prod stack, which bind-mounts them — `./tls` and `./dkim` live on the
+host and belong in whatever keeps the deployment's definition. On the external-db
+stack the DKIM key is inside `ferroma-data`, so the volume covers it.
 
 ```bash
-# Verify only: check the checksums and print the manifest, restore nothing. The
-# service can keep running.
-./scripts/deploy.sh restore /backups/20260916T030000Z --verify-only
+docker compose -f docker-compose.prod.yml stop ferroma
 
-# A full restore: the script stops Ferroma first, restores, then brings it back up
-# and waits for the health check.
-./scripts/deploy.sh restore /backups/20260916T030000Z
+# 1. The database. Recreate it empty first: pg_restore into a populated database
+#    merges rather than replaces, and a silently merged mail store is how a week of
+#    mail disappears.
+docker compose -f docker-compose.prod.yml exec -T postgres \
+  sh -c 'dropdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
+docker compose -f docker-compose.prod.yml exec -T postgres \
+  sh -c 'createdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
+docker compose -f docker-compose.prod.yml exec -T postgres \
+  sh -c 'pg_restore --no-owner --no-privileges -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+  < "/backups/$STAMP/ferroma.dump"
 
-# The raw equivalent (external-db stack).
+# 2. The volume. Clear it, then unpack the archive from the same stamp. tar keeps
+#    the stored ownership, which the image needs: it runs as uid 10001.
+docker volume create ferroma-data     # only when the volume is gone entirely
+docker run --rm \
+  -v ferroma-data:/data \
+  -v "/backups/$STAMP:/in:ro" \
+  alpine sh -c 'rm -rf /data/* /data/.[!.]*; tar -xzf /in/ferroma-data.tar.gz -C /data'
+
+# 3. Start it and check that the two halves agree.
+docker compose -f docker-compose.prod.yml up -d ferroma
+docker compose -f docker-compose.prod.yml exec ferroma ferroma storage verify
+```
+
+Both halves are plain standard formats, so nothing needs the deployment to be
+running: a bare-metal recovery on a new host is the same three steps with the same
+files.
+
+On the external-db stack the database half goes through the host's `psql` or the
+client container instead of `docker compose exec postgres`. There is no `postgres`
+service and no `--profile tools` restore service to run:
+
+```bash
 docker compose -f docker-compose.external-db.yml stop ferroma
-docker compose -f docker-compose.external-db.yml --profile tools run --rm \
-  restore /backups/20260916T030000Z
+docker run --rm --network host -i \
+  -e PGPASSWORD="$POSTGRES_PASSWORD" -e PGUSER="$POSTGRES_USER" -e PGDATABASE="$POSTGRES_DB" \
+  postgres:16-alpine \
+  pg_restore --no-owner --no-privileges --clean --if-exists -h 127.0.0.1 \
+  < "/backups/$STAMP/ferroma.dump"
 docker compose -f docker-compose.external-db.yml up -d ferroma
 ```
 
-The script refuses to restore over a populated database:
-
-```text
-database ferroma is not empty (19 tables). Set FORCE_RESTORE=1 to overwrite,
-or restore into a fresh database.
-```
-
-That guard is the most valuable line in the file. Merging two mail stores
-silently is how an operator loses a week of mail, and no tool can tell "restore on
-top" from "wrong database". For a genuine overwrite:
-
-```bash
-# external-db stack: adding -e FORCE_RESTORE=1 is enough.
-docker compose -f docker-compose.external-db.yml stop ferroma
-docker compose -f docker-compose.external-db.yml --profile tools run --rm \
-  -e FORCE_RESTORE=1 restore /backups/20260916T030000Z
-docker compose -f docker-compose.external-db.yml up -d ferroma
-```
-
-Partial modes exist for disaster recovery and both print a warning:
-
-```bash
-./scripts/deploy.sh restore /backups/20260916T030000Z --db-only
-./scripts/deploy.sh restore /backups/20260916T030000Z --mail-only
-```
+Restoring one half alone is sometimes the right call — a migration the old binary
+cannot read needs only the database back (§9.2) — but do it deliberately: the rows
+and the files stop describing the same moment, and every message received since is
+either a row with no bytes or bytes with no row. Run `ferroma storage verify`
+afterwards in either case.
 
 ### 8.5 After a restore
 
 ```bash
-# 1. The checks first: rows without bodies, files without rows, counters, uid_next.
-#    See docs/storage.md §9 for the queries and the shell loops.
+# 1. A first sanity check: how many live messages the restored rows describe.
+#    The full procedure is docs/storage.md §9.
 docker compose -f docker-compose.prod.yml exec ferroma sh -c '
   psql "$DATABASE_URL" -Atc "SELECT COUNT(*) FROM messages WHERE expunged_at IS NULL"'
 
-# 2. Reconcile the counters that are allowed to drift.
+# 2. The integrity check, from the binary itself: rows without bodies, files
+#    without rows, counters, uid_next.
+docker compose -f docker-compose.prod.yml exec ferroma \
+  ferroma storage verify --details
+
+# 3. Reconcile the counters that are allowed to drift.
 #    FoldersRepository::recount and MailboxesRepository::recompute_usage, triggered
 #    through POST /api/v1/storage/gc (an admin token is required) and the Admin
 #    storage screen.
 #    curl -s -X POST https://mail.example.com/api/v1/storage/gc \
 #      -H "Authorization: Bearer $TOKEN"
 
-# 3. Start Ferroma and watch the log for the first minute.
+# 4. Start Ferroma and watch the log for the first minute.
 docker compose -f docker-compose.prod.yml up -d ferroma
 docker compose -f docker-compose.prod.yml logs -f --tail=100 ferroma
 ```
@@ -1235,10 +1327,12 @@ hypothesis (specification §46: *"必须实际测试恢复"* — recovery must a
 tested).
 
 ```bash
-# Restore into a scratch database on the same host, without touching production.
+# Restore the dump into a scratch database on the same host, without touching
+# production. The volume half is restored the same way, into a throwaway volume.
 docker compose -f docker-compose.prod.yml exec postgres createdb -U ferroma ferroma_drill
-docker compose -f docker-compose.prod.yml exec postgres \
-  pg_restore --no-owner --no-privileges --dbname=ferroma_drill /backups/…/ferroma.dump
+docker compose -f docker-compose.prod.yml exec -T postgres \
+  pg_restore --no-owner --no-privileges --dbname=ferroma_drill \
+  < "/backups/$STAMP/ferroma.dump"
 docker compose -f docker-compose.prod.yml exec postgres \
   psql -U ferroma -d ferroma_drill -c 'SELECT COUNT(*) FROM messages;'
 docker compose -f docker-compose.prod.yml exec postgres dropdb -U ferroma ferroma_drill
@@ -1254,9 +1348,10 @@ Do this quarterly, and after every schema migration.
 
 ```bash
 # 1. Back up first. Always. An upgrade is the second-most-likely time to need it.
-docker compose -f docker-compose.prod.yml run --rm backup --once
-# On the external-db stack one step does all of it: ./scripts/deploy.sh upgrade
-# (back up → rebuild → restart → wait for health)
+#    Take both halves as in §8.2 — a database dump and a copy of the ferroma-data
+#    volume — and note the stamp; §9.2 needs it.
+# On the external-db stack ./scripts/deploy.sh upgrade rebuilds the image, restarts
+# and waits for health. It does not back anything up for you.
 
 # 2. Read the release notes for migration and configuration changes.
 #    A new required key, or a removed one, stops the new version at boot
@@ -1273,6 +1368,17 @@ docker compose -f docker-compose.prod.yml up -d ferroma
 docker compose -f docker-compose.prod.yml logs -f --tail=100 ferroma
 ```
 
+**Coming from a release that shipped the backup sidecar.** `./scripts/deploy.sh
+upgrade` starts the stack with `--remove-orphans`, which retires the container of a
+service the compose file no longer defines — for 0.1.3 and earlier that is the
+`ferroma-backup` container. The `ferroma-backups` volume is not removed with it
+(volumes outlive services), so take your own backup first and drop it when the old
+archives are no longer wanted:
+
+```bash
+docker volume rm ferroma-backups
+```
+
 Migrations run at startup when `database.run_migrations = true`. They are
 forward-only: `migrations/` is an ordered list (currently one file,
 `0001_initial.sql`) applied in order, and there is no down migration. That is why
@@ -1282,30 +1388,36 @@ step 1 is step 1.
 
 ```bash
 # Roll the image back.
-sed -i 's/^FERROMA_VERSION=.*/FERROMA_VERSION=0.1.0/' .env
+sed -i 's/^FERROMA_VERSION=.*/FERROMA_VERSION=0.1.4/' .env
 docker compose -f docker-compose.prod.yml pull ferroma
 docker compose -f docker-compose.prod.yml up -d ferroma
 ```
 
 An image rollback works **only if the schema is compatible**. If the new version
 applied a migration that the old version cannot read, rolling back the binary is
-not enough and you must restore the database from the pre-upgrade backup:
+not enough and you must restore the database from the pre-upgrade dump. On the
+external-db stack that is the client-image form from §8.4:
 
 ```bash
 docker compose -f docker-compose.external-db.yml stop ferroma
-docker compose -f docker-compose.external-db.yml --profile tools run --rm \
-  -e FORCE_RESTORE=1 restore /backups/<pre-upgrade-stamp>
+docker run --rm --network host -i -e PGPASSWORD="$POSTGRES_PASSWORD" \
+  postgres:16-alpine \
+  pg_restore --no-owner --no-privileges --clean --if-exists \
+  -h 127.0.0.1 -U ferroma -d ferroma \
+  < /backups/<pre-upgrade-stamp>/ferroma.dump
 docker compose -f docker-compose.external-db.yml up -d ferroma
 ```
 
-Rolling back the mail store is unnecessary when only the database changed, and
-restoring the mail store from a pre-upgrade backup would *lose* every message
-received since — which is why `--db-only` exists and why it prints a warning.
+Rolling back the mail store is unnecessary here, because the dump and the volume
+are separate archives: restore only the database, and the messages received since
+the backup stay where they are. Do not unpack a pre-upgrade `ferroma-data`
+archive on top of a store that has been running since — that would *lose* every
+message received in between.
 
 ### 9.3 Zero-downtime is not supported
 
 One process, one event bus ([security.md](security.md) §15.4). Running two
-replicas behind a load balancer gives each user a realtime experience that depends
+replicas behind a load balancer gives each user a real-time experience that depends
 on which replica they hit. Scale the database and the storage before you consider
 a second Ferroma process; both are likelier bottlenecks.
 
@@ -1333,11 +1445,14 @@ git push origin main v0.2.0
 ```
 
 `.github/workflows/docker-publish.yml` then checks that the tag and `Cargo.toml`
-agree — a `v0.2.0` tag on a tree that says `0.1.0` fails before anything is built —
+agree — a `v0.2.0` tag on a tree that says `0.1.4` fails before anything is built —
 runs `node tools/check-deploy.mjs`, builds both architectures with a GitHub Actions
-layer cache, and pushes `0.2.0`, `0.2` and `latest`. A pre-release (`0.2.0-rc.1`)
-pushes only its exact tag: a rolling `latest` pointing at an rc is exactly the
-surprise the rolling tag exists to prevent.
+layer cache, and pushes `0.2.0` and `latest`. A release publishes those two tags and
+nothing else: there is deliberately no rolling minor tag (`0.2`, `0.3`, …), and no
+`buildcache` tag. A pre-release (`0.2.0-rc.1`) pushes only its exact tag and never
+moves `latest`: a `latest` pointing at an rc is exactly the surprise that tag exists
+to avoid. The `0.1` and `buildcache` tags an earlier pipeline left on Docker Hub have
+been deleted, and nothing in this repository produces either of them again.
 
 It needs two repository secrets, set once:
 
@@ -1354,7 +1469,8 @@ repository for a fork.
 ```bash
 docker login
 ./scripts/docker-publish.sh --dry-run       # the exact buildx command, nothing pushed
-./scripts/docker-publish.sh                 # publish 0.2.0, 0.2 and latest
+./scripts/docker-publish.sh                 # publish 0.2.0 and latest
+./scripts/docker-publish.sh --no-latest     # publish 0.2.0 only
 ./scripts/docker-publish.sh --load          # this machine's architecture only, no push
 ```
 
@@ -1384,8 +1500,11 @@ powershell -ExecutionPolicy Bypass -File scripts/docker-publish.ps1 --dry-run
 It takes the version from `Cargo.toml`, refuses to publish from a dirty working tree
 (the revision label would name a commit that does not contain the source —
 `--allow-dirty` overrides it and says so), warns when the active buildx builder cannot
-push a multi-platform manifest, and keeps a registry-backed layer cache in a
-`buildcache` tag so the second release is not another cold Rust build.
+push a multi-platform manifest, and keeps its layer cache **locally** in
+`<repo>/.cache/buildx` — gitignored, so the second build on the same machine is not
+another cold Rust build without publishing anything. `--no-cache` skips even that.
+A registry cache would mean a published `buildcache` tag in the release repository,
+which is why there is none; CI uses GitHub's own cache instead (above).
 
 Two things about the build itself are worth knowing before starting one, because
 neither is visible until it fails:
@@ -1416,13 +1535,13 @@ For a **single-host private registry** instead of Docker Hub, point
 
 ### 10.1 The health endpoint
 
-`GET /api/v1/health` — no authentication, drives the container healthcheck
+`GET /api/v1/health` — no authentication, drives the container health check
 ([api.md](api.md) §2):
 
 ```json
 {
   "status": "ok",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "protocol_version": 1,
   "uptime_secs": 84213,
   "database": { "ok": true, "server_version": "PostgreSQL 16.15",
@@ -1444,7 +1563,7 @@ docker compose -f docker-compose.prod.yml exec ferroma \
   sh -c 'wget -qO- http://127.0.0.1:8080/api/v1/health || echo unreachable'
 ```
 
-The Docker healthcheck in the compose files and the `Dockerfile` runs
+The Docker health check in the compose files and the `Dockerfile` runs
 `ferroma healthcheck --url http://127.0.0.1:8080/api/v1/health` every 30 s with a
 20–30 s start period and 3 retries. The address in
 `docker-compose.external-db.yml` follows `FERROMA_API_HOST` **and**
@@ -1466,7 +1585,7 @@ unhealthy.
 | IMAP/SMTP connections | `/api/v1/health` | well under `limits.max_connections` | pinned at the cap |
 | Failed logins | `login_attempts` | a trickle | a burst, or one email/IP repeatedly |
 | Certificate expiry | `openssl s_client`, `certbot certificates` | > 21 days | < 21 days: renew before it lapses |
-| Backup freshness | the newest directory in `/backups` | < 26 h old | older than 48 h |
+| Backup freshness | your own backup job — `restic snapshots`, the timestamp on the newest dump | < 26 h old | older than 48 h |
 
 ```bash
 # The queue, grouped.
@@ -1537,7 +1656,8 @@ monitor with the health endpoint and the `psql` queries above, and alert on:
 * `mail_queue.status = 'failed'` above a threshold you choose,
 * disk above 85 %,
 * certificate expiry inside 21 days,
-* the newest backup directory older than 48 h.
+* the newest database dump or volume snapshot older than 48 h — this is your job
+  now, nothing in the deployment checks it for you.
 
 ---
 
@@ -1812,4 +1932,6 @@ is expected — identical attachments share a blob — so compare *sizes*, not c
 | The official desktop client | [client.md](client.md) |
 | Crate graph and request lifecycle | [architecture.md](architecture.md) |
 | The text of the published Docker Hub repository page | [dockerhub.md](dockerhub.md) |
+| Every term, and the form to write it in | [GLOSSARY.md](GLOSSARY.md) |
+| What is still not done | [../TODO.md](../TODO.md) |
 | Build quirks on this machine (proxy, `CARGO_HOME`, PostgreSQL) | [../AGENTS.md](../AGENTS.md) |

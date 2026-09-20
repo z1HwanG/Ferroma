@@ -228,21 +228,140 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
 }
 
 /// Crude HTML-to-text used only for the snippet of an HTML-only message.
+///
+/// It has to drop the *contents* of `head`, `style`, `script` and `title`, not just
+/// their tags: an HTML mail carries its CSS in a `<style>` block, and stripping only
+/// the angle brackets turned the first line of a stylesheet — `#outlook a { padding:0;
+/// } body { margin:0; …` — into every preview in the list. Entities are decoded so a
+/// subject line reading `Fish &amp; chips` previews as `Fish & chips`.
 fn strip_html_tags(html: &str) -> String {
+    const SKIPPED: &[&str] = &["head", "style", "script", "title", "noscript"];
     let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for ch in html.chars() {
-        match ch {
-            '<' => in_tag = true,
-            '>' => {
-                in_tag = false;
-                out.push(' ');
+    let mut rest = html;
+
+    while let Some(open) = rest.find('<') {
+        out.push_str(&rest[..open]);
+        let tail = &rest[open..];
+        let Some(close) = tail.find('>') else {
+            // An unterminated `<`: the remainder is text, not markup.
+            out.push_str(tail);
+            return decode_entities(&out);
+        };
+
+        let raw = &tail[1..close];
+        let closing = raw.starts_with('/');
+        let self_closing = raw.ends_with('/');
+        let name = raw
+            .trim_start_matches('/')
+            .trim_end_matches('/')
+            .split(|ch: char| ch.is_whitespace())
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+
+        if !closing && !self_closing && SKIPPED.contains(&name.as_str()) {
+            let after = &tail[close + 1..];
+            let lower = after.to_ascii_lowercase();
+            let closer = format!("</{name}");
+            let skip_to = match lower.find(&closer) {
+                Some(offset) => match after[offset..].find('>') {
+                    Some(end) => close + 1 + offset + end + 1,
+                    None => tail.len(),
+                },
+                // A `<head>` with no `</head>` ends at `<body>`, per HTML's implied
+                // rules; anything else unterminated ends at its own opening tag.
+                None if name == "head" => match lower.find("<body") {
+                    Some(offset) => close + 1 + offset,
+                    None => close + 1,
+                },
+                None => close + 1,
+            };
+            out.push(' ');
+            rest = &tail[skip_to..];
+            continue;
+        }
+
+        out.push(' ');
+        rest = &tail[close + 1..];
+    }
+
+    out.push_str(rest);
+    decode_entities(&out)
+}
+
+/// Decode the character references a text body is most likely to spell out.
+///
+/// Named entities are limited to the handful that change meaning in prose; everything
+/// unrecognised is left exactly as it was written, so an entity this does not know is
+/// readable rather than lost.
+fn decode_entities(text: &str) -> String {
+    if !text.contains('&') {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let tail = &rest[amp..];
+        // A character reference is short; a `;` further away belongs to other text.
+        let entity = tail
+            .find(';')
+            .filter(|end| *end <= 12)
+            .map(|end| (&tail[1..end], end));
+
+        match entity.and_then(|(name, end)| {
+            named_entity(name)
+                .or_else(|| numeric_entity(name))
+                .map(|ch| (ch, end))
+        }) {
+            Some((ch, end)) => {
+                out.push(ch);
+                rest = &tail[end + 1..];
             }
-            _ if !in_tag => out.push(ch),
-            _ => {}
+            None => {
+                out.push('&');
+                rest = &tail[1..];
+            }
         }
     }
+
+    out.push_str(rest);
     out
+}
+
+/// The named character references worth decoding in a preview.
+fn named_entity(name: &str) -> Option<char> {
+    match name.to_ascii_lowercase().as_str() {
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        "nbsp" | "ensp" | "emsp" => Some(' '),
+        "hellip" => Some('…'),
+        "mdash" => Some('—'),
+        "ndash" => Some('–'),
+        "copy" => Some('©'),
+        "reg" => Some('®'),
+        "trade" => Some('™'),
+        "euro" => Some('€'),
+        "pound" => Some('£'),
+        "yen" => Some('¥'),
+        "sect" => Some('§'),
+        "deg" => Some('°'),
+        _ => None,
+    }
+}
+
+/// `&#233;` and `&#xE9;`, the numeric spellings of the same characters.
+fn numeric_entity(name: &str) -> Option<char> {
+    let digits = name.strip_prefix('#')?;
+    let value = match digits.strip_prefix(|ch: char| ch == 'x' || ch == 'X') {
+        Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+        None => digits.parse::<u32>().ok()?,
+    };
+    char::from_u32(value)
 }
 
 /// Split a raw message into its header block and the raw body bytes.
@@ -933,6 +1052,35 @@ mod tests {
             "Content-Type: text/html\r\n\r\n<html><body><p>Hi <b>there</b></p></body></html>\r\n";
         let msg = ParsedMessage::parse(raw.as_bytes()).unwrap();
         assert_eq!(msg.snippet(50), "Hi there");
+    }
+
+    #[test]
+    fn snippet_skips_the_stylesheet_an_html_mail_carries_in_its_head() {
+        let raw = concat!(
+            "Content-Type: text/html\r\n",
+            "\r\n",
+            "<html><head><style>#outlook a { padding:0; } body { margin:0; }</style></head>",
+            "<body><p>Your score is 10/10.</p></body></html>\r\n",
+        );
+        let msg = ParsedMessage::parse(raw.as_bytes()).unwrap();
+        let snippet = msg.snippet(80);
+        assert!(
+            !snippet.contains("padding") && !snippet.contains("outlook"),
+            "the stylesheet leaked into the preview: {snippet:?}"
+        );
+        assert_eq!(snippet, "Your score is 10/10.");
+    }
+
+    #[test]
+    fn snippet_decodes_entities_and_survives_an_unclosed_head() {
+        let raw = concat!(
+            "Content-Type: text/html\r\n",
+            "\r\n",
+            "<html><head><style>.x{color:red}</style>",
+            "<body><p>Fish &amp; chips &mdash; &#233;tait bon</p></body></html>\r\n",
+        );
+        let msg = ParsedMessage::parse(raw.as_bytes()).unwrap();
+        assert_eq!(msg.snippet(80), "Fish & chips — était bon");
     }
 
     #[test]

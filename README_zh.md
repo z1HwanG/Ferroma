@@ -2,7 +2,7 @@
 
 **基于 Rust 的自建邮件平台。**
 
-Ferroma 是一套从协议层开始自建的完整邮件系统：自己的 SMTP 与 IMAP 服务、自己的 MIME 与邮件核心、自己的存储引擎，在此之上还有 Webmail 网页客户端、管理后台，以及一套通过专用同步协议与之通信的官方跨平台客户端。
+Ferroma 是一套从协议层开始自建的完整邮件系统：自己的 SMTP 与 IMAP 服务、自己的 MIME 与邮件核心、自己的存储引擎，在此之上还有 Webmail 网页客户端、Admin 管理后台，以及一套通过专用同步协议与之通信的官方跨平台客户端。
 
 它**不包装** Postfix、Dovecot、Stalwart 或任何其它邮件服务器。这个项目的意义就在于自己拥有整条技术栈。
 
@@ -56,17 +56,17 @@ docker compose logs -f ferroma
 每个发布版本都以 `wesukilaye/ferroma` 发布到 Docker Hub，覆盖 `linux/amd64` 与 `linux/arm64`。上面首次 `docker compose up -d` 会在容器里把整个 Rust 工作区编译一遍——10–30 分钟，外加数 GB 构建缓存——所以在服务器上直接拉取要快得多：
 
 ```bash
-docker pull wesukilaye/ferroma:0.1.0
+docker pull wesukilaye/ferroma:0.1.4
 ```
 
 `docker-compose.prod.yml` 与 `docker-compose.external-db.yml` 的默认仓库已经是它，在 `.env` 里锁定版本即可：
 
 ```bash
-FERROMA_VERSION=0.1.0                      # docker-compose.prod.yml：要拉取的标签
-# FERROMA_IMAGE=wesukilaye/ferroma:0.1.0   # docker-compose.external-db.yml：整串引用
+FERROMA_VERSION=0.1.4                      # docker-compose.prod.yml：要拉取的标签
+# FERROMA_IMAGE=wesukilaye/ferroma:0.1.4   # docker-compose.external-db.yml：整串引用
 ```
 
-可用标签：`0.1.0`（精确版本）、`0.1`（该 minor 的最新补丁）、`latest`（最新发布）。要可复现的部署请锁定精确版本，不要用 `latest`。
+可用标签只有 `0.1.4`（一个精确版本）与 `latest`（最新发布）——每次发布只产出这两个，所以一个标签永远只对应一个具体版本。要可复现的部署请锁定精确版本，不要用 `latest`。
 
 ### 服务器上已经有 PostgreSQL 和反向代理？
 
@@ -77,7 +77,7 @@ git clone https://github.com/z1HwanG/Ferroma && cd Ferroma
 ./scripts/deploy.sh
 ```
 
-它会：生成 `.env`（随机密码）、建角色与库、构建镜像、执行迁移、把证书以 uid 10001 装进 `./tls` 供 SMTP/IMAP 的 TLS 使用、启动整套服务、创建第一个管理员、生成 DKIM 密钥，最后打印还需发布的 DNS 记录和可直接粘贴的反向代理片段。之后用 `./scripts/deploy.sh status | logs | backup | upgrade | restore | dkim | certs | doctor | down`。每一步的细节与取舍见 [`docs/zh/deployment.md`](docs/zh/deployment.md) §3.1。
+它会：生成 `.env`（随机密码）、建角色与库、构建镜像、执行迁移、把证书以 uid 10001 装进 `./tls` 供 SMTP/IMAP 的 TLS 使用、启动整套服务、创建第一个管理员、生成 DKIM 密钥，最后打印还需发布的 DNS 记录和可直接粘贴的反向代理片段。之后用 `./scripts/deploy.sh status | logs | upgrade | dkim | certs | doctor | down`。每一步的细节与取舍见 [`docs/zh/deployment.md`](docs/zh/deployment.md) §3.1。
 
 ### 不用 Docker，直接运行
 
@@ -178,7 +178,7 @@ cargo clippy --workspace  →  0 错误（clippy 1.98 下多 2 条 `manual_is_mu
 
 官方客户端目前交付的是「经过测试的共享核心 + 命令行」。项目书 §51 描述的三栏式图形界面，是唯一尚未构建的部分。
 
-### 带入 0.1.4 的待办
+### 带入 0.1.5 的待办
 
 发 0.1.3 时发现的两件事。两件都真实存在，但都不值得为它们推迟发版，也都不是一次机械替换就能了结的：
 
@@ -192,14 +192,14 @@ cargo clippy --workspace  →  0 错误（clippy 1.98 下多 2 条 `manual_is_mu
   重新声明 `ARG`，并在真正 `cargo build` 之前设置 `ENV FERROMA_GIT_SHA` /
   `FERROMA_BUILD_TIMESTAMP`，而且必须放在**依赖缓存层之后**，否则每次发版都会击穿那层缓存。
   之所以推迟：它需要再跑一次模拟下的 arm64 构建（约 70 分钟），而 0.1.3 已经发布——见
-  `Dockerfile` 里的 `TODO(0.1.4)` 注释。
+  `Dockerfile` 里的 `TODO(0.1.5)` 注释。
 * **八篇文档里还留着写于各 crate 尚不存在之时的 `_(planned)_` 断言。**
-  共 80 处，其中一处是 `architecture.md` 自己解释该约定用的句子。其中五篇
-  （`client.md`、`imap.md`、`security.md`、`smtp.md`、`sync.md`）开头仍挂着把已实现 crate
-  称作未实现的状态横幅；`architecture.md` 的横幅与产品表已在 0.1.3 修正，其余没有。每一处
-  标记都是关于行为的一句断言，需要对着代码逐条核实，所以这是一次独立的通读，而不是查找替换。
+  其中五篇（`client.md`、`imap.md`、`security.md`、`smtp.md`、`sync.md`）开头仍挂着把已实现
+  crate 称作未实现的状态横幅；`architecture.md` 的横幅与产品表已在 0.1.3 修正，其余没有。
+  每一处标记都是关于行为的一句断言，需要对着代码逐条核实，所以这是一次独立的通读，而不是
+  查找替换。逐篇的标记数量由 [`TODO_zh.md`](TODO_zh.md) 维护，数字只留一处，免得在这里过期。
 
-仓库约定见 [`AGENTS.md`](AGENTS.md)。
+仓库约定见 [`AGENTS.md`](AGENTS.md)；本文件的英文原版见 [`README.md`](README.md)。
 
 ---
 
@@ -208,6 +208,7 @@ cargo clippy --workspace  →  0 错误（clippy 1.98 下多 2 条 `manual_is_mu
 | 文档 | 内容 |
 |---|---|
 | [`architecture.md`](docs/zh/architecture.md) | 整体架构、crate 依赖图，以及为什么长成这样 |
+| [`GLOSSARY.md`](docs/zh/GLOSSARY.md) | 全部文档共用的术语来源：每样东西叫什么、不叫什么 |
 | [`smtp.md`](docs/zh/smtp.md) | 收信与发信 SMTP、应答码、防开放中继策略 |
 | [`imap.md`](docs/zh/imap.md) | IMAP4rev1、文件夹、UID、标志、客户端兼容性 |
 | [`storage.md`](docs/zh/storage.md) | 数据库结构、Maildir、配额、附件、一致性 |
@@ -217,7 +218,8 @@ cargo clippy --workspace  →  0 错误（clippy 1.98 下多 2 条 `manual_is_mu
 | [`security.md`](docs/zh/security.md) | 威胁模型、各项控制，以及已知缺口 |
 | [`deployment.md`](docs/zh/deployment.md) | DNS、TLS、备份、升级、故障排查 |
 | [`client.md`](docs/zh/client.md) | 官方客户端的架构与功能 |
-| [`CHANGELOG_zh.md`](CHANGELOG_zh.md) | 每个版本改了什么，以及下一版排队中的内容 |
+| [`CHANGELOG_zh.md`](CHANGELOG_zh.md) | 每个版本改了什么 |
+| [`TODO_zh.md`](TODO_zh.md) | 还没做完的事，以及已经决定不做的方向 |
 
 英文原版位于 `docs/` 下的同名文件。两版内容一一对应，章节编号与代码块完全相同，
 可以逐节对照阅读。

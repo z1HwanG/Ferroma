@@ -7,7 +7,7 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{folder_id, seed_account, TestApp};
+use common::{folder_id, login, seed_account, TestApp};
 use ferroma_core::Config;
 use serde_json::json;
 
@@ -478,27 +478,150 @@ async fn a_duplicate_address_is_a_conflict() {
         .expect(StatusCode::CREATED);
     let user_id = user["id"].as_i64().expect("user id");
 
-    // `example.com` was created by the setup wizard.
-    let body = json!({ "domain": "example.com", "local_part": "dave" });
-    app.json(
-        "POST",
-        &format!("/api/v1/users/{user_id}/mailboxes"),
-        Some(&admin),
-        body.clone(),
-    )
-    .await
-    .expect(StatusCode::CREATED);
-
+    // `POST /users` already created `dave@example.com` (the setup wizard created
+    // `example.com`), so asking for it again is the documented conflict.
     let again = app
         .json(
             "POST",
             &format!("/api/v1/users/{user_id}/mailboxes"),
             Some(&admin),
-            body,
+            json!({ "domain": "example.com", "local_part": "dave" }),
         )
         .await;
     assert_eq!(again.status, StatusCode::CONFLICT);
     assert_eq!(again.error_code(), "conflict");
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn creating_an_account_also_creates_its_primary_address() {
+    require_database!();
+    let app = TestApp::new().await;
+    let admin = bootstrap_admin(&app).await;
+
+    // The domain has to exist first; `example.com` is created by `bootstrap_admin`.
+    let user = app
+        .json(
+            "POST",
+            "/api/v1/users",
+            Some(&admin),
+            json!({ "email": "erin@example.com", "password": PASSWORD }),
+        )
+        .await
+        .expect(StatusCode::CREATED);
+
+    // The response names the address, so a client does not have to ask for it.
+    let mailboxes = user["mailboxes"].as_array().expect("mailboxes key");
+    assert_eq!(mailboxes.len(), 1, "{user}");
+    assert_eq!(mailboxes[0]["address"], "erin@example.com");
+    assert_eq!(mailboxes[0]["is_primary"], true);
+    let mailbox_id = mailboxes[0]["id"].as_i64().expect("mailbox id");
+
+    let token = login(&app, "erin@example.com", PASSWORD).await;
+
+    // The account can actually use it: the address is listed and its folders exist,
+    // which is what "the account works" means to the Webmail that opens right after.
+    let listed = app
+        .get("/api/v1/mailboxes", Some(&token))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(listed["mailboxes"][0]["address"], "erin@example.com");
+
+    let folders = app
+        .get(&format!("/api/v1/mailboxes/{mailbox_id}/folders"), Some(&token))
+        .await
+        .expect(StatusCode::OK);
+    let names: Vec<&str> = folders["folders"]
+        .as_array()
+        .expect("folders")
+        .iter()
+        .filter_map(|folder| folder["name"].as_str())
+        .collect();
+    for expected in ["INBOX", "Sent", "Drafts", "Trash", "Junk", "Archive"] {
+        assert!(names.contains(&expected), "missing {expected}: {names:?}");
+    }
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn creating_an_account_in_a_missing_domain_still_creates_the_account() {
+    require_database!();
+    let app = TestApp::new().await;
+    let admin = bootstrap_admin(&app).await;
+
+    // An administrator may legitimately exist before its domain does; the account is
+    // created and the empty address list is how the console learns it still has work.
+    let user = app
+        .json(
+            "POST",
+            "/api/v1/users",
+            Some(&admin),
+            json!({ "email": "frank@nowhere.test", "password": PASSWORD }),
+        )
+        .await
+        .expect(StatusCode::CREATED);
+    assert_eq!(user["mailboxes"], json!([]));
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_parent_child_folder_name_creates_the_parent_too() {
+    require_database!();
+    let app = TestApp::new().await;
+    let admin = bootstrap_admin(&app).await;
+
+    let (_user_id, mailbox_id, token) =
+        seed_account(&app, &admin, "example.org", "gina@example.org", PASSWORD).await;
+
+    let created = app
+        .json(
+            "POST",
+            &format!("/api/v1/mailboxes/{mailbox_id}/folders"),
+            Some(&token),
+            json!({ "name": "Projects/2026/Q1" }),
+        )
+        .await
+        .expect(StatusCode::CREATED);
+    assert_eq!(created["name"], "Projects/2026/Q1");
+    let leaf_parent = created["parent_id"].as_i64().expect("the leaf has a parent");
+
+    let listed = app
+        .get(&format!("/api/v1/mailboxes/{mailbox_id}/folders"), Some(&token))
+        .await
+        .expect(StatusCode::OK);
+    let rows = listed["folders"].as_array().expect("folders");
+
+    let projects = rows
+        .iter()
+        .find(|folder| folder["name"] == "Projects")
+        .expect("Projects");
+    assert!(projects["parent_id"].is_null(), "{projects}");
+    let year = rows
+        .iter()
+        .find(|folder| folder["name"] == "Projects/2026")
+        .expect("Projects/2026");
+    assert_eq!(year["parent_id"].as_i64(), projects["id"].as_i64());
+    let quarter = rows
+        .iter()
+        .find(|folder| folder["name"] == "Projects/2026/Q1")
+        .expect("Projects/2026/Q1");
+    assert_eq!(quarter["parent_id"].as_i64(), Some(leaf_parent));
+    assert_eq!(quarter["parent_id"].as_i64(), year["id"].as_i64());
+
+    // Creating a name that already exists is still the documented conflict, even though
+    // the parents on the way to it are adopted.
+    let again = app
+        .json(
+            "POST",
+            &format!("/api/v1/mailboxes/{mailbox_id}/folders"),
+            Some(&token),
+            json!({ "name": "Projects/2026" }),
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::CONFLICT);
 
     app.cleanup().await;
 }
@@ -565,15 +688,13 @@ async fn deleting_a_domain_refuses_while_addresses_exist_unless_forced() {
         )
         .await
         .expect(StatusCode::CREATED);
-    let user_id = user["id"].as_i64().expect("user id");
-    app.json(
-        "POST",
-        &format!("/api/v1/users/{user_id}/mailboxes"),
-        Some(&admin),
-        json!({ "domain": "keep.example", "local_part": "eve" }),
-    )
-    .await
-    .expect(StatusCode::CREATED);
+    // `POST /users` creates `eve@keep.example` too, which is the address this test
+    // needs the domain to be holding.
+    assert_eq!(
+        user["mailboxes"].as_array().map(Vec::len),
+        Some(1),
+        "{user}"
+    );
 
     let refused = app
         .delete(&format!("/api/v1/domains/{domain_id}"), Some(&admin))
@@ -1255,17 +1376,21 @@ async fn the_setup_wizard_is_not_found_when_it_is_disabled() {
 }
 
 #[tokio::test]
-async fn the_setup_wizard_refuses_a_hostname_the_server_does_not_advertise() {
+async fn the_setup_wizard_stores_a_hostname_the_server_does_not_advertise_yet() {
     require_database!();
     let app = TestApp::new().await;
 
     // The wizard shows the hostname the running configuration advertises, because the
-    // process cannot rewrite it; the operator confirms rather than retypes.
+    // process cannot rewrite it; the operator confirms or replaces it.
     let status = app.get("/api/v1/setup", None).await.expect(StatusCode::OK);
     assert_eq!(status["required"], true, "{status}");
     assert_eq!(status["hostname"], "localhost", "{status}");
+    assert!(status["public_url"].is_string(), "{status}");
 
-    let refused = app
+    // Replacing it is not refused: the value is written to the `settings` table and the
+    // server adopts it on its next start. A `400` here is what made the wizard useless on
+    // an install that had not been told its hostname through the environment yet.
+    let accepted = app
         .json(
             "POST",
             "/api/v1/setup",
@@ -1274,21 +1399,38 @@ async fn the_setup_wizard_refuses_a_hostname_the_server_does_not_advertise() {
                 "email": "admin@example.com",
                 "password": PASSWORD,
                 "hostname": "mail.example.com",
+                "public_url": "https://mail.example.com/",
                 "domain": "example.com"
             }),
         )
         .await;
-    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.json());
-    assert!(
-        refused.json()["error"]["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("server.hostname"),
-        "the error names the setting to change: {}",
-        refused.json()
+    let body = accepted.expect(StatusCode::CREATED);
+    assert_eq!(body["applied"]["hostname"], "mail.example.com", "{body}");
+    assert_eq!(
+        body["applied"]["public_url"], "https://mail.example.com",
+        "the trailing slash is normalised away: {body}"
     );
+    assert_eq!(body["applied"]["restart_required"], true, "{body}");
+    // The token pair stays at the top level, where `setTokens` reads it.
+    assert!(body["access_token"].is_string(), "{body}");
 
-    // Agreeing with the configuration is the ordinary path.
+    let stored = app
+        .db()
+        .scalar::<serde_json::Value>("SELECT value FROM settings WHERE key = 'server.hostname'")
+        .await
+        .expect("the hostname was stored");
+    assert_eq!(stored, json!("mail.example.com"));
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn the_setup_wizard_omits_settings_that_agree_with_the_configuration() {
+    require_database!();
+    let app = TestApp::new().await;
+
+    // Agreeing with the running configuration is the ordinary path, and it must not
+    // write a settings row for every field the form happened to prefill.
     let accepted = app
         .json(
             "POST",
@@ -1298,11 +1440,15 @@ async fn the_setup_wizard_refuses_a_hostname_the_server_does_not_advertise() {
                 "email": "admin@example.com",
                 "password": PASSWORD,
                 "hostname": "localhost",
+                "public_url": "http://localhost:8080",
                 "domain": "example.com"
             }),
         )
         .await;
-    assert_eq!(accepted.status, StatusCode::CREATED, "{}", accepted.json());
+    let body = accepted.expect(StatusCode::CREATED);
+    assert_eq!(body["applied"]["restart_required"], false, "{body}");
+    assert!(body["applied"].get("hostname").is_none(), "{body}");
+    assert_eq!(app.db().count("settings").await, 0, "nothing to store");
 
     app.cleanup().await;
 }

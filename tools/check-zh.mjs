@@ -57,10 +57,23 @@ if (fs.existsSync(specPath)) {
 }
 
 // --- 2. per-file structure parity and terminology ---------------------------
-const files = fs.readdirSync(zhDir).filter((f) => f.endsWith('.md') && f !== 'GLOSSARY.md');
+// The two glossaries are the terminology source for each language. They are not a
+// translated pair — they record the same decisions in different words, and the
+// Chinese one is the authority — so the parity rows below skip them. Their
+// existence in both directories is still checked, through `zhFiles`.
+const zhFiles = fs.readdirSync(zhDir).filter((f) => f.endsWith('.md'));
+const files = zhFiles.filter((f) => f !== 'GLOSSARY.md');
+
+// A single bilingual artifact rather than a translated pair: its Chinese half lives
+// inside the same file, because it is pasted into a page with no language switch
+// (the Docker Hub repository description). There is nothing in docs/zh/ to compare
+// it against, so it is checked for holding both halves in the right order instead
+// of being reported as untranslated below.
+const bilingual = new Set(['dockerhub.md']);
+
 const missing = fs
   .readdirSync(enDir)
-  .filter((f) => f.endsWith('.md') && !files.includes(f));
+  .filter((f) => f.endsWith('.md') && !zhFiles.includes(f) && !bilingual.has(f));
 
 let totalLines = 0;
 let totalEnLines = 0;
@@ -105,6 +118,33 @@ for (const file of files.sort()) {
 console.log('');
 if (missing.length) {
   notes.push(`no Chinese version yet: ${missing.join(', ')}`);
+}
+
+// --- 2b. bilingual artifacts hold both halves, English first -----------------
+for (const file of bilingual) {
+  const full = path.join(enDir, file);
+  if (!fs.existsSync(full)) {
+    problems.push(`${file}: listed as a bilingual artifact but the file is missing`);
+    continue;
+  }
+  const text = read(full);
+  const cjk = (text.match(/[\u3400-\u4dbf\u4e00-\u9fff]/g) || []).length;
+  const latin = (text.match(/[A-Za-z]/g) || []).length;
+  const firstCjk = text.search(/[\u4e00-\u9fff]/);
+  const firstHead = text.search(/^## /m);
+  if (latin < 400) {
+    problems.push(`${file}: only ${latin} Latin letters — the English half must stay complete and first`);
+  }
+  if (cjk < 200) {
+    problems.push(`${file}: only ${cjk} Chinese characters — the Chinese half is missing or a stub`);
+  }
+  if (firstHead === -1 || firstCjk === -1 || firstCjk < firstHead) {
+    problems.push(
+      `${file}: the Chinese half must be appended after the English text — English is ` +
+        `the default a reader sees first`,
+    );
+  }
+  notes.push(`${file}: bilingual artifact (English first, Chinese appended)`);
 }
 
 // --- 3. cross-document terminology ------------------------------------------

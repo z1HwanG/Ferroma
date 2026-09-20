@@ -126,27 +126,61 @@ pub fn build(config: &Config) -> Result<Option<TlsMaterial>> {
     }
     install_crypto_provider();
 
-    let (certs, key, source) = match (path(&config.tls.cert_path), path(&config.tls.key_path)) {
-        (Some(cert), Some(key)) => (
-            load_certificates(cert)?,
-            load_private_key(key)?,
+    let configured = match (path(&config.tls.cert_path), path(&config.tls.key_path)) {
+        (Some(cert), Some(key)) => Some((cert.to_path_buf(), key.to_path_buf())),
+        (None, None) => None,
+        _ => bail!("tls.cert_path and tls.key_path must be set together"),
+    };
+
+    // A configured PEM that will not open must not cost the operator the console that
+    // would let them fix it. With the self-signed fallback on — the shipped default — a
+    // missing, unreadable or mismatched file is a loud error and a generated certificate
+    // rather than a refusal to start; this is also what a path typo saved from the setup
+    // wizard used to do to the next boot.
+    let mut failure: Option<String> = None;
+    let pair = match &configured {
+        Some((cert, key)) => match load_pem(cert, key) {
+            Ok(pair) => Some(pair),
+            Err(err) => {
+                failure = Some(format!("{err:#}"));
+                None
+            }
+        },
+        None => None,
+    };
+
+    let (certs, key, source) = match (pair, configured) {
+        (Some((certs, key)), Some((cert, key_path))) => (
+            certs,
+            key,
             CertificateSource::PemFile {
-                cert: cert.to_path_buf(),
-                key: key.to_path_buf(),
+                cert,
+                key: key_path,
             },
         ),
-        (None, None) if config.tls.self_signed_fallback => {
+        _ => {
+            if let Some(problem) = &failure {
+                if !config.tls.self_signed_fallback {
+                    bail!("{problem}");
+                }
+                tracing::error!(
+                    error = %problem,
+                    "the configured TLS certificate could not be loaded; falling back to a \
+                     self-signed certificate. Fix tls.cert_path / tls.key_path before \
+                     exposing this instance to the internet."
+                );
+            } else if !config.tls.self_signed_fallback {
+                bail!("tls.enabled is true but no tls.cert_path/tls.key_path is set");
+            }
             if !config.tls.allow_insecure_dev_mode {
                 bail!(
-                    "no TLS certificate is configured and tls.allow_insecure_dev_mode is false; \
+                    "no usable TLS certificate is configured and tls.allow_insecure_dev_mode is false; \
                      set tls.cert_path and tls.key_path"
                 );
             }
             let (certs, key) = generate_self_signed(&config.server.hostname)?;
             (certs, key, CertificateSource::SelfSignedGenerated)
         }
-        (None, None) => bail!("tls.enabled is true but no tls.cert_path/tls.key_path is set"),
-        _ => bail!("tls.cert_path and tls.key_path must be set together"),
     };
 
     let server_config = server_config(config, certs.clone(), key)?;
@@ -210,6 +244,14 @@ fn server_config(
     };
 
     Ok(server_config)
+}
+
+/// Read a certificate bundle and its key together.
+fn load_pem(
+    cert: &Path,
+    key: &Path,
+) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
+    Ok((load_certificates(cert)?, load_private_key(key)?))
 }
 
 /// Read a PEM certificate bundle (leaf first, then intermediates).

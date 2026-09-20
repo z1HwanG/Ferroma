@@ -1,4 +1,4 @@
-﻿//! End-to-end tests of the mail surface: attachments, sending, the queue, and the
+//! End-to-end tests of the mail surface: attachments, sending, the queue, and the
 //! message operations Webmail drives.
 
 mod common;
@@ -1043,6 +1043,69 @@ async fn a_message_reports_its_flags_as_booleans_and_its_blind_copies() {
     assert_eq!(detail["flagged"], true, "{detail}");
     assert_eq!(detail["answered"], true, "{detail}");
     assert_eq!(detail["bcc"].as_array().map(Vec::len), Some(1), "{detail}");
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn changing_a_flag_recounts_the_folder_it_lives_in() {
+    require_database!();
+    let (app, _admin, mailbox_id, token) = app_with_address().await;
+
+    let inbox = folder_id(&app, &token, mailbox_id, "INBOX").await;
+    // A delivered-but-unread message, written directly: the API test harness drives the
+    // router, and the SMTP delivery path that normally creates one is not part of it.
+    app.db()
+        .execute(&format!(
+            "INSERT INTO messages (folder_id, mailbox_id, uid, size_bytes, storage_path, flags)
+             VALUES ({inbox}, {mailbox_id}, 1, 12, 'cur/recount.eml', '')"
+        ))
+        .await
+        .expect("message insert");
+    let message_id = app
+        .db()
+        .scalar::<i64>(&format!("SELECT id FROM messages WHERE folder_id = {inbox}"))
+        .await
+        .expect("message id");
+
+    // The sidebar badge is `folders.unseen_count`, a denormalised counter. Nothing
+    // recounted it when a flag changed, so reading a message left the badge claiming
+    // unread mail forever — the counter is what this asserts against, not the row's own
+    // flag, because the row was always correct.
+    async fn unseen(app: &TestApp, token: &str, mailbox_id: i64, inbox: i64) -> i64 {
+        let listed = app
+            .get(&format!("/api/v1/mailboxes/{mailbox_id}/folders"), Some(token))
+            .await
+            .expect(StatusCode::OK);
+        listed["folders"]
+            .as_array()
+            .expect("folders")
+            .iter()
+            .find(|folder| folder["id"].as_i64() == Some(inbox))
+            .expect("INBOX")["unseen_count"]
+            .as_i64()
+            .expect("unseen_count")
+    }
+
+    app.json(
+        "PATCH",
+        &format!("/api/v1/messages/{message_id}"),
+        Some(&token),
+        json!({ "seen": false }),
+    )
+    .await
+    .expect(StatusCode::OK);
+    assert_eq!(unseen(&app, &token, mailbox_id, inbox).await, 1, "unread must count");
+
+    app.json(
+        "PATCH",
+        &format!("/api/v1/messages/{message_id}"),
+        Some(&token),
+        json!({ "seen": true }),
+    )
+    .await
+    .expect(StatusCode::OK);
+    assert_eq!(unseen(&app, &token, mailbox_id, inbox).await, 0, "read must not count");
 
     app.cleanup().await;
 }

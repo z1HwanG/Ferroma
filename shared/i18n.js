@@ -51,24 +51,16 @@ const listeners = new Set();
 /** @type {string} */
 let locale = initialLocale();
 
-/** The stored choice, else the browser's, else English. */
+/**
+ * The stored choice, else English.
+ *
+ * The browser's language is deliberately *not* consulted: this instance is usually reached
+ * by several people, and a UI that changes language because one of them re-installed their
+ * laptop is a UI nobody can give instructions for. English is the default and the picker is
+ * one click away, on the sign-in card and in Settings.
+ */
 function initialLocale() {
-  const stored = readStored();
-  if (stored) return stored;
-  return detectLocale();
-}
-
-/** The first acceptable language the browser asks for. */
-function detectLocale() {
-  if (typeof navigator === 'undefined') return DEFAULT_LOCALE;
-  const asked = Array.isArray(navigator.languages) && navigator.languages.length
-    ? navigator.languages
-    : [navigator.language];
-  for (const tag of asked) {
-    const match = normaliseTag(tag);
-    if (match) return match;
-  }
-  return DEFAULT_LOCALE;
+  return readStored() || DEFAULT_LOCALE;
 }
 
 /**

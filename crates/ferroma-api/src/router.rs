@@ -488,6 +488,26 @@ pub fn apply_negotiation_headers(
 /// common. Each app is served from its own root, so `../shared/api.js` from
 /// `/main.js` and from `/admin/main.js` both resolve to `/shared/api.js`.
 pub fn with_frontends(router: Router<AppState>, config: &Config) -> Router<AppState> {
+    frontends(router, config)
+}
+
+/// The static apps alone, with no application state.
+///
+/// Before there is a database there is no `AppState` to mount the API on, but the page that
+/// asks for the database still has to be served — so the static half is available on its
+/// own. The bootstrap server in the `ferroma` binary is the only caller.
+pub fn frontends_only(router: Router, config: &Config) -> Router {
+    frontends(router, config)
+}
+
+/// Mount `web/`, `admin/` and `shared/` onto any router.
+///
+/// Generic over the state because the static services need none: the same lines serve the
+/// full API and the bootstrap page.
+fn frontends<S>(router: Router<S>, config: &Config) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
     let mut router = router;
 
     if let Some(shared) = resolve_asset_dir(config.api.shared_dir.as_ref(), &["shared"]) {
@@ -509,7 +529,27 @@ pub fn with_frontends(router: Router<AppState>, config: &Config) -> Router<AppSt
             .layer(middleware::from_fn(redirect_admin_to_slash));
     }
 
-    router
+    // The apps are files on disk, and they are edited in place — by an upgrade, by an
+    // operator, by whoever is working on them. Without an explicit `Cache-Control` a browser
+    // is free to keep them heuristically ("10% of the time since Last-Modified"), which is
+    // how a page ends up running last week's module and reporting a bug that was fixed. They
+    // are revalidated on every request instead: a 304 costs one round trip on a loopback or
+    // LAN connection, and it cannot go stale.
+    router.layer(middleware::from_fn(revalidate_assets))
+}
+
+/// Make the browser ask before reusing a front-end asset.
+async fn revalidate_assets(request: Request, next: Next) -> Response {
+    let path = request.uri().path().to_string();
+    let mut response = next.run(request).await;
+    let extension = path.rsplit('.').next().unwrap_or_default();
+    if matches!(extension, "js" | "mjs" | "css" | "html" | "json" | "map") {
+        response.headers_mut().insert(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("no-cache"),
+        );
+    }
+    response
 }
 
 /// Send `/admin` to `/admin/`.

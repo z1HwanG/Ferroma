@@ -51,8 +51,56 @@ pub struct CreateFolderRequest {
 pub struct UpdateFolderRequest {
     /// A new name.
     pub name: Option<String>,
+    /// The folder to move this one inside.
+    ///
+    /// `null` moves it to the top level, and leaving the field out leaves the parent alone —
+    /// which is why this is a double option: `Option<i64>` cannot tell "no opinion" from
+    /// "no parent", and a move to the top level is exactly the second one.
+    #[serde(default, deserialize_with = "double_option")]
+    pub parent_id: Option<Option<i64>>,
     /// Subscribe or unsubscribe.
     pub subscribed: Option<bool>,
+}
+
+/// Tell `"parent_id": null` (top level) apart from an absent `parent_id` (no opinion).
+fn double_option<'de, D>(deserializer: D) -> Result<Option<Option<i64>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde::Deserialize::deserialize(deserializer).map(Some)
+}
+
+/// The path a folder takes when it is moved under `parent`.
+///
+/// A folder's IMAP name *is* its path, so a move is a rename whose prefix changes: the
+/// folder keeps its own leaf, and its new name is the parent's path plus that leaf. Moving
+/// to the top level leaves the bare leaf.
+pub fn moved_folder_name(
+    parent: Option<&ferroma_storage::models::Folder>,
+    current_name: &str,
+) -> String {
+    let leaf = current_name
+        .rsplit('/')
+        .next()
+        .filter(|leaf| !leaf.is_empty())
+        .unwrap_or(current_name);
+    match parent {
+        Some(parent) => compose_folder_name(leaf, Some(&parent.name)),
+        None => leaf.to_string(),
+    }
+}
+
+/// Whether moving `folder` under `candidate` would put a folder inside itself.
+///
+/// The tree is a `parent_id` chain, so the test is whether the candidate is the folder or
+/// one of its descendants — a cycle the database would happily store and no client could
+/// render.
+pub fn would_cycle(
+    folder: &ferroma_storage::models::Folder,
+    candidate: &ferroma_storage::models::Folder,
+    descendants: &[ferroma_storage::models::Folder],
+) -> bool {
+    candidate.id == folder.id || descendants.iter().any(|child| child.id == candidate.id)
 }
 
 /// `GET /api/v1/mailboxes` — the addresses the caller may send from.
@@ -99,6 +147,11 @@ pub async fn list_folders(
 }
 
 /// `POST /api/v1/mailboxes/:id/folders`
+///
+/// A `Parent/Child` name creates `Parent` too, when it is missing. That is what makes
+/// the Webmail's "Nested folders use “Parent/Child”" hint true: typing the path is the
+/// whole interaction, and the row it lands in is a real folder the tree can walk,
+/// rather than a flat name that only looks hierarchical.
 pub async fn create_folder(
     State(state): State<AppState>,
     user: AuthUser,
@@ -120,24 +173,36 @@ pub async fn create_folder(
     }
 
     let domain = crate::routes::mail::store::domain_name(&state.repos, mailbox.domain_id).await?;
+
+    // A name that already exists is a conflict, exactly as it was before paths were
+    // supported and as IMAP's `CREATE` answers `ALREADYEXISTS`. Checked before anything
+    // is written, so a rejected creation leaves no half-built parent behind.
+    if state
+        .repos
+        .folders
+        .find_by_name(mailbox.mailbox_id(), &name)
+        .await
+        .map_err(ApiError::from)?
+        .is_some()
+    {
+        return Err(ApiError::new(FerromaError::Conflict(format!(
+            "folder {name} already exists"
+        ))));
+    }
+
     // The directory first: a row whose Maildir is missing would fail at delivery.
     state
         .maildir
         .create_folder(&domain, &mailbox.local_part, &name)?;
 
-    let folder = match state
-        .repos
-        .folders
-        .create(mailbox.mailbox_id(), &name, None)
-        .await
-    {
+    let folder = match ensure_folder_path(&state, mailbox.mailbox_id(), &name).await {
         Ok(folder) => folder,
         Err(err) => {
             // Roll the directory back so the next attempt starts clean.
             let _ = state
                 .maildir
                 .delete_folder(&domain, &mailbox.local_part, &name);
-            return Err(ApiError::from(err));
+            return Err(err);
         }
     };
 
@@ -155,7 +220,82 @@ pub async fn create_folder(
     Ok((StatusCode::CREATED, Json(FolderResponse::from_row(&folder))))
 }
 
+/// Find or create every folder on the path `name`, and return the leaf.
+///
+/// `Archive/2026/January` walks three levels: an existing `Archive` is reused, a
+/// missing one is created at the top level, then `Archive/2026`, then the leaf. Each
+/// created row records the row above it as `parent_id`, so the tree the console and
+/// the Webmail draw needs no string parsing.
+pub async fn ensure_folder_path(
+    state: &AppState,
+    mailbox_id: MailboxId,
+    name: &str,
+) -> Result<ferroma_storage::models::Folder, ApiError> {
+    let path = name.trim().trim_matches('/');
+    if path.is_empty() {
+        return Err(ApiError::new(FerromaError::Invalid(
+            "folder name must not be blank".to_string(),
+        )));
+    }
+
+    let mut parent: Option<MailboxId> = None;
+    let mut prefix = String::new();
+    let mut leaf: Option<ferroma_storage::models::Folder> = None;
+
+    for segment in path.split('/').map(str::trim).filter(|part| !part.is_empty()) {
+        if !prefix.is_empty() {
+            prefix.push('/');
+        }
+        prefix.push_str(segment);
+
+        let existing = state
+            .repos
+            .folders
+            .find_by_name(mailbox_id, &prefix)
+            .await
+            .map_err(ApiError::from)?;
+
+        let folder = match existing {
+            Some(folder) => {
+                // Adopt a folder that predates `parent_id`, so a path created before
+                // this version still nests the first time it is touched.
+                if folder.parent_id != parent.map(|id| id.get()) {
+                    if let Some(parent) = parent {
+                        let _ = state
+                            .repos
+                            .folders
+                            .set_parent(folder.folder_id(), Some(parent))
+                            .await;
+                    }
+                }
+                folder
+            }
+            None => state
+                .repos
+                .folders
+                .create_in(mailbox_id, &prefix, parent, None)
+                .await
+                .map_err(ApiError::from)?,
+        };
+
+        parent = Some(folder.folder_id());
+        leaf = Some(folder);
+    }
+
+    leaf.ok_or_else(|| {
+        ApiError::new(FerromaError::Invalid(
+            "folder name must not be blank".to_string(),
+        ))
+    })
+}
+
+
 /// `PATCH /api/v1/folders/:id`
+///
+/// Renaming a folder renames the path of everything beneath it, the way IMAP `RENAME`
+/// does. The plan is derived first (see [`rename_plan`]) so the Maildir moves and the
+/// database writes cannot disagree, and the filesystem goes first: a conflict there is a
+/// `409` that leaves the database untouched.
 pub async fn update_folder(
     State(state): State<AppState>,
     user: AuthUser,
@@ -165,30 +305,178 @@ pub async fn update_folder(
     let (folder, mailbox) = owned_folder(&state.repos, MailboxId::new(id), user.user_id()).await?;
 
     let mut updated = folder.clone();
-    if let Some(name) = request.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+
+    // A move and a rename are the same operation underneath: a folder's IMAP name is its
+    // path, so changing its parent means changing that path (and every descendant's).
+    let asked_name = request
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty());
+    let new_parent: Option<Option<i64>> = match request.parent_id {
+        // No opinion about the parent: leave it where it is.
+        None => None,
+        Some(parent_id) => {
+            if folder.is_inbox() {
+                return Err(ApiError::new(FerromaError::Invalid(
+                    "INBOX cannot be moved".to_string(),
+                )));
+            }
+            let target = match parent_id {
+                // A folder id is positive. Zero arrives from a client that turned "no
+                // parent" into a number, and answering `no such folder` for it reads like
+                // the folder vanished rather than like the bug it is.
+                Some(id) if id <= 0 => {
+                    return Err(ApiError::new(FerromaError::Invalid(
+                        "parent_id must be a folder id, or null for the top level".to_string(),
+                    )));
+                }
+                Some(id) => {
+                    let (parent, parent_mailbox) =
+                        owned_folder(&state.repos, MailboxId::new(id), user.user_id()).await?;
+                    if parent_mailbox.mailbox_id() != mailbox.mailbox_id() {
+                        return Err(ApiError::new(FerromaError::Invalid(
+                            "a folder cannot be moved into another address".to_string(),
+                        )));
+                    }
+                    Some(parent)
+                }
+                None => None,
+            };
+            // The children are needed twice: to reject a cycle, and to re-path them.
+            let children = state
+                .repos
+                .folders
+                .descendants(folder.folder_id())
+                .await
+                .map_err(ApiError::from)?;
+            if let Some(target) = &target {
+                if would_cycle(&folder, target, &children) {
+                    return Err(ApiError::new(FerromaError::Invalid(
+                        "a folder cannot be moved inside itself".to_string(),
+                    )));
+                }
+            }
+            Some(target.map(|parent| parent.id))
+        }
+    };
+
+    if new_parent.is_some() || asked_name.is_some() {
         if folder.is_inbox() {
             return Err(ApiError::new(FerromaError::Invalid(
                 "INBOX cannot be renamed".to_string(),
             )));
         }
+        let children = state
+            .repos
+            .folders
+            .descendants(folder.folder_id())
+            .await
+            .map_err(ApiError::from)?;
+
+        // The name the folder ends up with: an explicit one wins, otherwise the move
+        // decides it (parent's path + own leaf, or the bare leaf at the top level).
+        let name = match (asked_name, new_parent) {
+            (Some(name), None) => name.to_string(),
+            (Some(name), Some(_)) => {
+                let parent = match new_parent.flatten() {
+                    Some(parent_id) => Some(
+                        state
+                            .repos
+                            .folders
+                            .find_by_id(MailboxId::new(parent_id))
+                            .await
+                            .map_err(ApiError::from)?
+                            .ok_or_else(|| {
+                                ApiError::new(FerromaError::NotFound(format!(
+                                    "folder {parent_id}"
+                                )))
+                            })?,
+                    ),
+                    None => None,
+                };
+                compose_folder_name(name, parent.as_ref().map(|parent| parent.name.as_str()))
+            }
+            (None, Some(parent)) => {
+                let parent = match parent {
+                    Some(parent_id) => Some(
+                        state
+                            .repos
+                            .folders
+                            .find_by_id(MailboxId::new(parent_id))
+                            .await
+                            .map_err(ApiError::from)?
+                            .ok_or_else(|| {
+                                ApiError::new(FerromaError::NotFound(format!(
+                                    "folder {parent_id}"
+                                )))
+                            })?,
+                    ),
+                    None => None,
+                };
+                moved_folder_name(parent.as_ref(), &folder.name)
+            }
+            (None, None) => unreachable!("guarded by the condition above"),
+        };
+        let name = name.as_str();
+
         if name.len() > 255 {
             return Err(ApiError::new(FerromaError::Invalid(
                 "folder name is too long".to_string(),
             )));
         }
+        if name == folder.name && new_parent.flatten() == folder.parent_id {
+            // Nothing to do: a drag that landed where it started.
+            return Ok(Json(FolderResponse::from_row(&folder)));
+        }
         let domain =
             crate::routes::mail::store::domain_name(&state.repos, mailbox.domain_id).await?;
-        // Rename on disk first, so a conflict (an existing directory) fails before
-        // the database is touched.
-        state
-            .maildir
-            .rename_folder(&domain, &mailbox.local_part, &folder.name, name)?;
+        let plan = rename_plan(&folder, &children, name);
+
+        // Rename on disk first, so a conflict (an existing directory) fails before the
+        // database is touched. Anything already moved is put back before answering.
+        let mut moved: Vec<(String, String)> = Vec::new();
+        for (from, to) in &plan {
+            if let Err(err) = state
+                .maildir
+                .rename_folder(&domain, &mailbox.local_part, from, to)
+            {
+                for (done_from, done_to) in moved.iter().rev() {
+                    let _ = state.maildir.rename_folder(
+                        &domain,
+                        &mailbox.local_part,
+                        done_to,
+                        done_from,
+                    );
+                }
+                return Err(ApiError::from(err));
+            }
+            moved.push((from.clone(), to.clone()));
+        }
+
+        let child_names: Vec<(i64, String)> = children
+            .iter()
+            .zip(plan.iter().skip(1))
+            .map(|(child, (_from, to))| (child.id, to.clone()))
+            .collect();
+
         updated = state
             .repos
             .folders
-            .rename(folder.folder_id(), name)
+            .rename_folder_tree(folder.folder_id(), name, new_parent, &child_names)
             .await
             .map_err(ApiError::from)?;
+
+        state
+            .sync
+            .record_folder_change(
+                user.user_id(),
+                mailbox.mailbox_id(),
+                updated.folder_id(),
+                &updated.name,
+                ChangeKind::FolderUpdated,
+            )
+            .await?;
     }
 
     if let Some(subscribed) = request.subscribed {
@@ -271,6 +559,39 @@ pub async fn delete_folder(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// The names a rename produces: the folder itself, then each descendant.
+///
+/// A descendant keeps the part of its path below the folder being renamed, so
+/// `Projects/2026/Q1` becomes `Work/2026/Q1` when `Projects` becomes `Work`. A child
+/// whose stored name does not spell the old path out — the console used to allow
+/// renaming a child on its own — is re-anchored under the new parent by its last
+/// segment, which is the only reading of its position that is still true.
+///
+/// The order matches the order `descendants()` returns, which is what lets the caller
+/// zip the two together.
+pub fn rename_plan(
+    folder: &ferroma_storage::models::Folder,
+    descendants: &[ferroma_storage::models::Folder],
+    new_name: &str,
+) -> Vec<(String, String)> {
+    let mut plan = vec![(folder.name.clone(), new_name.to_string())];
+    let old_prefix = format!("{}/", folder.name);
+    for child in descendants {
+        let leaf = child
+            .name
+            .rsplit('/')
+            .next()
+            .filter(|leaf| !leaf.is_empty())
+            .unwrap_or(&child.name);
+        let renamed = match child.name.strip_prefix(&old_prefix) {
+            Some(tail) if !tail.is_empty() => format!("{new_name}/{tail}"),
+            _ => format!("{new_name}/{leaf}"),
+        };
+        plan.push((child.name.clone(), renamed));
+    }
+    plan
+}
+
 /// Join a folder name with an optional parent, avoiding a doubled separator.
 pub fn compose_folder_name(name: &str, parent: Option<&str>) -> String {
     let name = name.trim().trim_matches('/');
@@ -342,6 +663,104 @@ pub async fn mailbox_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A folder row with the fields `rename_plan` reads.
+    fn folder(id: i64, name: &str, parent_id: Option<i64>) -> ferroma_storage::models::Folder {
+        ferroma_storage::models::Folder {
+            id,
+            mailbox_id: 1,
+            name: name.into(),
+            parent_id,
+            special_use: None,
+            subscribed: true,
+            uid_validity: 1,
+            uid_next: 1,
+            highest_modseq: 1,
+            message_count: 0,
+            unseen_count: 0,
+            total_bytes: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn a_rename_moves_every_descendant_path() {
+        let root = folder(1, "Projects", None);
+        let year = folder(2, "Projects/2026", Some(1));
+        let quarter = folder(3, "Projects/2026/Q1", Some(2));
+        // A child the console used to be able to rename on its own: its name no longer
+        // spells its ancestry out, so it is re-anchored under the new parent by its leaf.
+        let loose = folder(4, "Loose", Some(2));
+
+        let plan = rename_plan(&root, &[year, quarter, loose], "Work");
+        assert_eq!(
+            plan,
+            vec![
+                ("Projects".to_string(), "Work".to_string()),
+                ("Projects/2026".to_string(), "Work/2026".to_string()),
+                ("Projects/2026/Q1".to_string(), "Work/2026/Q1".to_string()),
+                ("Loose".to_string(), "Work/Loose".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_move_takes_the_parent_path_and_keeps_its_own_leaf() {
+        let projects = folder(1, "项目", None);
+        let child = folder(2, "项目/2026", Some(1));
+        let finance = folder(3, "财务", None);
+        let fixture = ferroma_storage::models::Folder {
+            id: 9,
+            mailbox_id: 1,
+            name: "待办".into(),
+            parent_id: None,
+            special_use: None,
+            subscribed: true,
+            uid_validity: 1,
+            uid_next: 1,
+            highest_modseq: 1,
+            message_count: 0,
+            unseen_count: 0,
+            total_bytes: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+
+        // Into a folder: the leaf is kept and the parent's path is prefixed.
+        assert_eq!(
+            moved_folder_name(Some(&finance), fixture.name.as_str()),
+            "财务/待办"
+        );
+        // A nested folder keeps only its own leaf, not the whole old path.
+        assert_eq!(moved_folder_name(Some(&finance), child.name.as_str()), "财务/2026");
+        // To the top level: the bare leaf.
+        assert_eq!(moved_folder_name(None, child.name.as_str()), "2026");
+        // And the parent is untouched by the name helper.
+        assert_eq!(projects.name, "项目");
+    }
+
+    #[test]
+    fn a_folder_cannot_be_moved_inside_itself() {
+        let projects = folder(1, "项目", None);
+        let year = folder(2, "项目/2026", Some(1));
+        let quarter = folder(3, "项目/2026/Q1", Some(2));
+        let other = folder(4, "财务", None);
+
+        assert!(would_cycle(&projects, &projects, &[year.clone(), quarter.clone()]));
+        assert!(would_cycle(&projects, &year, &[year.clone(), quarter.clone()]));
+        assert!(would_cycle(&projects, &quarter, &[year.clone(), quarter.clone()]));
+        assert!(!would_cycle(&projects, &other, &[year, quarter]));
+    }
+
+    #[test]
+    fn a_rename_with_no_children_is_just_the_folder() {
+        let root = folder(1, "Archive", None);
+        assert_eq!(
+            rename_plan(&root, &[], "Old"),
+            vec![("Archive".to_string(), "Old".to_string())]
+        );
+    }
 
     #[test]
     fn folder_names_join_with_a_single_separator() {

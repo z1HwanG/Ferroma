@@ -43,8 +43,8 @@ const PAGES = [
   { slug: 'deployment', group: 'operations',
     en: { title: 'Deployment', desc: 'DNS, TLS, backups, upgrades, troubleshooting.' },
     zh: { title: '部署', desc: 'DNS、TLS、备份、升级与故障排查。' } },
-  { slug: 'glossary', group: 'overview', zhOnly: true,
-    en: { title: 'Glossary', desc: 'Chinese\u2013English glossary of Ferroma terms.' },
+  { slug: 'glossary', group: 'overview',
+    en: { title: 'Glossary', desc: 'The canonical terminology of the English documents.' },
     zh: { title: '术语表', desc: 'Ferroma 中英术语对照。' } },
 ];
 
@@ -59,7 +59,11 @@ const GROUPS = {
 const PAGE_ORDER = PAGES.map(p => p.slug);
 const LANGS = ['en', 'zh'];
 
-function docPath(lang, slug) { return lang === 'en' ? join(DOCS, slug + '.md') : join(DOCS, 'zh', slug + '.md'); }
+// 术语表是唯一一个文件名全大写的文档：两个语言各有一份，而不是翻译对。
+function docPath(lang, slug) {
+  if (slug === 'glossary') return join(DOCS, lang === 'en' ? 'GLOSSARY.md' : 'zh/GLOSSARY.md');
+  return lang === 'en' ? join(DOCS, slug + '.md') : join(DOCS, 'zh', slug + '.md');
+}
 
 // ---------------------------------------------------------------------------
 // 小工具

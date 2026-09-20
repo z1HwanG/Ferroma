@@ -7,12 +7,15 @@
 #
 #   ./scripts/deploy.sh                 # first deployment, or re-apply config
 #   ./scripts/deploy.sh status          # containers, health, database
-#   ./scripts/deploy.sh upgrade         # backup, rebuild, restart
-#   ./scripts/deploy.sh backup          # one backup, now
-#   ./scripts/deploy.sh restore <dir>   # restore a backup (stops Ferroma first)
+#   ./scripts/deploy.sh upgrade         # rebuild the image and restart
 #   ./scripts/deploy.sh dkim            # DKIM key + the TXT record to publish
 #   ./scripts/deploy.sh doctor          # ferroma doctor, inside the container
 #   ./scripts/deploy.sh down [--volumes]
+#
+# Backups are not part of this deployment: back up PostgreSQL and the
+# ferroma-data volume with the host's own tooling. The two halves belong
+# together, and docs/deployment.md §8 has the commands and what they must
+# contain.
 #
 # Everything it writes lands in `.env`, which is the only configuration this
 # deployment has. It never edits your PostgreSQL server's configuration: it
@@ -46,10 +49,9 @@ DEFAULT_DB_NAME="ferroma"
 DEFAULT_IMAGE="ferroma:latest"
 DEFAULT_PG_IMAGE="postgres:16-alpine"
 
-# Container names are fixed by the compose file: the health check waits on the
-# first, and `restore` must stop it before writing to the mail store.
+# The container name is fixed by the compose file, and both `status` and the
+# health check wait on it.
 APP_CONTAINER="ferroma"
-BACKUP_CONTAINER="ferroma-backup"
 
 cd "$ROOT_DIR"
 
@@ -244,17 +246,22 @@ Commands
   deploy     first deployment, or re-apply .env and restart (default)
   status     containers, health and database status
   logs       follow the Ferroma log
-  upgrade    back up, rebuild the image, restart, wait for healthy
-  backup     write one backup now
-  restore    restore a backup:  restore <backup-dir> [--db-only|--mail-only|--verify-only]
+  upgrade    rebuild the image, restart, wait for healthy
   dkim       generate a DKIM key and print the TXT record; --enable signs with it
   certs      install the current certificate and reload the mail listeners; this is
              what a certbot deploy hook calls after a renewal
   doctor     run `ferroma doctor` inside the container
-  down       stop the stack (--volumes also deletes mail, users and backups)
+  down       stop the stack (--volumes also deletes mail and users)
   help       this text
 
+Backups
+  None ship with this deployment. Back up PostgreSQL and the ferroma-data
+  volume with whatever the host already uses; docs/deployment.md §8 lists what
+  a backup must contain and why the two halves belong together.
+
 Options
+  --wizard               ask only for the web port and let the first-run wizard collect
+                         the mail domain, hostname, administrator and TLS
   --domain DOMAIN        mail domain, e.g. example.com
   --hostname FQDN        MX hostname, e.g. mail.example.com  (default mail.DOMAIN)
   --admin EMAIL          first administrator address        (default admin@DOMAIN)
@@ -280,7 +287,7 @@ Options
   --no-tls               deploy without TLS: mail clients cannot authenticate
   --enable               with `dkim`: turn signing on after publishing the record
   --rebuild              rebuild the image even when it is already present
-  --volumes              with `down`: also delete mail, users and backups
+  --volumes              with `down`: also delete mail and users
   -y, --yes              assume yes: never prompt, never confirm
   -h, --help             this text
 USAGE
@@ -290,7 +297,9 @@ USAGE
 # Argument parsing
 # -----------------------------------------------------------------------------
 COMMAND=""
-POSITIONAL=""
+# Set by --wizard: this run publishes the web port and nothing else, and the mail identity
+# is collected by the first-run wizard instead of here.
+WIZARD_MODE=0
 DOMAIN_ARG=""
 HOSTNAME_ARG=""
 ADMIN_ARG=""
@@ -323,9 +332,10 @@ need_value() {
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        deploy|status|logs|upgrade|backup|restore|dkim|certs|doctor|down|help)
+        deploy|status|logs|upgrade|dkim|certs|doctor|down|help)
             [ -z "$COMMAND" ] || die "two commands given: $COMMAND and $1"
             COMMAND="$1"; shift ;;
+        --wizard)         WIZARD_MODE=1; shift ;;
         --domain)         need_value "$@"; DOMAIN_ARG="$2"; shift 2 ;;
         --hostname)       need_value "$@"; HOSTNAME_ARG="$2"; shift 2 ;;
         --admin)          need_value "$@"; ADMIN_ARG="$2"; shift 2 ;;
@@ -349,13 +359,11 @@ while [ "$#" -gt 0 ]; do
         --volumes)        DOWN_VOLUMES=1; shift ;;
         -y|--yes)         ASSUME_YES=1; shift ;;
         -h|--help)        COMMAND="help"; shift ;;
-        --)               shift; while [ "$#" -gt 0 ]; do POSITIONAL="$POSITIONAL $1"; shift; done ;;
         -*)               die "unknown option: $1 (try --help)" ;;
-        *)                POSITIONAL="$POSITIONAL $1"; shift ;;
+        *)                die "unexpected argument: $1 (try --help)" ;;
     esac
 done
 [ -n "$COMMAND" ] || COMMAND="deploy"
-POSITIONAL=$(printf '%s' "$POSITIONAL" | sed 's/^ *//')
 
 # -----------------------------------------------------------------------------
 # Preflight
@@ -365,7 +373,6 @@ preflight() {
     docker info >/dev/null 2>&1 || die "cannot talk to the Docker daemon (is it running? is this user in the docker group?)"
     docker compose version >/dev/null 2>&1 || die "the 'docker compose' plugin is missing (Docker 24+ ships it)."
     [ -f "$ROOT_DIR/$COMPOSE_FILE" ] || die "$COMPOSE_FILE is missing; run this from a Ferroma checkout."
-    [ -f "$ROOT_DIR/scripts/backup.sh" ] || die "scripts/backup.sh is missing; incomplete checkout."
 
     # `sudo -n` (no password prompt) is the only form that can be used from a
     # script without hijacking the terminal.
@@ -432,6 +439,18 @@ interview() {
     step "Configuration"
     info "Answers are kept in .env; re-running with the same answers changes nothing."
     printf '\n'
+
+    if [ "$WIZARD_MODE" = 1 ]; then
+        # The whole point of the mode: the domain, the MX hostname, the first administrator
+        # and the public URL are asked on the wizard page, once the stack is up — so this
+        # run only needs to know which port to publish.
+        info "wizard mode: the mail domain, hostname, administrator and TLS are collected at"
+        info "             http://<this host>:${WEB_PORT:-8080}/admin/ after the stack starts."
+        printf '\n'
+        [ -n "$PUBLIC_PORT_ARG" ] || WEB_PORT=$(ask "Web port (wizard, Webmail and API)" "${WEB_PORT:-8080}")
+        printf '\n'
+        return 0
+    fi
 
     [ -n "$DOMAIN_ARG" ]   || FERROMA_DOMAIN=$(ask "Mail domain (the part after @)" "$FERROMA_DOMAIN")
     [ -n "$HOSTNAME_ARG" ] || FERROMA_HOSTNAME=$(ask "MX hostname (must match this host's PTR record)" "mail.$FERROMA_DOMAIN")
@@ -521,19 +540,35 @@ write_env() {
     env_set POSTGRES_IMAGE "$POSTGRES_IMAGE"
     env_set FERROMA_IMAGE "$FERROMA_IMAGE"
 
-    env_set FERROMA_HOSTNAME "$FERROMA_HOSTNAME"
-    env_set FERROMA_PUBLIC_URL "$(public_url)"
-    env_set FERROMA_PUBLIC_PORT "$PUBLIC_PORT"
+    if [ "$WIZARD_MODE" = 1 ]; then
+        # Stated values would beat the wizard's: `apply_stored_settings` only adopts what
+        # the configuration left at its default. So in this mode the hostname, the public
+        # URL and the JWT secret are simply absent — the wizard stores the first two, and
+        # the server generates the third once into the data volume and reuses it.
+        env_set WEB_PORT "${WEB_PORT:-8080}"
+        info "wizard mode: hostname, public URL and TLS are left unset for the wizard"
+    else
+        env_set FERROMA_HOSTNAME "$FERROMA_HOSTNAME"
+        env_set FERROMA_PUBLIC_URL "$(public_url)"
+        env_set FERROMA_PUBLIC_PORT "$PUBLIC_PORT"
+        env_set FERROMA_JWT_SECRET "$JWT_SECRET"
+    fi
     env_set FERROMA_DATA_DIR "/var/lib/ferroma"
     [ -n "$(env_get FERROMA_LOG_LEVEL)" ]  || env_set FERROMA_LOG_LEVEL "info"
     [ -n "$(env_get FERROMA_LOG_FORMAT)" ] || env_set FERROMA_LOG_FORMAT "text"
-    env_set FERROMA_JWT_SECRET "$JWT_SECRET"
 
     # The API is reachable only from this host; the reverse proxy owns the public
     # face of it, so it is the proxy's headers that must be believed.
     env_set FERROMA_API_HOST "$API_HOST"
     env_set FERROMA_API_PORT "$API_PORT"
-    if [ "$NO_TLS" = 0 ]; then
+    if [ "$NO_TLS" = 0 ] && [ "$WIZARD_MODE" = 1 ]; then
+        # Certificates are in place under ./tls, so the wizard only has to tick the box; the
+        # switch itself is a stored setting, and stating it here would override that.
+        env_set FERROMA__API__TRUST_PROXY_HEADERS "true"
+        env_set FERROMA__API__SECURE_COOKIES "true"
+        env_set FERROMA__SMTP__REQUIRE_TLS_FOR_AUTH "true"
+        env_set FERROMA__IMAP__REQUIRE_TLS_FOR_LOGIN "true"
+    elif [ "$NO_TLS" = 0 ]; then
         env_set FERROMA__API__TRUST_PROXY_HEADERS "true"
         env_set FERROMA__API__SECURE_COOKIES "true"
         env_set FERROMA__SMTP__REQUIRE_TLS_FOR_AUTH "true"
@@ -547,12 +582,10 @@ write_env() {
 
     env_set FERROMA_DKIM_SELECTOR "$DKIM_SELECTOR"
     # The key lives inside the data volume: the container writes it as uid 10001
-    # with no host-directory ownership dance, and the backup sidecar archives it.
+    # with no host-directory ownership dance, and a backup of that volume takes
+    # it along. Losing it invalidates every DKIM signature this host has made.
     env_set FERROMA_DKIM_KEY "/var/lib/ferroma/dkim/$DKIM_SELECTOR.private"
     [ -n "$(env_get FERROMA_DKIM_ENABLED)" ] || env_set FERROMA_DKIM_ENABLED "false"
-
-    [ -n "$(env_get BACKUP_RETENTION_DAYS)" ]     || env_set BACKUP_RETENTION_DAYS "14"
-    [ -n "$(env_get BACKUP_INTERVAL_SECONDS)" ]   || env_set BACKUP_INTERVAL_SECONDS "86400"
 
     # Bookkeeping for this script. `Config::load` ignores names that are neither
     # `FERROMA__*` nor a documented alias, so these reach nothing but deploy.sh.
@@ -567,12 +600,19 @@ write_env() {
 # PostgreSQL on this host
 # -----------------------------------------------------------------------------
 # This image is a *client*, not a database: it supplies `psql` for the checks
-# below, and later the backup sidecar and the one-off restore container. This
-# stack starts no PostgreSQL server of its own — yours is the only one.
+# below when the host has none. This stack starts no PostgreSQL server of its
+# own — yours is the only one.
 pull_pg_image() {
+    # Only when the host has no `psql` of its own: `psql_app` and the provisioning
+    # fallback both prefer the host's client, and this image is what stands in when
+    # there is none. Skipping the pull is what keeps a redundant ~100 MB image (and
+    # its unpacked ~400 MB) off a host that already has the client.
+    if have psql; then
+        return 0
+    fi
     if ! image_exists "$POSTGRES_IMAGE"; then
         step "Pulling $POSTGRES_IMAGE"
-        info "a psql/pg_dump client for the checks below, and the backup sidecar image"
+        info "the host has no psql, so this client image stands in for the checks below"
         info "(it is not a database server: nothing here starts a second PostgreSQL)"
         docker pull "$POSTGRES_IMAGE" 2>&1 | tail -n 3
         image_exists "$POSTGRES_IMAGE" \
@@ -796,8 +836,9 @@ ensure_database() {
         fi
     fi
 
-    # pg_dump refuses to dump a server newer than itself, so the backup
-    # sidecar's client has to match the server's major version.
+    # Keep the client image near the server's major version: a much older psql
+    # warns on every connect and cannot always read newer catalog columns. The
+    # image supplies clients only — no server is ever started.
     _num=$(psql_app -tAc 'show server_version_num' | tr -d ' \r\n' || true)
     case "$_num" in
         ''|*[!0-9]*) : ;;
@@ -807,7 +848,7 @@ ensure_database() {
                 if [ "$POSTGRES_IMAGE" != "postgres:$_major-alpine" ]; then
                     POSTGRES_IMAGE="postgres:$_major-alpine"
                     env_set POSTGRES_IMAGE "$POSTGRES_IMAGE"
-                    info "PostgreSQL $_major detected: the backup sidecar uses $POSTGRES_IMAGE"
+                    info "PostgreSQL $_major detected: using $POSTGRES_IMAGE as the client image"
                 fi
             fi
             ;;
@@ -968,11 +1009,11 @@ install_tls() {
 # -----------------------------------------------------------------------------
 # The stack
 # -----------------------------------------------------------------------------
-# A named volume is populated from the image the *first* time it is mounted, and
-# the backup sidecar mounts this one at /mail — a path that does not exist in its
-# image. Were it to get there first, the volume would come up empty and owned by
-# root, and Ferroma (uid 10001) could not write to it. Populating it from the
-# image that owns the directory settles that race before the stack starts.
+# A named volume is initialised from whichever image mounts it *first*: mount one
+# without /var/lib/ferroma and the volume comes up empty and owned by root, so
+# Ferroma (uid 10001) cannot write to it. Populating it here, from the image that
+# owns the directory, settles the ownership before the stack — or a hand-run
+# `docker run -v ferroma-data:…` — can get it wrong.
 prepare_data_volume() {
     step "Preparing the data volume"
     docker run --rm -v ferroma-data:/var/lib/ferroma "$FERROMA_IMAGE" version >/dev/null
@@ -1010,7 +1051,11 @@ migrate_database() {
 
 start_stack() {
     step "Starting the containers"
-    compose up -d
+    # `--remove-orphans` retires containers whose service this compose file no
+    # longer defines. The backup sidecar of earlier releases is the case that
+    # matters: without it that container keeps running under `restart: always`
+    # for as long as the host lives, next to a stack that no longer has one.
+    compose up -d --remove-orphans
 }
 
 wait_healthy() {
@@ -1075,6 +1120,12 @@ create_admin() {
 
 first_run() {
     if [ "$(env_get FERROMA_DEPLOY_SETUP_DONE)" = "1" ]; then
+        return 0
+    fi
+    if [ "$WIZARD_MODE" = 1 ]; then
+        step "First-run wizard"
+        info "no administrator yet: open http://<this host>:${WEB_PORT:-8080}/admin/ and fill"
+        info "in the domain, the hostname, the first administrator and TLS."
         return 0
     fi
 
@@ -1151,8 +1202,8 @@ summary() {
     fi
     printf '  Database    postgres://%s@%s:%s/%s\n' "$DB_USER" "$DB_HOST" "$DB_PORT" "$DB_NAME"
     printf '  Data        volume ferroma-data — mail, attachments, DKIM keys\n'
-    printf '              volume ferroma-backups — nightly at %s, kept %s days\n' \
-        "$(env_get BACKUP_INTERVAL_SECONDS)" "$(env_get BACKUP_RETENTION_DAYS)"
+    printf '              no backup service ships: back this volume up together with\n'
+    printf '              the database — docs/deployment.md §8\n'
     printf '\n'
 
     if [ "${ADMIN_CREATED:-0}" = 1 ]; then
@@ -1164,8 +1215,16 @@ summary() {
         printf '\n'
     fi
 
+    if [ "$WIZARD_MODE" = 1 ]; then
+        printf '  %sFirst-run wizard%s\n' "$C_BOLD" "$C_RESET"
+        printf '    http://<this host>:%s/admin/\n' "${WEB_PORT:-8080}"
+        printf '    the mail domain, hostname, first administrator and TLS are set there;\n'
+        printf '    DNS (MX/A/PTR/SPF/DKIM/DMARC) has to be in place before mail flows.\n'
+        printf '\n'
+    fi
+
     printf '  %sYour reverse proxy%s\n' "$C_BOLD" "$C_RESET"
-    printf '    server_name %s;\n' "$FERROMA_HOSTNAME"
+    printf '    server_name %s;\n' "${FERROMA_HOSTNAME:-mail.example.com}"
     printf '    listen %s ssl http2;\n' "$PUBLIC_PORT"
     printf '    location / {\n'
     printf '        proxy_pass http://%s:%s;\n' "$API_HOST" "$API_PORT"
@@ -1213,8 +1272,7 @@ summary() {
     printf '  %sDay to day%s\n' "$C_BOLD" "$C_RESET"
     printf '    ./scripts/deploy.sh status      containers, health, database\n'
     printf '    ./scripts/deploy.sh logs        follow the log\n'
-    printf '    ./scripts/deploy.sh backup      one backup now (nightly is automatic)\n'
-    printf '    ./scripts/deploy.sh upgrade     backup, rebuild, restart\n'
+    printf '    ./scripts/deploy.sh upgrade     rebuild the image and restart\n'
     printf '    ./scripts/deploy.sh doctor      check every listener and dependency\n'
     printf '    ./scripts/deploy.sh dkim        reprint the DKIM record\n'
     printf '\n'
@@ -1271,7 +1329,6 @@ cmd_status() {
     printf '\n'
     step "Health"
     info "ferroma    $(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}} restarts={{.RestartCount}}' "$APP_CONTAINER" 2>/dev/null || echo 'not created')"
-    info "backup     $(docker inspect -f '{{.State.Status}} restarts={{.RestartCount}}' "$BACKUP_CONTAINER" 2>/dev/null || echo 'not created')"
     printf '\n'
     step "Database"
     if container_running "$APP_CONTAINER"; then
@@ -1284,10 +1341,6 @@ cmd_status() {
     for _port in 25 587 465 143 993 "$API_PORT"; do
         if listening_on "$_port"; then info "$_port  listening"; else info "$_port  -"; fi
     done
-    printf '\n'
-    step "Newest backup"
-    docker run --rm -v ferroma-backups:/backups "$POSTGRES_IMAGE" \
-        sh -c 'ls -1 /backups 2>/dev/null | sort | tail -n 1' 2>/dev/null || raw "(none)"
 }
 
 cmd_logs() {
@@ -1299,8 +1352,6 @@ cmd_upgrade() {
     preflight
     load_defaults
     [ -f "$ENV_FILE" ] || die "no .env yet: run ./scripts/deploy.sh first"
-    step "Backing up before the upgrade"
-    compose run --rm -T backup --once || warn "the backup failed — fix that before trusting the upgrade"
     REBUILD=1
     build_image
     check_privileged_ports
@@ -1308,38 +1359,6 @@ cmd_upgrade() {
     wait_healthy
     step "Done"
     compose ps
-}
-
-cmd_backup() {
-    preflight
-    load_defaults
-    pull_pg_image
-    step "Backup"
-    compose run --rm -T backup --once
-    info "newest: $(docker run --rm -v ferroma-backups:/backups "$POSTGRES_IMAGE" sh -c 'ls -1 /backups | sort | tail -n 1' 2>/dev/null || echo '?')"
-}
-
-cmd_restore() {
-    preflight
-    load_defaults
-    [ -n "$POSITIONAL" ] || die "usage: deploy.sh restore <backup-dir> [--db-only|--mail-only|--verify-only]"
-
-    case "$POSITIONAL" in
-        *--verify-only*)
-            compose --profile tools run --rm -T restore $POSITIONAL
-            return 0 ;;
-    esac
-
-    warn "this overwrites the database and the mail store with that backup's contents."
-    confirm "Stop Ferroma and restore now?" || die "aborted"
-    step "Stopping Ferroma (a restore must not race a running server)"
-    compose stop ferroma
-    step "Restoring"
-    compose --profile tools run --rm -T restore $POSITIONAL || warn "the restore reported a failure"
-    step "Starting Ferroma again"
-    compose up -d ferroma
-    wait_healthy
-    info "now check the store: docker compose -f $COMPOSE_FILE exec ferroma ferroma storage verify"
 }
 
 cmd_dkim() {
@@ -1396,13 +1415,13 @@ cmd_certs() {
 cmd_down() {
     preflight
     if [ "$DOWN_VOLUMES" = 1 ]; then
-        warn "--volumes deletes the mail store, the users and every backup."
+        warn "--volumes deletes the mail store and the users."
         confirm "Really delete all of it?" || die "aborted"
         compose down --volumes
-        info "volumes deleted: ferroma-data, ferroma-backups"
+        info "volume deleted: ferroma-data"
     else
         compose down
-        info "volumes kept: ferroma-data, ferroma-backups"
+        info "volume kept: ferroma-data"
     fi
 }
 
@@ -1411,8 +1430,6 @@ case "$COMMAND" in
     status)  cmd_status ;;
     logs)    cmd_logs ;;
     upgrade) cmd_upgrade ;;
-    backup)  cmd_backup ;;
-    restore) cmd_restore ;;
     dkim)    cmd_dkim ;;
     certs)   cmd_certs ;;
     doctor)  cmd_doctor ;;

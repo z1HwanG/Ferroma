@@ -5,48 +5,82 @@
 :root {
   color-scheme: light dark;
 
-  --bg: #f4f5f7;
+  /* Surfaces, from the page behind the console to the wash under the pointer. */
+  --bg: #eef1f6;
+  --bg-glow: radial-gradient(1100px 520px at 92% -12%, rgba(47, 111, 237, 0.10), transparent 62%);
   --surface: #ffffff;
-  --surface-2: #f9fafb;
-  --surface-3: #eef0f3;
-  --border: #d9dde3;
-  --border-strong: #b9c0c9;
-  --text: #14181d;
-  --text-muted: #5c6672;
-  --text-faint: #828b96;
-  --accent: #1f6feb;
+  --surface-2: #f7f9fc;
+  --surface-3: #eceff5;
+  --topbar-bg: rgba(255, 255, 255, 0.82);
+  --border-subtle: #e7ebf2;
+  --border: #d9dfe8;
+  --border-strong: #bdc6d3;
+  --text: #10151c;
+  --text-muted: #5a6472;
+  --text-faint: #858e9c;
+  --accent: #2f6fed;
+  --accent-hover: #275fd4;
   --accent-text: #ffffff;
-  --accent-soft: #e4eefd;
-  --danger: #c8382f;
+  --accent-soft: #e7efff;
+  --accent-soft-strong: #d3e2ff;
+  --danger: #cf3a30;
   --danger-soft: #fdecea;
-  --warn: #9a6200;
+  --warn: #92610b;
   --warn-soft: #fdf3e0;
-  --ok: #1a7f4b;
+  --ok: #0f7a58;
   --ok-soft: #e6f5ec;
-  --focus: #1f6feb;
-  --shadow: 0 8px 28px rgba(15, 23, 42, 0.16);
-  --radius: 8px;
-  --radius-sm: 5px;
+
+  --focus: #2f6fed;
+  --ring: 0 0 0 3px rgba(47, 111, 237, 0.30);
+  --overlay: rgba(13, 18, 26, 0.46);
+
+  /* Elevation. Three steps: a resting hairline, a raised card, a floating layer. */
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.05);
+  --shadow: 0 10px 30px rgba(15, 23, 42, 0.14), 0 2px 6px rgba(15, 23, 42, 0.06);
+  --shadow-lg: 0 28px 70px rgba(15, 23, 42, 0.24), 0 6px 18px rgba(15, 23, 42, 0.10);
+
+  --radius-xs: 6px;
+  --radius-sm: 9px;
+  --radius: 14px;
+  --radius-lg: 20px;
+  --radius-pill: 999px;
+
+  /* Motion. `--ease` for a control answering the pointer, `--ease-out` for something
+     arriving on screen. */
+  --dur-fast: 120ms;
+  --dur: 180ms;
+  --dur-slow: 280ms;
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
   --gap: 12px;
-  --sidebar-width: 240px;
+  --sidebar-width: 248px;
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+
+  /* One chevron for every `<select>`, so the pickers match the rest of the controls. */
+  --chevron: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235a6472' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #101317;
-    --surface: #171b21;
-    --surface-2: #1d222a;
-    --surface-3: #252b34;
-    --border: #2c333d;
-    --border-strong: #3d4653;
-    --text: #e7ebf0;
-    --text-muted: #a3adb9;
-    --text-faint: #7f8894;
+    --bg: #0d1015;
+    --bg-glow: radial-gradient(1100px 520px at 92% -12%, rgba(90, 157, 255, 0.12), transparent 62%);
+    --surface: #151a21;
+    --surface-2: #1b212a;
+    --surface-3: #232a34;
+    --topbar-bg: rgba(13, 16, 21, 0.78);
+    --border-subtle: #232a34;
+    --border: #2b333f;
+    --border-strong: #3e4856;
+    --text: #e9edf3;
+    --text-muted: #a4aebc;
+    --text-faint: #7d8796;
     --accent: #5a9dff;
-    --accent-text: #08111f;
-    --accent-soft: #1b2940;
+    --accent-hover: #77b0ff;
+    --accent-text: #07101d;
+    --accent-soft: #17243a;
+    --accent-soft-strong: #1d3153;
     --danger: #ff7b70;
     --danger-soft: #3a1f1d;
     --warn: #e0a94a;
@@ -54,23 +88,33 @@
     --ok: #5fd39a;
     --ok-soft: #14301f;
     --focus: #7db1ff;
-    --shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    --ring: 0 0 0 3px rgba(125, 177, 255, 0.32);
+    --overlay: rgba(4, 6, 10, 0.58);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+    --shadow-lg: 0 30px 74px rgba(0, 0, 0, 0.62);
+    --chevron: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a4aebc' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   }
 }
 
 :root[data-theme="dark"] {
-  --bg: #101317;
-  --surface: #171b21;
-  --surface-2: #1d222a;
-  --surface-3: #252b34;
-  --border: #2c333d;
-  --border-strong: #3d4653;
-  --text: #e7ebf0;
-  --text-muted: #a3adb9;
-  --text-faint: #7f8894;
+  --bg: #0d1015;
+  --bg-glow: radial-gradient(1100px 520px at 92% -12%, rgba(90, 157, 255, 0.12), transparent 62%);
+  --surface: #151a21;
+  --surface-2: #1b212a;
+  --surface-3: #232a34;
+  --topbar-bg: rgba(13, 16, 21, 0.78);
+  --border-subtle: #232a34;
+  --border: #2b333f;
+  --border-strong: #3e4856;
+  --text: #e9edf3;
+  --text-muted: #a4aebc;
+  --text-faint: #7d8796;
   --accent: #5a9dff;
-  --accent-text: #08111f;
-  --accent-soft: #1b2940;
+  --accent-hover: #77b0ff;
+  --accent-text: #07101d;
+  --accent-soft: #17243a;
+  --accent-soft-strong: #1d3153;
   --danger: #ff7b70;
   --danger-soft: #3a1f1d;
   --warn: #e0a94a;
@@ -78,7 +122,12 @@
   --ok: #5fd39a;
   --ok-soft: #14301f;
   --focus: #7db1ff;
-  --shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  --ring: 0 0 0 3px rgba(125, 177, 255, 0.32);
+  --overlay: rgba(4, 6, 10, 0.58);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 30px 74px rgba(0, 0, 0, 0.62);
+  --chevron: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a4aebc' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 }
 
 *,
@@ -281,6 +330,209 @@ textarea.input {
   font-size: 12.5px;
 }
 
+/* The first-run wizard's "stored, but a restart applies it" panel. A warning rather
+   than an error: the administrator exists and the console works; only the advertised
+   identity is waiting for the next start. */
+/* ---------------------------------------------------------- first-run wizard */
+
+/* The wizard is the first screen of a new install and the one place an operator states
+   what this server is, so it gets a page of its own: a welcome, three numbered steps, and
+   a rail that says what the form will produce. It previously shared the console's card
+   chrome, printed the endpoint it was calling, and left the setup fields in one undivided
+   column. */
+.setup-view {
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+/* Standalone page: no console chrome around it. */
+.app.app-setup .topbar,
+.app.app-setup .sidebar {
+  display: none;
+}
+
+.app.app-setup .layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.app.app-setup .content {
+  padding: 28px 20px 40px;
+}
+
+/* Language and light/dark, on the page itself. */
+.setup-tools {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 10px;
+  align-items: center;
+  /* `align-items: flex-start` on the header would otherwise stretch this row's own
+     centring; nudging it down a few pixels lines the controls up with the title's cap. */
+  margin-top: 2px;
+}
+
+.setup-hero {
+  display: flex;
+  gap: 16px;
+  /* Top-aligned, not centred: the controls on the right line up with the title, and the
+     mark lines up with both. */
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 22px;
+}
+
+.setup-hero-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.setup-hero .brand-mark {
+  width: 52px;
+  height: 52px;
+  flex: 0 0 auto;
+}
+
+.setup-hero .brand-mark svg {
+  width: 26px;
+  height: 26px;
+}
+
+.setup-done {
+  padding: 18px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.setup-title {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: -0.01em;
+}
+
+.setup-lede {
+  margin: 4px 0 0;
+  max-width: 62ch;
+  color: var(--text-muted);
+  font-size: 13.5px;
+  line-height: 1.6;
+  /* Keeps a last word or two from being stranded on a line of its own. */
+  text-wrap: pretty;
+}
+
+.setup-step {
+  padding: 16px 18px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+.setup-step-head {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+
+.setup-step-no {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: 50%;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.setup-step-title {
+  margin: 2px 0 0;
+  font-size: 15px;
+}
+
+.setup-step-lede {
+  margin: 4px 0 0;
+  max-width: 66ch;
+  color: var(--text-faint);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+/* The three things an operator has to do before the address works, as a short list
+   rather than a paragraph. */
+.bootstrap-steps {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--text-faint);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+.setup-step-body {
+  display: grid;
+  gap: 12px;
+}
+
+.setup-tls-fields {
+  display: grid;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.setup-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.btn-large {
+  min-height: 42px;
+  padding: 0 20px;
+  font-size: 14.5px;
+}
+
+.setup-summary {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.setup-summary li {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12.5px;
+}
+
+.setup-summary-label {
+  color: var(--text-faint);
+}
+
+.setup-summary-value {
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.setup-notice {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-sm);
+  background: var(--warn-soft);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.setup-notice ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
 .checkbox {
   display: flex;
   gap: 8px;
@@ -441,21 +693,6 @@ textarea.input {
   border-right: 1px solid var(--border);
 }
 
-.sidebar-head {
-  display: none;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
-}
-
-.sidebar-title {
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-muted);
-}
-
 .nav-list {
   flex: 1 1 auto;
   overflow-y: auto;
@@ -551,10 +788,6 @@ textarea.input {
   color: var(--text-faint);
   font-size: 11.5px;
   overflow-wrap: anywhere;
-}
-
-.pane-close {
-  display: none;
 }
 
 .content {
@@ -948,10 +1181,15 @@ textarea.input {
   display: none;
 }
 
+/* The stacking order, low to high: page → topbar (20) → menu (40) → drawer (60) →
+   dialog (70) → toasts (90) → skip link (100).
+   The dialog sits above the drawer on purpose: a drawer action that asks a question —
+   "generate a new DKIM key?" — must be readable, and both hosts are children of `<body>`,
+   so at equal `z-index` the drawer won, having been appended last. */
 .modal {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  z-index: 70;
   display: grid;
   place-items: center;
   padding: 18px;
@@ -1368,50 +1606,1022 @@ textarea.input {
   border-radius: var(--radius-sm);
 }
 
-/* -------------------------------------------------------------- responsive */
+/* ================================================================= visual layer
+   Refinements that sit on top of the component rules above: depth, motion and the
+   affordances that keep a dense operator console readable. Placed before the
+   responsive rules so a narrow layout still wins where it must.
+   ================================================================= */
 
-/* `data-nav` drives two different layouts. Above 860px the sidebar is docked, and
-   the toggle collapses it to give the content the full width — which is what an
-   operator expects from that button, and what the wide tables want. Below 860px
-   the same attribute opens the overlapping drawer, below. */
-@media (min-width: 861px) {
-  .app[data-nav="closed"] .sidebar {
-    display: none;
+/* ------------------------------------------------------------------ surfaces */
+
+body {
+  background-color: var(--bg);
+  background-image: var(--bg-glow);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: var(--accent-soft-strong);
+  color: var(--text);
+}
+
+/* Scoped to this app's own containers on purpose. A global `*` rule also lands on markup
+   a browser extension injects into the page — that is how a password manager's panel ends
+   up wearing Ferroma's scrollbar colours and surfaces. Nothing here belongs to an element
+   this app did not create. */
+:where(#app-view, #login-view, #compose-host, #modal-host, #dialog-host, #toast-region, #alert-region, #offline-banner) {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+:where(#app-view, #login-view, #compose-host, #modal-host, #dialog-host, #toast-region, #alert-region, #offline-banner) ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+:where(#app-view, #login-view, #compose-host, #modal-host, #dialog-host, #toast-region, #alert-region, #offline-banner) ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+:where(#app-view, #login-view, #compose-host, #modal-host, #dialog-host, #toast-region, #alert-region, #offline-banner) ::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 3px solid transparent;
+  border-radius: var(--radius-pill);
+  background-clip: content-box;
+}
+
+:where(#app-view, #login-view, #compose-host, #modal-host, #dialog-host, #toast-region, #alert-region, #offline-banner) ::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+  background-clip: content-box;
+}
+
+:where(#app-view, #login-view, #compose-host, #modal-host, #dialog-host, #toast-region, #alert-region, #offline-banner) :where(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+
+/* ------------------------------------------------------------------- controls */
+
+.btn {
+  min-height: 36px;
+  padding: 7px 13px;
+  border-radius: var(--radius-sm);
+  font-weight: 550;
+  transition:
+    background-color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease),
+    color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(0) scale(0.985);
+}
+
+.btn-primary {
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0));
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.18);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background-color: var(--accent-hover);
+  box-shadow: 0 6px 16px rgba(47, 111, 237, 0.28);
+}
+
+.btn-small {
+  min-height: 30px;
+  padding: 4px 10px;
+  font-size: 12.5px;
+}
+
+.btn-small .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.btn-icon {
+  min-width: 36px;
+}
+
+/* A glyph inside a small row action, aligned with its label. */
+.btn .icon {
+  flex: none;
+}
+
+.btn-danger-quiet {
+  color: var(--text-muted);
+}
+
+.btn-danger-quiet:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.input {
+  min-height: 36px;
+  border-radius: var(--radius-sm);
+  transition:
+    border-color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease),
+    background-color var(--dur) var(--ease);
+}
+
+.input:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+
+.input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+  outline: none;
+}
+
+select.input {
+  appearance: none;
+  padding-right: 32px;
+  background-image: var(--chevron);
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  background-size: 16px 16px;
+}
+
+input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+/* --------------------------------------------------------------------- login */
+
+.login-view {
+  background-image: var(--bg-glow);
+}
+
+.login-card {
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  animation: rise-in var(--dur-slow) var(--ease-out) both;
+}
+
+.login-title {
+  font-size: 23px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.input:-webkit-autofill,
+.input:-webkit-autofill:hover,
+.input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--text);
+  box-shadow: 0 0 0 100px var(--surface) inset;
+  caret-color: var(--text);
+}
+
+/* ------------------------------------------------------------------ chrome */
+
+.topbar {
+  background: var(--topbar-bg);
+  border-bottom: 1px solid var(--border-subtle);
+  backdrop-filter: blur(14px) saturate(150%);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  background: linear-gradient(145deg, var(--accent), #7c5cff);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(47, 111, 237, 0.35);
+}
+
+.brand-mark svg {
+  width: 17px;
+  height: 17px;
+}
+
+.topbar .btn-icon {
+  color: var(--text-muted);
+  border-color: transparent;
+  background: transparent;
+}
+
+.topbar .btn-icon:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-3);
+  border-color: transparent;
+}
+
+.topbar-status {
+  font-variant-numeric: tabular-nums;
+}
+
+/* -------------------------------------------------------------- theme switch */
+
+/* One button, two glyphs, and a rotate-and-cross-fade between them. Which glyph shows
+   is decided by `data-theme-resolved`, so `auto` displays whatever is actually on
+   screen rather than a mode name. */
+.theme-toggle {
+  position: relative;
+  overflow: hidden;
+}
+
+/* The icon turns for as long as the reveal takes; the two are one gesture. */
+.theme-toggle .icon {
+  transition:
+    transform 620ms var(--ease-out),
+    opacity 260ms var(--ease);
+}
+
+.theme-toggle .icon-moon {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  opacity: 0;
+  transform: rotate(-90deg) scale(0.4);
+}
+
+html[data-theme-resolved="dark"] .theme-toggle .icon-sun {
+  opacity: 0;
+  transform: rotate(90deg) scale(0.4);
+}
+
+html[data-theme-resolved="dark"] .theme-toggle .icon-moon {
+  opacity: 1;
+  transform: none;
+}
+
+/* ---------------------------------------------------- the light switch itself */
+
+/* The circular reveal (see `shared/theme.js`).
+   `startViewTransition` keeps a snapshot of the page before the change and one after it;
+   the incoming snapshot is then clipped to a circle that grows from the toggle, so the new
+   scheme sweeps across the window instead of cross-fading. The default cross-fade between
+   the two snapshots is switched off — the clip-path is the whole effect — and the outgoing
+   snapshot is parked underneath so the circle uncovers the new page rather than blending
+   with the old one. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+::view-transition-old(root) {
+  z-index: 1;
+}
+
+::view-transition-new(root) {
+  z-index: 2;
+}
+
+/* A ring that leaves the button as the reveal starts, so the switch has a source.
+   Drawn as the button's own `box-shadow`, not on a pseudo-element: the toggle clips its
+   contents (`overflow: hidden`, so the turning icons cannot spill), and that would clip a
+   ring growing outside it. An element's own box-shadow is not clipped by its own overflow. */
+.theme-toggle.theme-pulsing {
+  animation: theme-halo 620ms var(--ease-out);
+}
+
+@keyframes theme-halo {
+  from {
+    box-shadow: 0 0 0 0 var(--focus);
   }
-
-  .app[data-nav="closed"] .layout {
-    grid-template-columns: minmax(0, 1fr);
+  to {
+    box-shadow: 0 0 0 18px rgb(0 0 0 / 0%);
   }
 }
 
+/* The icon leads the reveal: it turns before the light arrives. */
+html.theme-switching .theme-toggle .icon,
+.theme-toggle .icon {
+  transition:
+    transform 620ms var(--ease-out),
+    opacity 260ms var(--ease);
+}
+
+/* Every surface cross-fades for the length of one switch. A permanent `transition` of
+   colours on every node is the usual way to do this and the wrong one: it makes ordinary
+   hovers sluggish and shows up in a profile. `theme.js` adds this class for ~400ms. */
+html.theme-switching body,
+html.theme-switching :where(#app-view, #login-view, #compose-host, #modal-host, #dialog-host, #toast-region, #alert-region, #offline-banner),
+html.theme-switching :where(#app-view, #login-view, #compose-host, #modal-host, #dialog-host, #toast-region, #alert-region, #offline-banner) *,
+html.theme-switching :where(#app-view, #login-view, #compose-host, #modal-host, #dialog-host, #toast-region, #alert-region, #offline-banner) *::before,
+html.theme-switching :where(#app-view, #login-view, #compose-host, #modal-host, #dialog-host, #toast-region, #alert-region, #offline-banner) *::after {
+  transition:
+    background-color 320ms var(--ease),
+    border-color 320ms var(--ease),
+    color 320ms var(--ease),
+    fill 320ms var(--ease),
+    stroke 320ms var(--ease),
+    box-shadow 320ms var(--ease),
+    outline-color 320ms var(--ease) !important;
+}
+
+/* …except the toggle itself, whose whole point is the slower icon morph. */
+html.theme-switching .theme-toggle .icon {
+  transition:
+    transform 620ms var(--ease-out),
+    opacity 260ms var(--ease) !important;
+}
+
+/* ------------------------------------------------------------------ sidebar */
+
+.sidebar {
+  background: var(--surface-2);
+  border-right: 1px solid var(--border-subtle);
+}
+
+.nav-group {
+  position: relative;
+  margin: 14px 0 6px;
+  padding: 0 10px;
+}
+
+/* A hairline beside each group name turns the four headings into four sections
+   instead of four stray labels. */
+.nav-group-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.nav-group-title::after {
+  content: "";
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--border-subtle);
+}
+
+.nav-button {
+  position: relative;
+  min-height: 36px;
+  margin-bottom: 2px;
+  border-radius: var(--radius-sm);
+  transition:
+    background-color var(--dur) var(--ease),
+    color var(--dur) var(--ease),
+    padding-left var(--dur) var(--ease);
+}
+
+.nav-button:hover:not([aria-current="true"]) {
+  padding-left: 13px;
+}
+
+.nav-button[aria-current="true"] {
+  background: var(--accent-soft);
+}
+
+.nav-button[aria-current="true"]::before {
+  left: -8px;
+  top: 8px;
+  bottom: 8px;
+  border-radius: 0 3px 3px 0;
+  transition: top var(--dur) var(--ease), bottom var(--dur) var(--ease);
+}
+
+.nav-icon {
+  transition: transform var(--dur) var(--ease), opacity var(--dur) var(--ease);
+}
+
+.nav-button:hover .nav-icon {
+  transform: scale(1.08);
+}
+
+.nav-badge {
+  animation: pop var(--dur-slow) var(--ease-out) both;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+
+.sidebar-foot {
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* --------------------------------------------------------------- view / cards */
+
+.view-title {
+  font-size: 21px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+}
+
+.view-head {
+  margin-bottom: 16px;
+}
+
+.card {
+  padding: 16px;
+  border-color: var(--border-subtle);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+.card-title {
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.card-actions {
+  gap: 8px;
+}
+
+/* --------------------------------------------------------------- dashboard */
+
+.stat {
+  position: relative;
+  padding: 14px 16px;
+  background:
+    linear-gradient(180deg, var(--surface), var(--surface-2));
+  border-color: var(--border-subtle);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  transition:
+    transform var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+  animation: rise-in var(--dur-slow) var(--ease-out) both;
+}
+
+.stat:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow);
+  border-color: var(--border);
+}
+
+/* A short stagger so the grid resolves as a group rather than blinking in. */
+.stat:nth-child(2) {
+  animation-delay: 40ms;
+}
+
+.stat:nth-child(3) {
+  animation-delay: 80ms;
+}
+
+.stat:nth-child(4) {
+  animation-delay: 120ms;
+}
+
+.stat:nth-child(5) {
+  animation-delay: 160ms;
+}
+
+.stat:nth-child(6) {
+  animation-delay: 200ms;
+}
+
+.stat-icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  margin-bottom: 10px;
+  border-radius: 9px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.stat-hero .stat-icon {
+  width: 34px;
+  height: 34px;
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.stat-icon .icon {
+  width: 17px;
+  height: 17px;
+}
+
+.stat-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+}
+
+.stat-value {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.stat-danger .stat-icon {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.stat-warn .stat-icon {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.stat-ok .stat-icon {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.spark {
+  border-color: var(--border-subtle);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+.attention {
+  gap: 8px;
+}
+
+.attention-item,
+.attention-clear {
+  border-radius: var(--radius-sm);
+  border-left-width: 3px;
+  transition: background-color var(--dur) var(--ease);
+}
+
+.attention-clear-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 550;
+}
+
+/* ------------------------------------------------------------------- tables */
+
+.table-wrap {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  overflow: auto;
+}
+
+.table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--topbar-bg);
+  border-bottom: 1px solid var(--border-subtle);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.table tbody tr {
+  transition: background-color var(--dur-fast) var(--ease);
+}
+
+.table tbody tr:hover {
+  background: var(--surface-2);
+}
+
+.table td {
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.th-sort {
+  position: relative;
+  padding-right: 18px;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+}
+
+/* The chevron the sort control shows once its column is the active one. */
+.th-sort[aria-sort="ascending"]::after,
+.th-sort[aria-sort="descending"]::after {
+  content: "";
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  border-right: 1.8px solid var(--accent);
+  border-bottom: 1.8px solid var(--accent);
+  transform: translateY(-70%) rotate(45deg);
+}
+
+.th-sort[aria-sort="descending"]::after {
+  transform: translateY(-30%) rotate(-135deg);
+}
+
+.data-table .bulk-bar {
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  border-color: var(--border-subtle);
+  animation: rise-in var(--dur) var(--ease-out) both;
+}
+
+.cell-actions {
+  gap: 4px;
+}
+
+.row-check {
+  border-radius: 5px;
+}
+
+/* ------------------------------------------------------------------- badges */
+
+.badge {
+  gap: 6px;
+  border-radius: var(--radius-pill);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.badge::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.85;
+}
+
+.badge-ok {
+  background: var(--ok-soft);
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 30%, transparent);
+}
+
+.badge-warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 30%, transparent);
+}
+
+.badge-fail {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 32%, transparent);
+}
+
+.badge-muted {
+  background: var(--surface-3);
+  color: var(--text-muted);
+  border-color: var(--border-subtle);
+}
+
+/* ------------------------------------------------------------------ dialogs */
+
+.modal {
+  background: var(--overlay);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  animation: fade-in var(--dur) var(--ease-out) both;
+}
+
+.modal-card {
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  animation: pop-in var(--dur-slow) var(--ease-out) both;
+}
+
+.drawer-scrim {
+  background: var(--overlay);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  animation: fade-in var(--dur) var(--ease-out) both;
+}
+
+.drawer {
+  border-left-color: var(--border-subtle);
+  box-shadow: var(--shadow-lg);
+  animation: slide-in-right var(--dur-slow) var(--ease-out) both;
+}
+
+.modal-head,
+.drawer-head {
+  border-bottom-color: var(--border-subtle);
+}
+
+.modal-title,
+.drawer-title {
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.modal-foot,
+.drawer-foot {
+  border-top-color: var(--border-subtle);
+}
+
+/* ------------------------------------------------------------------- toasts */
+
+.toast {
+  position: relative;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  animation: toast-in var(--dur-slow) var(--ease-out) both;
+  overflow: hidden;
+}
+
+/* The bar drains over the toast's own lifetime, so a message on its way out says so.
+   `toast.js` sets `--toast-life`; without it the bar simply stays full. */
+.toast::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  height: 2px;
+  transform-origin: left center;
+  background: currentColor;
+  opacity: 0.35;
+  animation: drain var(--toast-life, 5s) linear both;
+}
+
+.toast-close {
+  border-radius: var(--radius-pill);
+  transition: background-color var(--dur) var(--ease);
+}
+
+.toast-close:hover {
+  background: var(--surface-3);
+}
+
+/* ------------------------------------------------------------------ menu */
+
+.menu {
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  animation: pop-in var(--dur) var(--ease-out) both;
+  transform-origin: top right;
+}
+
+.menu-item {
+  border-radius: var(--radius-xs);
+  transition: background-color var(--dur) var(--ease), padding-left var(--dur) var(--ease);
+}
+
+.menu-item:hover {
+  padding-left: 14px;
+}
+
+/* ----------------------------------------------------------------- states */
+
+.loading-state,
+.empty-state,
+.error-state {
+  border-radius: var(--radius);
+}
+
+/* ------------------------------------------------------- segmented control */
+
+/* A three-way (or N-way) switch: one track, an animated selected pill, and a glyph per
+   choice. Used for the theme picker, where a `<select>` would hide what the options
+   are until it is opened. */
+.segmented {
+  display: inline-flex;
+  gap: 3px;
+  padding: 3px;
+  background: var(--surface-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+}
+
+.segmented-option {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  padding: 5px 13px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 550;
+  cursor: pointer;
+  transition:
+    background-color var(--dur) var(--ease),
+    color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+
+.segmented-option .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.segmented-option:hover {
+  color: var(--text);
+}
+
+.segmented-option:active {
+  transform: scale(0.97);
+}
+
+.segmented-option[aria-checked="true"] {
+  background: var(--surface);
+  color: var(--accent);
+  box-shadow: var(--shadow-sm);
+}
+
+/* A prompt asks one question: a narrow card, a label, one field, and a line that says what
+   will happen. The default modal width left a lot of empty paper around a single input. */
+.modal-card.modal-narrow {
+  width: min(420px, 100%);
+}
+
+.prompt-body {
+  display: grid;
+  gap: 8px;
+}
+
+.prompt-label {
+  margin-bottom: 0;
+  font-weight: 600;
+}
+
+.prompt-input {
+  min-height: 40px;
+  font-size: 14px;
+}
+
+.prompt-hint {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 12.5px;
+}
+
+/* The DNS verdicts in a domain's drawer: one card per record. A record's value is longer
+   than any column narrow enough to sit in a 520px drawer, so the fields stack and wrap
+   (`overflow-wrap: anywhere` is what stops `a:localhost` splitting after `localho`). */
+.dns-records {
+  display: grid;
+  gap: 8px;
+}
+
+.dns-record {
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+
+.dns-record-ok {
+  border-left-color: var(--ok);
+}
+
+.dns-record-warn {
+  border-left-color: var(--warn);
+}
+
+.dns-record-fail {
+  border-left-color: var(--danger);
+}
+
+.dns-record-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.dns-record-status {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.dns-record-facts {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  gap: 4px 10px;
+  margin: 0;
+}
+
+.dns-record-facts dt {
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.dns-record-facts dd {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
+
+/* A published DKIM value is a long single line of base64; wrapping beats a scrollbar. */
+.dns-record + p,
+.drawer-body .code-block {
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------------ keyframes */
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(14px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes drain {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+/* -------------------------------------------------------------- responsive */
+
+/* The sidebar is always docked. It used to collapse above 860px and become an
+   overlapping drawer below it, driven by `data-nav`; a console whose navigation can
+   disappear is one where the operator has to find the button that brings it back, and
+   the collapse bought nothing the wide tables needed. Mobile is explicitly out of
+   scope, so the grid stays two-column at every width and only the touch targets below
+   adapt. */
 @media (max-width: 860px) {
-  .layout {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  /* Inside the drawer the head earns its place: it names the panel and carries
-     the close button. Docked on a wide screen the group headings do that job,
-     so the head would only be redundant chrome. */
-  .sidebar-head {
-    display: flex;
-  }
-
-  .sidebar {
-    position: fixed;
-    inset: 48px auto 0 0;
-    z-index: 30;
-    width: min(280px, 82vw);
-    box-shadow: var(--shadow);
-  }
-
-  .app:not([data-nav="open"]) .sidebar {
-    display: none;
-  }
-
-  .pane-close {
-    display: inline-flex;
-  }
-
   .brand-sub {
     display: none;
   }

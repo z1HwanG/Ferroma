@@ -8,7 +8,7 @@
  */
 
 import { API_BASE, ApiError, request } from '../shared/api.js';
-import { el, setHidden, setText } from '../shared/dom.js';
+import { el, setHidden, setText, svgIcon } from '../shared/dom.js';
 import { LOCALES, currentLocale, setLocale, t, tn } from '../shared/i18n.js';
 import { openModal } from '../shared/modal.js';
 import { MESSAGES_PER_PAGE_CHOICES, PREF_DEFAULTS, getPrefs, savePrefs } from './store.js';
@@ -43,6 +43,62 @@ function themeLabel(mode) {
   return t('Dark');
 }
 
+/** The glyph for one theme mode. */
+function themeGlyph(mode) {
+  if (mode === 'auto') return 'contrast';
+  if (mode === 'light') return 'sun';
+  return 'moon';
+}
+
+/**
+ * The three-way theme picker.
+ *
+ * A `<select>` cannot show what the three choices *are*; three glyphs can, and the
+ * sliding selection state makes the current mode obvious at a glance. The control keeps
+ * the field id so the label, the checker and the save path all still find it.
+ *
+ * @returns {{node: HTMLElement, selected: () => string, select: (mode: string) => void}}
+ */
+function themeControl() {
+  const node = el('div', {
+    class: 'segmented',
+    id: FIELDS.theme,
+    role: 'radiogroup',
+    'aria-label': t('Theme'),
+  });
+  const buttons = new Map();
+
+  const select = (mode) => {
+    const wanted = THEME_MODES.includes(mode) ? mode : PREF_DEFAULTS.theme;
+    for (const [value, button] of buttons) {
+      button.setAttribute('aria-checked', value === wanted ? 'true' : 'false');
+    }
+    node.dataset.mode = wanted;
+  };
+
+  for (const mode of THEME_MODES) {
+    const label = themeLabel(mode);
+    const button = el('button', {
+      type: 'button',
+      class: 'segmented-option',
+      role: 'radio',
+      'aria-checked': 'false',
+      title: label,
+      dataset: { mode },
+    }, [svgIcon(themeGlyph(mode)), el('span', { class: 'segmented-label', text: label })]);
+    button.addEventListener('click', () => select(mode));
+    buttons.set(mode, button);
+    node.append(button);
+  }
+
+  select(currentTheme());
+  return {
+    node,
+    selected: () => node.dataset.mode || currentTheme(),
+    select,
+  };
+}
+
 export function openSettings() {
   const prefs = getPrefs();
 
@@ -57,24 +113,18 @@ export function openSettings() {
   const signature = el('textarea', { class: 'input', id: FIELDS.signature, rows: '6', spellcheck: 'true' });
   signature.value = prefs.signature;
 
-  const theme = el('select', { class: 'input', id: FIELDS.theme });
-  for (const mode of THEME_MODES) {
-    theme.append(el('option', { value: mode, text: themeLabel(mode) }));
-  }
-  theme.value = currentTheme();
+  const theme = themeControl();
 
   // Each option is labelled in its own language, so a reader who cannot read the
-  // current one can still find theirs. Switching reloads: the app builds its DOM
-  // once, so text already on screen would otherwise stay in the old language.
+  // current one can still find theirs. The chosen value is *staged* here and applied
+  // by Save: reloading on `change` switched the whole interface the moment the arrow
+  // keys moved over the list, before the operator had confirmed anything — and the
+  // dialog's own buttons said the settings were still unsaved.
   const language = el('select', { class: 'input', id: FIELDS.language });
   for (const entry of LOCALES) {
     language.append(el('option', { value: entry.tag, text: entry.label }));
   }
   language.value = currentLocale();
-  language.addEventListener('change', () => {
-    setLocale(language.value);
-    window.location.reload();
-  });
 
   const perPage = el('select', { class: 'input', id: FIELDS.perPage });
   for (const choice of MESSAGES_PER_PAGE_CHOICES) {
@@ -193,8 +243,8 @@ export function openSettings() {
       el('p', { class: 'modal-message', text: t('Appended to every new message you compose.') }),
     ]),
     el('div', { class: 'field' }, [
-      el('label', { class: 'field-label', for: FIELDS.theme, text: t('Theme') }),
-      theme,
+      el('span', { class: 'field-label', text: t('Theme') }),
+      theme.node,
     ]),
     el('div', { class: 'field' }, [
       el('label', { class: 'field-label', for: FIELDS.language, text: t('Language') }),
@@ -206,7 +256,7 @@ export function openSettings() {
     ]),
     el('label', { class: 'checkbox', for: FIELDS.markReadOnOpen }, [
       markRead,
-      el('span', { text: t('Mark messages read after 2 seconds in the reading pane') }),
+      el('span', { text: t('Mark messages as read when I open them') }),
     ]),
     el('h3', { class: 'card-title', text: t('Password') }),
     passwordForm,
@@ -227,10 +277,17 @@ export function openSettings() {
         persist({
           displayName: displayName.value.trim(),
           signature: signature.value,
-          theme: theme.value,
+          theme: theme.selected(),
           perPage: MESSAGES_PER_PAGE_CHOICES.includes(perPageValue) ? perPageValue : PREF_DEFAULTS.perPage,
           markReadOnOpen: markRead.checked,
         });
+        // A language change redraws every string in the app, so it is the one setting
+        // that cannot be shown in place: apply it and reload, exactly as Save implies.
+        if (language.value !== currentLocale()) {
+          setLocale(language.value);
+          window.location.reload();
+          return;
+        }
         toastSuccess(t('Settings saved.'));
         modal.close('save');
       });
@@ -238,9 +295,12 @@ export function openSettings() {
         persist(Object.assign({}, PREF_DEFAULTS));
         displayName.value = '';
         signature.value = '';
-        theme.value = PREF_DEFAULTS.theme;
+        theme.select(PREF_DEFAULTS.theme);
         perPage.value = String(PREF_DEFAULTS.perPage);
         markRead.checked = PREF_DEFAULTS.markReadOnOpen;
+        // The picker goes back to the language actually in force; restoring defaults
+        // is about the preferences, not about swapping the interface language.
+        language.value = currentLocale();
         toastSuccess(t('Settings restored to their defaults.'));
       });
     },

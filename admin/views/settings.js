@@ -38,7 +38,7 @@ export async function render() {
   refreshButton.addEventListener('click', () => refresh());
 
   const root = el('div', {}, [
-    viewHead(t('Settings'), t('Database-backed configuration'), [addButton, refreshButton]),
+    viewHead(t('Settings'), t('Runtime configuration persisted in the database'), [addButton, refreshButton]),
     languageCard(),
     el('section', { class: 'card' }, [
       el('p', {
@@ -92,9 +92,10 @@ export async function render() {
  * The interface-language picker.
  *
  * Each option is labelled in its own language, so a reader who cannot read the current
- * one can still find theirs. Switching reloads the page: every view builds its DOM once
- * and keeps a reference to it, so re-rendering from here would leave the text already
- * on screen — including any open dialog — in the old language.
+ * one can still find theirs. The choice is *staged* until Apply is pressed: a `change`
+ * handler that reloaded immediately swapped the console's language the instant the
+ * arrow keys moved over the list, with no confirmation and no way back but the picker
+ * in a language the reader may not have meant to enter.
  */
 function languageCard() {
   const select = el('select', { class: 'input', id: 'settings-language' });
@@ -102,8 +103,19 @@ function languageCard() {
     select.append(el('option', { value: entry.tag, text: entry.label }));
   }
   select.value = currentLocale();
-  select.addEventListener('change', () => {
+
+  const apply = el('button', { type: 'button', class: 'btn btn-primary', text: t('Apply') });
+  apply.addEventListener('click', () => {
+    if (select.value === currentLocale()) {
+      toastSuccess(t('The language is already {language}.', {
+        language: select.options[select.selectedIndex] ? select.options[select.selectedIndex].text : select.value,
+      }));
+      return;
+    }
     setLocale(select.value);
+    // Every view builds its DOM once and keeps a reference to it, so re-rendering from
+    // here would leave the text already on screen in the old language. Reloading is
+    // the one way to guarantee that every string is redrawn.
     window.location.reload();
   });
 
@@ -117,6 +129,7 @@ function languageCard() {
       el('label', { class: 'field-label', for: 'settings-language', text: t('Language') }),
       select,
     ]),
+    el('div', { class: 'card-actions' }, [apply]),
   ]);
 }
 

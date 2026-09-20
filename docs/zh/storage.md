@@ -13,8 +13,9 @@ Ferroma 使用两个存储。PostgreSQL 保存应用要查询的每一个事实�
 > `crates/ferroma-storage/src/{database,maildir,attachment,error,models}.rs` 与
 > `crates/ferroma-storage/src/repository/*.rs`。schema 是
 > `migrations/0001_initial.sql`，它是仓库中唯一的迁移，也是下文每一个表与列的来源。
-> 有两处是 _(计划中)_：`ferroma storage` CLI 子命令，以及驱动 GC 与完整性检查的
-> API 端点。凡给出 `pg_dump`/`psql` 命令的地方，都是今天就能运行的真实命令。
+> `ferroma storage stats|verify|gc` 与 API 的 `GET /api/v1/storage`、
+> `POST /api/v1/storage/gc` 今天都已存在。凡给出 `pg_dump`/`psql` 命令的地方，都是
+> 今天就能运行的真实命令。
 
 ---
 
@@ -653,7 +654,7 @@ for every file under the blob root:
 
 `keep` 集合由 `AttachmentsRepository::referenced_paths()` 产生
 （`SELECT DISTINCT storage_path FROM attachments`），调用方是
-`POST /api/v1/storage/gc` _(计划中)_，或今天的直接调用。给重新实现它的人两条规则：
+`POST /api/v1/storage/gc`（或主机上的 `ferroma storage gc`）。给重新实现它的人两条规则：
 
 * **先收集 keep 集合，再扫描，而不是边扫边收集。** 在遍历目录树的同时读取
   `attachments` 会与并发上传竞争，其失败模式是删掉一个一毫秒前才挂上的 blob。
@@ -776,100 +777,139 @@ assert!(s.absolute("../../secret").is_err());
 
 ## 8. 备份与恢复
 
-完整的运维流程在 [deployment.md](deployment.md) §8。原则部分属于这里。
+**Ferroma 不再随附任何备份工具。** 没有任何 compose 文件定义 `backup` 或
+`restore` 服务，不再有 `ferroma-backups` 卷，`scripts/deploy.sh` 也不再提供
+`backup` 或 `restore` 子命令：备份是运维者自己的事，用主机已有的工具完成 ——
+`pg_dump`/`pg_dumpall`、`tar`、`rsync`、`restic`、`borg`，或存储层快照。属于本文档
+的是：这样一份备份必须包含什么、为什么两半不能分开，以及按什么顺序恢复；逐步的操作
+流程在 [deployment.md](deployment.md) §8。
 
-### 8.1 两半一起恢复
+### 8.1 两半，以及为什么单独任何一半都不是备份
 
-`scripts/backup.sh` 产出一个带时间戳的目录，其中包含：
+Ferroma 有两个存储（§1），因此一份备份是两半，且必须一起保存：
 
-| 文件 | 内容 |
+| 一半 | 保存什么 |
 |---|---|
-| `ferroma.dump` | `pg_dump --format=custom --compress=6`，整个数据库 |
-| `schema.sql` | `pg_dump --schema-only`，空但正确的结构 |
-| `maildir.tar.gz` | 邮件根的 `tar -czf` |
-| `config.tar.gz` | `ferroma.toml`、DKIM 密钥、TLS 材料（排除 `*.env` 与 `credentials*`） |
-| `MANIFEST` | `ferroma_backup_version=1`、`created_at`、`database`、`postgres_version`、`ferroma_version`、`hostname` |
-| `SHA256SUMS` | `sha256sum ./*`，让恢复过程能证明归档在传输中完好 |
+| PostgreSQL 数据库 | 应用查询的每一个事实：`mailboxes`、`folders`、`messages`、`attachments`、`mail_queue`、变更日志 |
+| `ferroma-data` 卷 | 字节：Maildir、附件二进制存储、DKIM 私钥，以及数据目录自己的文件 —— `<data_dir>/database.json`（本实例记住的数据库地址），以及密钥是被生成而非配置时留下的 `<data_dir>/jwt_secret` |
 
-脚本自身的头部写明了规则：
-
-> 只包含前两项之一的备份不是备份：数据库说某封邮件存在，Maildir 持有它的字节，单独恢复
-> 任何一半，得到的要么是一个满是悬空行的邮箱，要么是一个满是孤儿文件的目录。
-
-具体来说，两种失败模式是：
-
-| 恢复了 | 结果 |
+| 单独恢复 | 结果 |
 |---|---|
 | 只有数据库 | 每条 `messages.storage_path` 都指向一个不存在的文件。每次读取都是 `StorageError::BodyMissing`；用户看到一个只有主题、没有正文的收件箱 |
 | 只有 Maildir | 文件存在，但没有任何东西知道它们。文件夹显示为空；在运维者手工重新导入之前，这些字节是不可见的 |
 
-两者都无法由应用恢复，这就是为什么 `scripts/restore.sh` 在你要求 `--db-only` 或
-`--mail-only` 时会打印警告，也是为什么 compose 的备份 sidecar 同时挂载两者。
+数据库是*存在什么*的权威，文件系统是*字节*的权威，两者都不能由对方重建 —— 这就是只含
+其中一半的备份不算备份的原因。无论用什么来备份这个卷，都必须把它当作含密对象：它带着
+DKIM 私钥，通常还带着 `<data_dir>/jwt_secret`。见 [security.md](security.md) §13。
 
 ### 8.2 在线备份的一致性
 
 * **数据库那一半是单次 `pg_dump`**，因此它是某一个时间点的一致快照。
-* **Maildir 那一半是实时 `tar`。** Maildir 写入是原子 rename，因此归档可能漏掉一次正在
-  进行的投递，但绝不会包含写了一半的文件。因此在 dump 期间投递的一封邮件，可能存在于
-  Maildir 却不在数据库里（孤儿文件），或者（可能性小得多，也更糟）两边都不存在，后一种
-  情况下投递它的那次 SMTP 事务还没有被应答，发件人会重试。
-* **孤儿方向才是安全的那一边**，这正是投递算法先写文件再写行的原因。
-  `Maildir::sweep_tmp` 与完整性报告就是发现孤儿的手段。
+* **卷那一半是实时拷贝。** Maildir 写入是原子 rename，因此对卷做 `tar` 可能漏掉一次
+  正在进行的投递，但绝不会包含写了一半的文件：在拷贝期间投递的一封邮件，可能以文件
+  形式存在却不在数据库里（孤儿），或者（可能性小得多）两边都不存在，后一种情况下投递
+  它的那次 SMTP 事务还没有被应答，发件人会重试。
+* **两半不是同一瞬间，而取用顺序决定了不一致偏向哪一边。** 先取数据库 dump、后拷贝
+  卷：落在窗口里的邮件就会是一个多出来、没有对应行的文件 —— 这正是安全的方向，也是
+  投递算法「先写文件、再写行」所取的方向。把顺序反过来，窗口留下的就是有行却没有文件
+  的邮件：用户读到 `BodyMissing`，而且没有任何字节可以恢复。不要拿卷的文件系统快照去
+  配一份实时 `pg_dump`，还假定两者一致。
 
-如果你需要完全一致的一对，停掉容器：
+如果你需要两半严格是同一瞬间，在整个窗口内停掉应用：
 
 ```bash
 docker compose stop ferroma
-docker compose run --rm backup
+docker compose exec -T postgres sh -c \
+  'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom --compress=6' > ferroma.dump
+docker run --rm -v ferroma-data:/data -v "$PWD":/backup alpine \
+  tar -czf /backup/ferroma-data.tar.gz -C /data .
 docker compose start ferroma
 ```
 
-这是唯一能保证没有在途事务被拆到两半的方式。对大多数部署来说，在线备份已经足够正确，
-因为孤儿文件是无害的，而漏掉的邮件会被发信方 MTA 重试。
+`docker compose stop` 只停掉应用：已经收进队列的邮件在数据库里，而对端 MTA 的连接断开
+后会重试，因此这段窗口的代价是投递延迟，而不是丢信。
 
-### 8.3 恢复顺序
+外部数据库形态没有可以 `exec` 进去的 `postgres` 服务，数据库那一半要改用一次性客户端
+容器来取，顺序不变：
 
-`scripts/restore.sh` 遵循项目书 §47，按依赖图要求的顺序执行：
-
-```text
-0. verify      sha256sum -c SHA256SUMS   (abort on mismatch)
-               print MANIFEST
-1. database    pg_restore --no-owner --no-privileges --exit-on-error
-               refuses a non-empty database unless FORCE_RESTORE=1
-2. mail store  tar -xzf maildir.tar.gz
-3. config      tar -xzf config.tar.gz
+```bash
+docker run --rm --network host -e PGPASSWORD postgres:16-alpine \
+  pg_dump -h 127.0.0.1 -U ferroma -d ferroma --format=custom --compress=6 > ferroma.dump
 ```
 
-数据库放第一位，因为它是定义「应该存在什么」的那一半；Maildir 第二位，这样到服务器启动时
-每一行都已经有了自己的文件。配置放最后，因此一次中途失败的恢复不会留下一个指向错误 TLS
-证书的运行中服务器。
+`PGPASSWORD` 从环境（`.env`）读取，`-U`/`-d` 取该文件里的 `POSTGRES_USER`/
+`POSTGRES_DB`（默认都是 `ferroma`）；卷那一半没有任何变化。
 
-`restore_db` 拒绝覆盖已有内容的数据库，给出的消息里包含它找到的表数量：
+对大多数部署来说，在线取得的一对已经足够正确，因为孤儿文件是无害的，而漏掉的邮件会被
+发信方 MTA 重试 —— 但这是一对应该验证而不是假定的东西，见 §8.3。
+
+### 8.3 恢复顺序，以及恢复后的验证
+
+按依赖图要求的顺序恢复：
 
 ```text
-database ferroma is not empty (19 tables). Set FORCE_RESTORE=1 to overwrite,
-or restore into a fresh database.
+1. database   pg_restore --no-owner --no-privileges --exit-on-error, into an empty database
+2. volume     tar -xzf, over the ferroma-data volume
+3. secrets    .env, TLS material, and the rest of §8.4
 ```
 
-（19 是 `0001_initial.sql` 创建的表数量；真实消息里的数字是 `information_schema.tables`
-为 `public` 报告的数量。）
+数据库放第一位，因为它是定义「应该存在什么」的那一半；卷第二位，这样到服务器启动时每
+一行都已经有了自己的文件。密钥与配置放最后，因此一次中途失败的恢复不会留下一个指向
+错误 TLS 证书的运行中服务器。
 
-这道守卫是脚本里最有价值的一行。静默合并两个邮件存储，正是运维者丢掉一周邮件的方式，
-而没有任何自动化工具能分辨「在现有库上恢复」和「糟糕，连错数据库了」。
+```bash
+docker compose stop ferroma
+
+# 1. 数据库，恢复进一个空的、自己的数据库
+docker compose exec -T postgres sh -c \
+  'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-privileges --exit-on-error' < ferroma.dump
+
+# 2. 卷；tar 是以 root 写的，因此用 root 解包会恢复服务所需的 uid 10001 属主
+docker run --rm -v ferroma-data:/data -v "$PWD":/backup alpine \
+  sh -c 'tar -xzf /backup/ferroma-data.tar.gz -C /data && chown -R 10001:10001 /data'
+
+docker compose start ferroma
+```
+
+`pg_restore` 用于 `--format=custom` 的 dump；`pg_dumpall` 或纯 SQL 的 dump 则交给
+`psql`。要恢复进一个空的数据库：`pg_restore` 会把每一个已经存在的对象都报成错误，而
+静默合并两个邮件存储正是运维者丢掉一周邮件的方式 —— 没有任何工具能分辨「在现有库上
+恢复」和「糟糕，连错数据库了」。如果目标库不为空，停下来先核对。
+
+然后从应用容器里，用 §9 的不变量验证这一对：
+
+```bash
+docker compose exec ferroma ferroma storage verify --details
+```
+
+它报告检查了多少条邮件行、多少条缺失自己的文件、以及任何大小不符；`--details` 打印
+每一类的前 50 条，这次运行还会清扫超过一小时的废弃 `tmp/` 文件。退出码非零表示邮件
+存储不一致。有两种结果需要在意：
+
+* **缺失的正文**意味着两半不属于彼此 —— 备份本身不一致，或者卷那一半没有恢复。在
+  解决之前不要对外提供邮件服务；没有任何办法能把一行记录变回 RFC 5322 字节。
+* **孤儿文件**是在线备份（dump 之后投递的文件）和一次被中断的投递所留下的预期残留。
+  `ferroma storage verify` 不枚举它们；要看它们得用 §9.2 的 `comm` 清单。在确认恢复
+  完整之前不要删除任何一个。`ferroma storage gc --dry-run` 是另一份清单 —— 未引用的
+  附件 blob，不是 Maildir 文件。
+
+校验和、计数器和 `uid_next` 不在 `verify` 的范围内；对于大小一致还不足以说明问题的
+情况，由 §9.3 和 §9.4 覆盖。
 
 ### 8.4 还必须保留什么
 
 | 项目 | 原因 | 存放位置 |
 |---|---|---|
 | `ferroma.toml` | 上限、端口、TLS 路径、`api.public_url`、`server.hostname` | `config/ferroma.toml`，以只读方式挂载 |
-| `[api] jwt_secret` / `FERROMA_JWT_SECRET` | 没有它，每次重启都会让所有会话失效 | 环境变量，**不**在配置归档里 |
-| DKIM 私钥 | 丢失意味着所有签名失效、DMARC 开始失败 | `domains.dkim_private_key` **和** `/etc/ferroma/dkim/*.private` |
-| TLS 证书与私钥 | 丢失意味着在重新签发之前 TLS 一直中断 | `/etc/ferroma/tls/` |
-| PostgreSQL 角色与数据库 | 恢复需要有地方可恢复进去 | `postgres` 服务 |
+| `[api] jwt_secret` / `FERROMA_JWT_SECRET` | 没有它，每次重启都会让所有会话失效 | 环境变量；若它是被生成而非配置的，则在卷内的 `<data_dir>/jwt_secret` |
+| DKIM 私钥 | 丢失意味着所有签名失效、DMARC 开始失败 | `domains.dkim_private_key` **和** `dkim.private_key_path` 指向的文件 —— 卷内的 `/var/lib/ferroma/dkim/<selector>.private`，或 `./dkim` 只读挂载 |
+| TLS 证书与私钥 | 丢失意味着在重新签发之前 TLS 一直中断 | `/etc/ferroma/tls/`，`./tls` 绑定挂载 —— 不在数据卷里 |
+| `.env` | 数据库服务的 `POSTGRES_PASSWORD`，通常还有 `FERROMA_JWT_SECRET` | 主机上、被 gitignore 的文件；不再有任何随附的工具替你排除它 |
+| PostgreSQL 角色与数据库 | 恢复需要有地方可恢复进去 | `postgres` 服务，或主机自己的服务器 |
 
-JWT 密钥刻意被排除在 `config.tar.gz` 之外
-（`--exclude='*.env' --exclude='credentials*'`），因为备份卷的保护可能弱于密钥存储。
-把它放在你用于密钥的任何地方，见 [security.md](security.md) §10 与
+`ferroma-data` 卷的归档是含密的 —— DKIM 私钥、通常还有 `<data_dir>/jwt_secret` 都在
+里面 —— 而且不再有脚本替你排除任何东西。加密这份归档，把它放在你存放密钥的地方，像
+对待数据库一样对待卷的副本。见 [security.md](security.md) §13 与
 [deployment.md](deployment.md) §4。
 
 ---
@@ -972,10 +1012,10 @@ HAVING f.message_count <> COUNT(m.id) FILTER (WHERE m.expunged_at IS NULL)
 | 无人引用的 blob | 用刚收集的 keep 集合跑 `AttachmentStore::gc` |
 | 残留的 `tmp/` 文件 | 在线服务器用 `Maildir::sweep_tmp(3600)`，已停止的服务器用 `sweep_tmp(0)` |
 
-脚本与 API 提到了一个 `ferroma storage verify` 子命令来包装上述全部检查，以及一个
-`POST /api/v1/storage/gc` 端点来运行 blob 回收器。两者都是 _(计划中)_：`ferroma`
-二进制还没有实现子命令接口（`server/src/main.rs` 打印构建横幅后退出）。在它们存在之前，
-本节中的 `psql` 与 shell 片段就是操作流程。
+`ferroma storage verify` 覆盖上表中的正文缺失与大小不符两项，并清扫超过一小时的
+废弃 `tmp/` 文件；它不枚举 §9.2 的孤儿文件。`POST /api/v1/storage/gc` 运行 blob 回收
+器，并清扫 blob 根与 Maildir 根下的 `tmp/` 区域。其余检查 —— 孤儿、校验和、计数器
+漂移与 `uid_next` —— 仍然是本节中的 `psql` 与 shell 片段。
 
 ---
 

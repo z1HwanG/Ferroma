@@ -134,12 +134,24 @@ pub struct SetupStatusResponse {
     pub required: bool,
     /// The hostname the running configuration advertises.
     ///
-    /// `POST /setup` takes a `hostname`, and the running configuration cannot be
-    /// rewritten underneath the process — so the wizard is handed the value the server
-    /// already answers on, and a submission that disagrees is refused rather than
-    /// silently dropped. Without this the operator typed a hostname that went nowhere
-    /// and the DNS panel contradicted them on the next screen.
+    /// The wizard prefills its hostname field from this. Submitting a different value no
+    /// longer fails: it is stored as a setting and adopted on the next start, because the
+    /// running configuration cannot be rewritten underneath the process.
     pub hostname: String,
+    /// The externally reachable URL the running configuration advertises.
+    pub public_url: String,
+    /// Address the HTTP API currently listens on.
+    pub api_host: String,
+    /// Port the HTTP API currently listens on.
+    pub api_port: u16,
+    /// Whether TLS is on for the current process.
+    pub tls_enabled: bool,
+    /// Certificate bundle the running configuration loads, when one is configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_cert: Option<String>,
+    /// Its private key, when one is configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_key: Option<String>,
 }
 
 /// The `POST /api/v1/setup` body.
@@ -151,8 +163,63 @@ pub struct SetupRequest {
     pub password: String,
     /// The server hostname to adopt.
     pub hostname: Option<String>,
+    /// The externally reachable URL to adopt, e.g. `https://mail.example.com`.
+    pub public_url: Option<String>,
     /// The domain to create, e.g. `example.com`.
     pub domain: String,
+    /// Optional description for that domain.
+    pub domain_description: Option<String>,
+    /// Address the HTTP API should listen on after the next start.
+    pub api_host: Option<String>,
+    /// Port the HTTP API should listen on after the next start.
+    pub api_port: Option<u16>,
+    /// Whether TLS should be on after the next start.
+    pub tls_enabled: Option<bool>,
+    /// Certificate bundle (leaf first) to load after the next start.
+    pub tls_cert: Option<String>,
+    /// Its private key.
+    pub tls_key: Option<String>,
+}
+
+/// What the wizard stored for the next start.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SetupApplied {
+    /// The hostname written to `server.hostname`, when it differed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+    /// The URL written to `api.public_url`, when it differed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_url: Option<String>,
+    /// The address written to `api.host`, when it differed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_host: Option<String>,
+    /// The port written to `api.port`, when it differed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_port: Option<u16>,
+    /// The TLS switch written to `tls.enabled`, when it differed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_enabled: Option<bool>,
+    /// The certificate path written to `tls.cert_path`, when it was given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_cert: Option<String>,
+    /// The key path written to `tls.key_path`, when it was given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_key: Option<String>,
+    /// Whether a restart is needed for the stored values to take effect.
+    pub restart_required: bool,
+}
+
+/// The `POST /api/v1/setup` response: a session, plus what was stored.
+///
+/// The token fields stay at the top level (`flatten`) because the wizard hands the body
+/// straight to the shared `setTokens`, exactly as `POST /auth/login` does.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetupResponse {
+    /// The administrator's session.
+    #[serde(flatten)]
+    pub tokens: TokenResponse,
+    /// The settings written for the next start.
+    pub applied: SetupApplied,
 }
 
 /// `GET /api/v1/storage`
@@ -424,6 +491,22 @@ pub async fn setup_status(
     Ok(Json(SetupStatusResponse {
         required: setup_required(&state).await?,
         hostname: state.config.server.hostname.clone(),
+        public_url: state.config.api.public_url.clone(),
+        api_host: state.config.api.host.clone(),
+        api_port: state.config.api.port,
+        tls_enabled: state.config.tls.enabled,
+        tls_cert: state
+            .config
+            .tls
+            .cert_path
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        tls_key: state
+            .config
+            .tls
+            .key_path
+            .as_ref()
+            .map(|path| path.display().to_string()),
     }))
 }
 
@@ -439,7 +522,7 @@ pub async fn setup_required(state: &AppState) -> Result<bool, ApiError> {
 pub async fn setup(
     State(state): State<AppState>,
     Json(request): Json<SetupRequest>,
-) -> Result<(StatusCode, Json<TokenResponse>), ApiError> {
+) -> Result<(StatusCode, Json<SetupResponse>), ApiError> {
     if !state.config.api.enable_setup_wizard {
         // `404`, matching `GET /setup`: a disabled wizard is an endpoint that is not
         // there, and the console already renders that as "disabled" rather than as the
@@ -469,24 +552,162 @@ pub async fn setup(
         ))));
     }
 
-    // The running configuration cannot be rewritten underneath the process, so a
-    // hostname that disagrees with `server.hostname` is refused instead of being
-    // silently discarded. The wizard prefills the field from `GET /setup`, so the
-    // ordinary path is an agreement; the error names the setting to change.
+    // The hostname this server advertises cannot be rewritten under a running process,
+    // so a submitted value is *stored* rather than refused: the wizard is a browser form
+    // and can only persist to the database, and `server.hostname` / `api.public_url` are
+    // read back from there on the next start (see the server's `apply_stored_settings`).
+    // It applies on the next start, and the response says so.
+    let mut applied = SetupApplied::default();
+
     if let Some(hostname) = request
         .hostname
         .as_deref()
         .map(str::trim)
-        .filter(|h| !h.is_empty())
+        .filter(|hostname| !hostname.is_empty())
     {
-        let configured = state.config.server.hostname.trim();
-        if !hostname.eq_ignore_ascii_case(configured) {
+        if ferroma_core::address::validate_domain(&ferroma_core::address::normalise_domain(hostname))
+            .is_err()
+        {
             return Err(ApiError::new(FerromaError::Invalid(format!(
-                "this server advertises {configured}; set `server.hostname` in the \
-                 configuration and restart to change it, rather than {hostname}"
+                "{hostname} is not a valid server hostname"
             ))));
         }
+        if !hostname.eq_ignore_ascii_case(state.config.server.hostname.trim()) {
+            state
+                .repos
+                .settings
+                .set("server.hostname", serde_json::json!(hostname))
+                .await?;
+            applied.hostname = Some(hostname.to_string());
+        }
     }
+
+    if let Some(public_url) = request
+        .public_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map(|url| url.trim_end_matches('/').to_string())
+    {
+        if !(public_url.starts_with("http://") || public_url.starts_with("https://")) {
+            return Err(ApiError::new(FerromaError::Invalid(
+                "the public URL must start with http:// or https://".to_string(),
+            )));
+        }
+        if public_url != state.config.api.public_url.trim_end_matches('/') {
+            state
+                .repos
+                .settings
+                .set("api.public_url", serde_json::json!(public_url))
+                .await?;
+            applied.public_url = Some(public_url);
+        }
+    }
+
+    // The HTTP listener and TLS are the same kind of value as the hostname: a running
+    // process cannot move its own socket, and the PEM files are read once at boot. They are
+    // stored instead, and the server adopts whatever nobody stated explicitly (see
+    // `apply_stored_settings`), so the wizard — not a deploy flag — is where an operator
+    // says where this instance should be reachable.
+    if let Some(api_host) = request
+        .api_host
+        .as_deref()
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+    {
+        if api_host.chars().any(char::is_whitespace) {
+            return Err(ApiError::new(FerromaError::Invalid(
+                "the listen address must not contain spaces".to_string(),
+            )));
+        }
+        if api_host != state.config.api.host.trim() {
+            state
+                .repos
+                .settings
+                .set("api.host", serde_json::json!(api_host))
+                .await?;
+            applied.api_host = Some(api_host.to_string());
+        }
+    }
+
+    if let Some(api_port) = request.api_port.filter(|port| *port != 0) {
+        if api_port != state.config.api.port {
+            state
+                .repos
+                .settings
+                .set("api.port", serde_json::json!(api_port))
+                .await?;
+            applied.api_port = Some(api_port);
+        }
+    }
+
+    if let Some(tls_enabled) = request.tls_enabled {
+        if tls_enabled != state.config.tls.enabled {
+            state
+                .repos
+                .settings
+                .set("tls.enabled", serde_json::json!(tls_enabled))
+                .await?;
+            applied.tls_enabled = Some(tls_enabled);
+        }
+    }
+
+    if let Some(cert) = request
+        .tls_cert
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    {
+        // The path is read by *this* process, not by the browser, so its existence can be
+        // checked here — and it must be, because a typo is only discovered at the next
+        // start, where it used to stop the server from coming up at all.
+        if !std::path::Path::new(cert).exists() {
+            return Err(ApiError::new(FerromaError::Invalid(format!(
+                "no file at {cert} on the server: TLS paths are read by the server process, \
+                 not by the browser (inside a container, use the mounted path)"
+            ))));
+        }
+        let current = state.config.tls.cert_path.as_ref().map(|path| path.display().to_string());
+        if current.as_deref() != Some(cert) {
+            state
+                .repos
+                .settings
+                .set("tls.cert_path", serde_json::json!(cert))
+                .await?;
+            applied.tls_cert = Some(cert.to_string());
+        }
+    }
+
+    if let Some(key) = request
+        .tls_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    {
+        if !std::path::Path::new(key).exists() {
+            return Err(ApiError::new(FerromaError::Invalid(format!(
+                "no file at {key} on the server: TLS paths are read by the server process, \
+                 not by the browser (inside a container, use the mounted path)"
+            ))));
+        }
+        let current = state.config.tls.key_path.as_ref().map(|path| path.display().to_string());
+        if current.as_deref() != Some(key) {
+            state
+                .repos
+                .settings
+                .set("tls.key_path", serde_json::json!(key))
+                .await?;
+            applied.tls_key = Some(key.to_string());
+        }
+    }
+
+    applied.restart_required = applied.hostname.is_some()
+        || applied.public_url.is_some()
+        || applied.api_host.is_some()
+        || applied.api_port.is_some()
+        || applied.tls_enabled.is_some()
+        || applied.tls_cert.is_some()
+        || applied.tls_key.is_some();
 
     // The account first: it is the only step that can fail for a reason the operator
     // can act on (a weak password, a duplicate address).
@@ -502,10 +723,16 @@ pub async fn setup(
         )
         .await?;
 
+    let description = request
+        .domain_description
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or("Created by the first-run wizard");
     let domain = state
         .repos
         .domains
-        .create(&domain_name, Some("Created by the first-run wizard"))
+        .create(&domain_name, Some(description))
         .await?;
 
     let mailbox = state
@@ -567,12 +794,15 @@ pub async fn setup(
 
     Ok((
         StatusCode::CREATED,
-        Json(TokenResponse {
-            access_token: outcome.tokens.access_token,
-            refresh_token: outcome.tokens.refresh_token,
-            token_type: "Bearer".to_string(),
-            expires_in: outcome.tokens.expires_in,
-            user: UserResponse::from_row(&outcome.user),
+        Json(SetupResponse {
+            tokens: TokenResponse {
+                access_token: outcome.tokens.access_token,
+                refresh_token: outcome.tokens.refresh_token,
+                token_type: "Bearer".to_string(),
+                expires_in: outcome.tokens.expires_in,
+                user: UserResponse::from_row(&outcome.user),
+            },
+            applied,
         }),
     ))
 }
@@ -824,18 +1054,112 @@ mod tests {
 
     #[test]
     fn the_setup_status_shape_is_the_documented_one() {
-        // `hostname` is part of the shape so the wizard can prefill the field with the
-        // value the running configuration actually advertises; `POST /setup` refuses a
-        // submission that disagrees with it.
+        // Every field the wizard prefills from, with the running configuration's values.
+        // A form that guessed these would offer to store a port the server is not on, or
+        // to enable TLS that is already on and report it as a change.
         let json = serde_json::to_value(SetupStatusResponse {
             required: true,
             hostname: "mail.example.com".to_string(),
+            public_url: "https://mail.example.com".to_string(),
+            api_host: "0.0.0.0".to_string(),
+            api_port: 8080,
+            tls_enabled: false,
+            tls_cert: None,
+            tls_key: None,
         })
         .expect("must serialise");
         assert_eq!(
             json,
-            serde_json::json!({ "required": true, "hostname": "mail.example.com" })
+            serde_json::json!({
+                "required": true,
+                "hostname": "mail.example.com",
+                "public_url": "https://mail.example.com",
+                "api_host": "0.0.0.0",
+                "api_port": 8080,
+                "tls_enabled": false
+            })
         );
+    }
+
+    #[test]
+    fn the_setup_request_takes_the_wizard_fields_as_optional() {
+        // The administrator and the domain are the whole request; everything else is a
+        // field the wizard may leave alone, and leaving it out must not be an error.
+        let minimal: SetupRequest = serde_json::from_value(serde_json::json!({
+            "email": "admin@example.com",
+            "password": "correct horse battery",
+            "domain": "example.com"
+        }))
+        .expect("must parse");
+        assert!(minimal.api_port.is_none());
+        assert!(minimal.tls_enabled.is_none());
+
+        let full: SetupRequest = serde_json::from_value(serde_json::json!({
+            "email": "admin@example.com",
+            "password": "correct horse battery",
+            "domain": "example.com",
+            "domain_description": "Wizard test",
+            "hostname": "mail.example.com",
+            "public_url": "https://mail.example.com",
+            "api_host": "127.0.0.1",
+            "api_port": 18080,
+            "tls_enabled": true,
+            "tls_cert": "/etc/ferroma/tls/fullchain.pem",
+            "tls_key": "/etc/ferroma/tls/privkey.pem"
+        }))
+        .expect("must parse");
+        assert_eq!(full.api_port, Some(18080));
+        assert_eq!(full.tls_enabled, Some(true));
+        assert_eq!(full.domain_description.as_deref(), Some("Wizard test"));
+    }
+
+    #[test]
+    fn the_setup_response_keeps_the_token_fields_at_the_top_level() {
+        // The wizard hands this body straight to the shared `setTokens`, which reads
+        // `access_token`/`refresh_token` from the top level — so the `applied` object
+        // must not push them down a level.
+        let json = serde_json::to_value(SetupResponse {
+            tokens: crate::routes::auth::TokenResponse {
+                access_token: "at".to_string(),
+                refresh_token: "rt".to_string(),
+                token_type: "Bearer".to_string(),
+                expires_in: 3600,
+                user: crate::routes::mail::shapes::UserResponse {
+                    id: 1,
+                    email: "root@example.com".to_string(),
+                    display_name: None,
+                    enabled: true,
+                    is_admin: true,
+                    quota_bytes: 0,
+                    used_bytes: 0,
+                    last_login_at: None,
+                    created_at: chrono::Utc::now(),
+                    mailboxes: None,
+                },
+            },
+            applied: SetupApplied {
+                hostname: Some("mail.example.com".to_string()),
+                public_url: None,
+                api_host: None,
+                api_port: Some(18080),
+                tls_enabled: Some(true),
+                tls_cert: None,
+                tls_key: None,
+                restart_required: true,
+            },
+        })
+        .expect("must serialise");
+
+        assert_eq!(json["access_token"], "at");
+        assert_eq!(json["refresh_token"], "rt");
+        assert_eq!(json["applied"]["hostname"], "mail.example.com");
+        assert_eq!(json["applied"]["api_port"], 18080);
+        assert_eq!(json["applied"]["tls_enabled"], true);
+        assert_eq!(json["applied"]["restart_required"], true);
+        // An unchanged value is omitted rather than sent as `null`.
+        assert!(json["applied"].get("public_url").is_none());
+        assert!(json["applied"].get("api_host").is_none());
+        assert!(json["applied"].get("tls_cert").is_none());
     }
 
     #[test]

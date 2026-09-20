@@ -4,7 +4,7 @@
 为何拒收自己邮件的运维者。
 
 本文覆盖 SMTP 的两个方向。收信侧既包括从其它 MTA 接收邮件的监听器，也包括从你自己
-用户的邮件客户端接收邮件的 submission 监听器。发信侧是解析 MX 记录、把你用户的邮件
+用户的邮件客户端接收邮件的提交监听器。发信侧是解析 MX 记录、把你用户的邮件
 投递到远端主机的队列工作器。本文规定命令集、会话状态机、每一种失败对应的应答码、
 各项限制以及每项限制在哪一层强制执行、Ferroma 前置的 `Received:` 头字段、重试计划、
 4xx 与 5xx 的分类规则，以及退信生成。
@@ -25,7 +25,7 @@
 | 端口 | 配置键 | 角色 | TLS |
 |---|---|---|---|
 | 25 | `smtp.port` | 收信 MX。接收来自其它 MTA 的邮件。未认证的对等端**只能**投递到本地域。 | 明文，提供 `STARTTLS` |
-| 587 | `smtp.submission_port` | Submission。供你用户的邮件客户端使用。`MAIL FROM` 之前必须先认证。 | 明文，策略要求 `STARTTLS` |
+| 587 | `smtp.submission_port` | 提交。供你用户的邮件客户端使用。`MAIL FROM` 之前必须先认证。 | 明文，策略要求 `STARTTLS` |
 | 465 | `smtp.smtps_port` | 隐式 TLS。策略与 587 相同；握手在最前面。`0` 表示关闭该监听器。 | 从第一个字节起就是 TLS |
 
 当 `smtp.smtps_port != 0` 而 `tls.enabled = false` 时，当两个启用的 SMTP 端口冲突时，
@@ -44,7 +44,7 @@
 | 阶段 | 命令 | 状态 |
 |---|---|---|
 | **MVP** | `EHLO`、`HELO`、`MAIL FROM`、`RCPT TO`、`DATA`、`RSET`、`NOOP`、`QUIT` | 第一个版本 |
-| **第二阶段** | `AUTH`、`STARTTLS` | submission 在第一个版本即支持；25 端口上的 `STARTTLS` 在 `tls.enabled` 后立即支持 |
+| **第二阶段** | `AUTH`、`STARTTLS` | 提交在第一个版本即支持；25 端口上的 `STARTTLS` 在 `tls.enabled` 后立即支持 |
 
 实现额外接受的命令，以及定义它们的 RFC：
 
@@ -129,7 +129,7 @@ pub enum SmtpState {
 | `helo_required` | `MAIL FROM` 在未发 `EHLO`/`HELO` 时到达 | `503 5.5.1 Send HELO/EHLO first` |
 | 顺序 | `RCPT TO` 出现在 `MAIL FROM` 之前 | `503 5.5.1 Need MAIL FROM before RCPT TO` |
 | 顺序 | `DATA` 时没有任何已被接受的收件人 | `503 5.5.1 Need RCPT TO before DATA` |
-| `require_auth_on_submission` | submission 端口上的 `MAIL FROM` 未经 AUTH | `530 5.7.0 Authentication required` |
+| `require_auth_on_submission` | 提交端口上的 `MAIL FROM` 未经 AUTH | `530 5.7.0 Authentication required` |
 | `require_tls_for_auth` | 未加密连接上的 `AUTH` | `538 5.7.11 Encryption required for requested authentication mechanism` |
 | 嵌套 `MAIL` | 事务中出现第二条 `MAIL FROM` | `503 5.5.1 Sender already specified` |
 | 嵌套 `DATA` | 已经处于 `Data` 时又来 `DATA` | 不可能：正文读取器会一直消费到终止符 |
@@ -256,7 +256,7 @@ recipient domain is anything else    →  require a successful AUTH first
 | 全局同时连接数 | `limits.max_connections` | 100 | 监听器 accept 循环 | `421 4.3.2 Too many connections, try again later`，随后关闭 |
 | 每 IP 同时连接数 | `limits.max_connections_per_ip` | 10 | 监听器 accept 循环，按源地址 | `421 4.3.2 Too many connections from your address` |
 | 每 IP 每分钟收信命令数 | `limits.smtp_rate_limit` | 100 | 命令循环，按 IP 的滑动窗口 | `421 4.7.0 Too many commands, slow down` |
-| 每账号每小时 submission 邮件数 | `limits.submission_rate_limit` | 50 | 接受已认证事务时 | `452 4.7.0 Submission rate limit exceeded` |
+| 每账号每小时提交邮件数 | `limits.submission_rate_limit` | 50 | 接受已认证事务时 | `452 4.7.0 Submission rate limit exceeded` |
 | 每账号每天邮件数 | `limits.daily_send_limit` | 500 | 接受时，从 `mail_queue` 统计，而非从内存 | `452 4.7.0 Daily send limit exceeded` |
 | 邮箱配额 | `users.quota_bytes`、`mailboxes.quota_bytes`、`limits.mailbox_quota` | 1 GiB | Maildir 写入前的 `MailboxesRepository::check_quota(mailbox_id, needed)` | `452 4.2.2 Mailbox full`——临时性错误，因此发件人在用户腾出空间后会重试 |
 | 命令超时 | `smtp.command_timeout_secs` | 300 | 命令循环，每次读取 | `421 4.4.2 Timeout waiting for command`，随后关闭 |
@@ -330,8 +330,8 @@ max_message_size` 时，当 `max_message_size` 为 `0` 时，或者当 `max_mime
 | 端口 | 发生什么 | 策略 |
 |---|---|---|
 | 25 | `EHLO` 宣告 `STARTTLS`；客户端发送 `STARTTLS`，得到 `220 2.0.0 Ready to start TLS`，双方重新协商。会话回到 `Connected`，客户端必须重新发送 `EHLO`。 | 来自其它 MTA 的邮件被机会性地接受。拒绝明文收信会丢掉所有不做 TLS 的主机发来的邮件。 |
-| 587 | 同样的升级路径，但适用 submission 策略：`require_auth_on_submission` 意味着在 AUTH 成功之前 `MAIL FROM` 被拒绝，`require_tls_for_auth` 意味着在 TLS 成功之前 AUTH 被拒绝。 | Submission。不会 `STARTTLS` 的客户端无法发信。 |
-| 465 | 从第一个八位组起就是 TLS（SMTPS）。不宣告 `STARTTLS`——没有东西可升级。 | Submission。 |
+| 587 | 同样的升级路径，但适用提交策略：`require_auth_on_submission` 意味着在 AUTH 成功之前 `MAIL FROM` 被拒绝，`require_tls_for_auth` 意味着在 TLS 成功之前 AUTH 被拒绝。 | 提交。不会 `STARTTLS` 的客户端无法发信。 |
+| 465 | 从第一个八位组起就是 TLS（SMTPS）。不宣告 `STARTTLS`——没有东西可升级。 | 提交。 |
 
 那些容易弄错、因此被明确规定的细节：
 
@@ -511,7 +511,7 @@ _(计划中)_ `ferroma-smtp::mx::MxResolver` 使用 `hickory-resolver`（由 `[d
 
 有些主机没法直接投递：公网 IP 没有 PTR 记录，或者服务商拒绝设置它（工单都提了也不行）。
 这类 IP 发出的邮件会被 Gmail 判进垃圾箱、被微软系直接拒收 —— 而**收信完全不受影响**，
-只有出站需要绕道。
+只有发信需要绕道。
 
 ```toml
 [queue]
@@ -565,7 +565,7 @@ pub fn is_temporary(&self) -> bool {
 | `FerromaError` 变体 | `code()` | 临时？ | 对一次投递的含义 |
 |---|---|---|---|
 | `Io` | `io_error` | 是 | 本地文件系统/套接字失败——再试一次 |
-| `Network` | `network_error` | 是 | 出站连接失败 |
+| `Network` | `network_error` | 是 | 发信连接失败 |
 | `Dns` | `dns_error` | 是 | MX/A 查询失败或超时 |
 | `RateLimited` | `rate_limited` | 是 | 被限流，退避 |
 | `Timeout` | `timeout` | 是 | 超过超时上限 |
@@ -584,7 +584,7 @@ pub fn is_temporary(&self) -> bool {
 | `Unsupported` | `unsupported` | 否 | 已被规定但未实现 |
 
 一句话规则：**`is_temporary() == true` ⇒ `4xx` 并重新入队；
-`is_temporary() == false` ⇒ `5xx` 并失败。** 一个协议层如果靠字符串匹配错误消息来
+`is_temporary() == false` ⇒ `5xx` 并失败。** 一个协议层如果靠字符串匹配错误信息来
 自行分类错误，那就是 bug；请新增变体或修正 `is_temporary()`。
 
 ### 12.1 收信：Ferroma 对某对等端应答什么
@@ -771,7 +771,7 @@ Maildir。`Status:` 字段携带 §12.3 的*增强*码，这样发件人的客�
 | Null MX | 是 |
 | 收件人是一个不存在的本地地址 | 在 `RCPT TO` 时生成，不是由队列生成 |
 | `queue.bounce_on_failure = false` | 不退信；失败记录在 `mail_queue` 与 `delivery_attempts` 中并在 Admin 中展示 |
-| 邮件来自本地提交且发件人仍处于连接中 | submission 已经返回 `250`；退信是唯一的反馈途径 |
+| 邮件来自本地提交且发件人仍处于连接中 | 提交已经返回 `250`；退信是唯一的反馈途径 |
 
 退信在 `In-Reply-To` 与 `References` 中携带原 `Message-ID`，因此客户端可以把
 「Undelivered Mail Returned to Sender」与用户实际发出的那封邮件串在一起。
@@ -781,7 +781,7 @@ Maildir。`Status:` 字段携带 §12.3 的*增强*码，这样发件人的客�
 ## 14. 手工诊断 SMTP
 
 项目书 §44 列出了工具。以下全部都可对本地运行的服务器使用；25 端口是收信监听器，
-587 是 submission 监听器。
+587 是提交监听器。
 
 ```bash
 # Greeting, capabilities and a full transaction, unencrypted.

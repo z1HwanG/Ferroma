@@ -4,7 +4,7 @@
 
 Ferroma is a complete mail system built from the protocols up: its own SMTP and IMAP
 servers, its own MIME and mail core, its own storage engine — plus a Webmail client,
-an admin console and a set of official cross-platform clients that talk to it over a
+an Admin console and a set of official cross-platform clients that talk to it over a
 purpose-built synchronisation protocol.
 
 It does **not** wrap Postfix, Dovecot, Stalwart or any other mail server. The point is
@@ -66,20 +66,20 @@ inside the container — 10–30 minutes, and several gigabytes of build cache �
 is the faster path onto a server:
 
 ```bash
-docker pull wesukilaye/ferroma:0.1.0
+docker pull wesukilaye/ferroma:0.1.4
 ```
 
 `docker-compose.prod.yml` and `docker-compose.external-db.yml` already default to that
 repository; pin the release you want in `.env`:
 
 ```bash
-FERROMA_VERSION=0.1.0                      # docker-compose.prod.yml: the tag to pull
-# FERROMA_IMAGE=wesukilaye/ferroma:0.1.0   # docker-compose.external-db.yml: the whole reference
+FERROMA_VERSION=0.1.4                      # docker-compose.prod.yml: the tag to pull
+# FERROMA_IMAGE=wesukilaye/ferroma:0.1.4   # docker-compose.external-db.yml: the whole reference
 ```
 
-Available tags are `0.1.0` (exact release), `0.1` (latest patch of that minor) and
-`latest` (newest release). For reproducible deployments pin the exact release, never
-`latest`.
+Available tags are `0.1.4` (an exact release) and `latest` (the newest release) — a
+release publishes those two and nothing else, so a tag always names one specific
+version. For a reproducible deployment pin the exact release, never `latest`.
 
 ### Already have PostgreSQL and a reverse proxy?
 
@@ -97,7 +97,7 @@ It writes `.env` with generated secrets, creates the role and database, builds t
 applies the migrations, installs your certificate for the SMTP/IMAP TLS listeners, starts
 the stack, creates the first administrator, generates a DKIM key, and prints the DNS
 records still to publish plus the reverse-proxy block to paste. After that:
-`./scripts/deploy.sh status | logs | backup | upgrade | restore | dkim | certs | doctor | down`.
+`./scripts/deploy.sh status | logs | upgrade | dkim | certs | doctor | down`.
 Every step, and the reasoning behind it, is in
 [`docs/deployment.md`](docs/deployment.md) §3.1.
 
@@ -118,7 +118,7 @@ export DATABASE_URL=postgres://ferroma:secret@localhost:5432/ferroma
 ./target/release/ferroma serve
 ```
 
-`ferroma serve` binds SMTP on 25 and 587, IMAP on 143, and the API, Webmail and Admin
+`ferroma serve` binds SMTP on 25 and 587, IMAP on 143, and the API, Webmail and Admin console
 on 8080 — and prints exactly what it bound, so a port you did not expect to be taken
 is visible immediately:
 
@@ -204,9 +204,9 @@ no records (`.test`, `.invalid`, `.localhost`).
 | `ferroma-smtp` — server, outbound client, MX resolution, DKIM/SPF/DMARC, inbound policy | done |
 | `ferroma-imap` — IMAP4rev1 server, including IDLE, APPEND, MOVE and EXPUNGE | done |
 | `ferroma-sync` — change log, cursors, idempotent client operations | done |
-| `ferroma-api` — REST API, Ferroma Client Protocol, WebSocket, frontend hosting | done |
+| `ferroma-api` — REST API, Ferroma Client Protocol, WebSocket, front-end hosting | done |
 | `server` — the `ferroma` binary and its operator commands | done |
-| Webmail, Admin | done |
+| Webmail, Admin console | done |
 | `client` — official desktop client **core** (sync, cache, outbox, search, multi-account) | done |
 | `client` — desktop **graphical shell** | not built |
 
@@ -223,7 +223,7 @@ cargo clippy --workspace  →  0 errors (2 `manual_is_multiple_of` notes with cl
 The official client ships as a tested shared core plus a CLI. The three-pane GUI
 described in specification §51 is the one piece that is not built.
 
-### Carried into 0.1.4
+### Carried into 0.1.5
 
 Two things found while cutting 0.1.3. Both are real, neither was worth stalling the
 release for, and neither is fixed by a mechanical edit:
@@ -240,16 +240,15 @@ release for, and neither is fixed by a mechanical edit:
   there and set `ENV FERROMA_GIT_SHA` / `FERROMA_BUILD_TIMESTAMP` before the real
   `cargo build`, **after** the dependency-cache layer, or every release would
   invalidate that layer. Deferred because it needs another arm64 build under
-  emulation (~70 minutes) and 0.1.3 was already published — see the `TODO(0.1.4)`
+  emulation (~70 minutes) and 0.1.3 was already published — see the `TODO(0.1.5)`
   comment in the `Dockerfile`.
 * **Eight documents still carry `_(planned)_` claims from before the crates existed.**
-  The count is 80, of which one is
-  `architecture.md`'s own sentence explaining the convention. Five of them
-  (`client.md`, `imap.md`, `security.md`, `smtp.md`, `sync.md`) still open with a
-  status banner calling implemented crates unimplemented; `architecture.md`'s banner
-  and product table were corrected in 0.1.3, the rest were not. Every marker is a
-  claim about behaviour that has to be checked against the code, so this is a read of
-  its own rather than a search-and-replace.
+  Five of them (`client.md`, `imap.md`, `security.md`, `smtp.md`, `sync.md`) still open
+  with a status banner calling implemented crates unimplemented; `architecture.md`'s
+  banner and product table were corrected in 0.1.3, the rest were not. Every marker is
+  a claim about behaviour that has to be checked against the code, so this is a read of
+  its own rather than a search-and-replace. [`TODO.md`](TODO.md) counts the markers per
+  document, so the numbers live in one place instead of going stale here.
 
 [`AGENTS.md`](AGENTS.md) explains the repository conventions.
 A Chinese translation of this file is at [`README_zh.md`](README_zh.md).
@@ -261,16 +260,18 @@ A Chinese translation of this file is at [`README_zh.md`](README_zh.md).
 | Document | What it covers |
 |---|---|
 | [`docs/architecture.md`](docs/architecture.md) | the system, the crate graph, and why it is shaped this way |
+| [`docs/GLOSSARY.md`](docs/GLOSSARY.md) | the terminology source: the name each thing goes by, and the names it avoids |
 | [`docs/smtp.md`](docs/smtp.md) | inbound and outbound SMTP, reply codes, the open-relay policy |
 | [`docs/imap.md`](docs/imap.md) | IMAP4rev1, folders, UIDs, flags, client compatibility |
 | [`docs/storage.md`](docs/storage.md) | the schema, the Maildir, quotas, attachments, integrity |
 | [`docs/api.md`](docs/api.md) | every HTTP endpoint, with examples |
-| [`docs/fcp.md`](docs/fcp.md) | the Ferroma Client Protocol: sync cursor, realtime, devices |
+| [`docs/fcp.md`](docs/fcp.md) | the Ferroma Client Protocol: sync cursor, real time, devices |
 | [`docs/sync.md`](docs/sync.md) | the synchronisation model in depth |
 | [`docs/security.md`](docs/security.md) | the threat model and each control, plus known gaps |
 | [`docs/deployment.md`](docs/deployment.md) | DNS, TLS, backups, upgrades, troubleshooting |
 | [`docs/client.md`](docs/client.md) | the official client's architecture and features |
-| [`CHANGELOG.md`](CHANGELOG.md) | what changed in each release, and what is queued for the next one |
+| [`CHANGELOG.md`](CHANGELOG.md) | what changed in each release |
+| [`TODO.md`](TODO.md) | what is not done yet, and what was decided against |
 
 ---
 

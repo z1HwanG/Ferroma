@@ -660,24 +660,28 @@ pub async fn seed_account(
         .expect(StatusCode::CREATED);
     let user_id = user_body["id"].as_i64().expect("user id");
 
-    let local_part = email.split('@').next().unwrap_or(email);
-    let mailbox_body = app
-        .json(
-            "POST",
-            &format!("/api/v1/users/{user_id}/mailboxes"),
-            Some(admin_token),
-            serde_json::json!({
-                "domain": domain,
-                "local_part": local_part,
-                "is_primary": true
-            }),
-        )
-        .await
-        .expect(StatusCode::CREATED);
-    let mailbox_id = mailbox_body["mailbox"]["id"].as_i64().expect("mailbox id");
+    // `POST /users` provisions the account's primary address itself — the domain was
+    // created above, so the address is part of that same response. Reading it back is
+    // what keeps this helper idempotent; creating it again would be the documented
+    // `409 conflict` for a duplicate address.
+    let mailbox_id = user_body["mailboxes"]
+        .as_array()
+        .and_then(|mailboxes| mailboxes.first())
+        .and_then(|mailbox| mailbox["id"].as_i64())
+        .unwrap_or_else(|| {
+            panic!(
+                "POST /users did not create {}'s primary address: {user_body}",
+                local_part_of(email)
+            )
+        });
 
     let token = login(app, email, password).await;
     (user_id, mailbox_id, token)
+}
+
+/// The part of an address before the `@`.
+fn local_part_of(email: &str) -> &str {
+    email.split('@').next().unwrap_or(email)
 }
 
 /// The id of one of an address's folders, by name.

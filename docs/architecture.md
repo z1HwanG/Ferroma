@@ -139,7 +139,7 @@ Non-negotiable, from [../AGENTS.md](../AGENTS.md) §4.5 and specification §8:
 decide whether an address exists; it hands the envelope to the mail core and
 turns the resulting `FerromaError` into a reply code. An IMAP `STORE` handler
 does not edit a flag string; it calls `MessagesRepository::set_flags` and the
-maildir's `set_flags`. A Webmail route does not build MIME; it calls
+Maildir's `set_flags`. A Webmail route does not build MIME; it calls
 `ferroma-mail::MessageBuilder`.
 
 The reason is not purity. It is that SMTP, IMAP, Webmail and the client API each
@@ -436,7 +436,7 @@ TLS-capable dependency is pinned to rustls in the workspace `Cargo.toml`, and
 `schannel`.
 
 **Why a bespoke FCP alongside IMAP.** IMAP cannot express a resumable cursor,
-server-side drafts, device management, chunked attachment transfer or realtime
+server-side drafts, device management, chunked attachment transfer or real-time
 push. Third-party clients keep speaking IMAP and SMTP and stay first-class
 (specification §53); official clients get a protocol that fits the job. Rationale
 and wire format: [fcp.md](fcp.md) §1.
@@ -570,7 +570,7 @@ chain, for conversation grouping.
 | Concern | Document |
 |---|---|
 | HTTP endpoints and error envelope | [api.md](api.md) |
-| FCP wire format, cursors, realtime framing, chunked upload | [fcp.md](fcp.md) |
+| FCP wire format, cursors, real-time framing, chunked upload | [fcp.md](fcp.md) |
 | SMTP commands, state machine, reply codes, outbound delivery | [smtp.md](smtp.md) |
 | IMAP commands, states, UIDs, flags, folder naming | [imap.md](imap.md) |
 | Schema, indexes, Maildir, quota, GC, backup | [storage.md](storage.md) |
@@ -578,4 +578,6 @@ chain, for conversation grouping.
 | Threat model, controls, known gaps | [security.md](security.md) |
 | DNS, compose files, TLS, backup/restore, troubleshooting | [deployment.md](deployment.md) |
 | Official desktop client | [client.md](client.md) |
+| Every term, and the form to write it in | [GLOSSARY.md](GLOSSARY.md) |
+| What is still not done | [../TODO.md](../TODO.md) |
 | Build quirks on this machine | [../AGENTS.md](../AGENTS.md) |

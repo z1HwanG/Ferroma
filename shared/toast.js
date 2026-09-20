@@ -38,6 +38,9 @@ export function toast(kind, message, options = {}) {
   while (region.children.length > MAX_VISIBLE) region.firstElementChild.remove();
 
   const lifetime = options.timeout ?? (kind === 'error' ? 9000 : 5000);
+  // The stylesheet drains a bar over exactly this long, so a toast on its way out says so
+  // instead of disappearing from under the reader.
+  node.style.setProperty('--toast-life', `${lifetime}ms`);
   window.setTimeout(close, lifetime);
 }
 

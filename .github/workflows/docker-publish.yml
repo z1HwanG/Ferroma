@@ -96,11 +96,27 @@ jobs:
       # module neither declares nor imports. That is the one that shipped a webmail
       # which never initialised, and it is invisible to the import/export checks
       # because the broken call imports nothing at all.
+      #
+      # The documents are a release artefact too: the Docker Hub page is pasted from
+      # `docs/dockerhub.md`, and every reader arrives through a link. `check-docs.mjs`
+      # resolves each relative link and anchor, and holds the rules that keep the
+      # English and Chinese sets pointing at the right file; `check-zh.mjs` holds the
+      # pair to the same headings and code fences. A document that drifts fails the
+      # release here, not in front of a reader.
+      #
+      # The site build is the second half of that: markdown renders, or it leaves its
+      # own syntax visible (`site-check.mjs` fails on `**bold**` that never became
+      # `<strong>`, an unrewritten `.md` link, or an anchor with no target). Building it
+      # here costs a second and catches what only a browser used to catch.
       - name: Every static check
         run: |
           set -euo pipefail
           node tools/check-deploy.mjs
+          node tools/check-docs.mjs
+          node tools/check-zh.mjs
           node tools/check-web.mjs
+          node tools/build-site.mjs
+          node tools/site-check.mjs
           (cd web && node tools/check.mjs)
           (cd admin && node tools/check.mjs)
 
@@ -135,15 +151,18 @@ jobs:
             exit 1
           fi
 
-          minor=$(printf '%s' "$version" | sed 's/^\([0-9]*\.[0-9]*\)\..*/\1/')
-
           {
             echo "version=$version"
             echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } >> "$GITHUB_OUTPUT"
 
-          # A pre-release never moves a rolling tag: `latest` pointing at
-          # 0.2.0-rc.1 is exactly the surprise the tag is meant to prevent.
+          # A pre-release never moves `latest`: pointing it at 0.2.0-rc.1 is
+          # exactly the surprise that tag is meant to prevent.
+          #
+          # One tag per release — `X.Y.Z` and `latest` — and deliberately no
+          # rolling `X.Y` tag: it would be a second name for the same image, and
+          # a patch release would silently rewrite a tag an operator pinned. The
+          # local script (scripts/docker-publish.sh) publishes exactly this set.
           #
           # The comma-joined list is what docker/build-push-action wants; it is
           # built with printf rather than a YAML flow list because the tags
@@ -152,7 +171,6 @@ jobs:
           case "$version" in
             *-*) ;;
             *)
-              tags="$tags,$IMAGE_REPO:$minor"
               if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.latest }}" = "true" ]; then
                 tags="$tags,$IMAGE_REPO:latest"
               fi

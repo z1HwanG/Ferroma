@@ -9,6 +9,7 @@
 
 import { clear, el, labelWithTitle, setHidden, setText } from '../shared/dom.js';
 import { t } from '../shared/i18n.js';
+import { icon } from './icons.js';
 
 /**
  * @param {string} title
@@ -141,6 +142,36 @@ export function table(options) {
   ]);
 }
 
+/**
+ * Whether a name may be created as a mail domain.
+ *
+ * This mirrors `ferroma_core::address::validate_domain` on purpose: the console used to
+ * require a dot, so a single-label domain the *server* accepts — `demo`, `localhost`, an
+ * internal-only name — could not be created from the UI at all, and the only report was
+ * "enter a valid domain". Two rules for one field is how that happens; there is one rule,
+ * and it lives on the server, so the client copy has to agree with it.
+ *
+ * ASCII only, as the server is: an internationalised domain has to be entered in its
+ * punycode form, which is what the caller's separate message is about.
+ *
+ * @param {string} value
+ */
+export function isValidDomain(value) {
+  const domain = String(value || '').trim().toLowerCase();
+  if (domain === '' || domain.length > 253) return false;
+  if (domain.startsWith('[')) return false;
+  return domain
+    .split('.')
+    .every(
+      (label) =>
+        label.length > 0 &&
+        label.length <= 63 &&
+        !label.startsWith('-') &&
+        !label.endsWith('-') &&
+        /^[a-z0-9-]+$/.test(label),
+    );
+}
+
 /** Plain text cell. */
 export function cell(text, className = '') {
   const node = el('span', { class: className });
@@ -253,6 +284,9 @@ export function statTile(options) {
   if (options.hero) classes.push('stat-hero');
   if (options.tone) classes.push(`stat-${options.tone}`);
   return el('div', { class: classes.join(' ') }, [
+    // A glyph turns a wall of numbers into a dashboard: the medallion is scannable from
+    // across the room, where the label is not.
+    options.icon ? el('span', { class: 'stat-icon' }, [icon(options.icon, 'icon')]) : null,
     el('p', { class: 'stat-label', text: options.label }),
     el('p', { class: 'stat-value', text: missing ? '—' : String(raw) }),
     options.note ? el('p', { class: 'stat-note', text: missing ? t('not reported') : options.note }) : null,

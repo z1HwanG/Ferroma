@@ -7,75 +7,125 @@
 :root {
   color-scheme: light dark;
 
-  --bg: #f4f5f7;
+  /* Surfaces, from the page behind everything to the wash under the pointer. */
+  --bg: #eef1f6;
+  --bg-glow: radial-gradient(1100px 520px at 92% -12%, rgba(47, 111, 237, 0.10), transparent 62%);
   --surface: #ffffff;
-  --surface-2: #f9fafb;
-  --surface-3: #eef0f3;
-  --border: #d9dde3;
-  --border-strong: #b9c0c9;
-  --text: #14181d;
-  --text-muted: #5c6672;
-  --text-faint: #828b96;
-  --accent: #1f6feb;
+  --surface-2: #f7f9fc;
+  --surface-3: #eceff5;
+  --topbar-bg: rgba(255, 255, 255, 0.82);
+  --border-subtle: #e7ebf2;
+  --border: #d9dfe8;
+  --border-strong: #bdc6d3;
+  --text: #10151c;
+  --text-muted: #5a6472;
+  --text-faint: #858e9c;
+  --accent: #2f6fed;
+  --accent-hover: #275fd4;
   --accent-text: #ffffff;
-  --accent-soft: #e4eefd;
-  --danger: #c8382f;
+  --accent-soft: #e7efff;
+  --accent-soft-strong: #d3e2ff;
+  --danger: #cf3a30;
   --danger-soft: #fdecea;
-  --warn: #9a6200;
-  --ok: #1a7f4b;
-  --focus: #1f6feb;
-  --shadow: 0 8px 28px rgba(15, 23, 42, 0.16);
-  --radius: 8px;
-  --radius-sm: 5px;
+  --warn: #92610b;
+  --ok: #0f7a58;
+
+  --focus: #2f6fed;
+  --ring: 0 0 0 3px rgba(47, 111, 237, 0.30);
+  --overlay: rgba(13, 18, 26, 0.46);
+
+  /* Elevation. Three steps: a resting hairline, a raised card, a floating layer. */
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.05);
+  --shadow: 0 10px 30px rgba(15, 23, 42, 0.14), 0 2px 6px rgba(15, 23, 42, 0.06);
+  --shadow-lg: 0 28px 70px rgba(15, 23, 42, 0.24), 0 6px 18px rgba(15, 23, 42, 0.10);
+
+  --radius-xs: 6px;
+  --radius-sm: 9px;
+  --radius: 14px;
+  --radius-lg: 20px;
+  --radius-pill: 999px;
+
+  /* Motion. One duration scale and one easing per intent: `--ease` out of a control,
+     `--ease-out` for something arriving. Anything longer than ~280ms feels sticky. */
+  --dur-fast: 120ms;
+  --dur: 180ms;
+  --dur-slow: 280ms;
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
   --gap: 12px;
-  --pane-folders: 232px;
-  --pane-list: 380px;
+  --pane-folders: 244px;
+  --pane-list: 388px;
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+
+  /* The chevron a `<select>` draws itself is different on every platform; this one is
+     an inline SVG so the pickers match the rest of the controls. */
+  --chevron: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235a6472' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #101317;
-    --surface: #171b21;
-    --surface-2: #1d222a;
-    --surface-3: #252b34;
-    --border: #2c333d;
-    --border-strong: #3d4653;
-    --text: #e7ebf0;
-    --text-muted: #a3adb9;
-    --text-faint: #7f8894;
+    --bg: #0d1015;
+    --bg-glow: radial-gradient(1100px 520px at 92% -12%, rgba(90, 157, 255, 0.12), transparent 62%);
+    --surface: #151a21;
+    --surface-2: #1b212a;
+    --surface-3: #232a34;
+    --topbar-bg: rgba(13, 16, 21, 0.78);
+    --border-subtle: #232a34;
+    --border: #2b333f;
+    --border-strong: #3e4856;
+    --text: #e9edf3;
+    --text-muted: #a4aebc;
+    --text-faint: #7d8796;
     --accent: #5a9dff;
-    --accent-text: #08111f;
-    --accent-soft: #1b2940;
+    --accent-hover: #77b0ff;
+    --accent-text: #07101d;
+    --accent-soft: #17243a;
+    --accent-soft-strong: #1d3153;
     --danger: #ff7b70;
     --danger-soft: #3a1f1d;
     --warn: #e0a94a;
     --ok: #5fd39a;
     --focus: #7db1ff;
-    --shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    --ring: 0 0 0 3px rgba(125, 177, 255, 0.32);
+    --overlay: rgba(4, 6, 10, 0.58);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+    --shadow-lg: 0 30px 74px rgba(0, 0, 0, 0.62);
+    --chevron: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a4aebc' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   }
 }
 
 :root[data-theme="dark"] {
-  --bg: #101317;
-  --surface: #171b21;
-  --surface-2: #1d222a;
-  --surface-3: #252b34;
-  --border: #2c333d;
-  --border-strong: #3d4653;
-  --text: #e7ebf0;
-  --text-muted: #a3adb9;
-  --text-faint: #7f8894;
+  --bg: #0d1015;
+  --bg-glow: radial-gradient(1100px 520px at 92% -12%, rgba(90, 157, 255, 0.12), transparent 62%);
+  --surface: #151a21;
+  --surface-2: #1b212a;
+  --surface-3: #232a34;
+  --topbar-bg: rgba(13, 16, 21, 0.78);
+  --border-subtle: #232a34;
+  --border: #2b333f;
+  --border-strong: #3e4856;
+  --text: #e9edf3;
+  --text-muted: #a4aebc;
+  --text-faint: #7d8796;
   --accent: #5a9dff;
-  --accent-text: #08111f;
-  --accent-soft: #1b2940;
+  --accent-hover: #77b0ff;
+  --accent-text: #07101d;
+  --accent-soft: #17243a;
+  --accent-soft-strong: #1d3153;
   --danger: #ff7b70;
   --danger-soft: #3a1f1d;
   --warn: #e0a94a;
   --ok: #5fd39a;
   --focus: #7db1ff;
-  --shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  --ring: 0 0 0 3px rgba(125, 177, 255, 0.32);
+  --overlay: rgba(4, 6, 10, 0.58);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 30px 74px rgba(0, 0, 0, 0.62);
+  --chevron: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a4aebc' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 }
 
 /* ------------------------------------------------------------------- reset */
@@ -366,6 +416,50 @@ select.input {
   color: var(--text-muted);
 }
 
+/* The sign-in card's language picker: the same segmented control the Settings dialog
+   uses, but it applies at once — the card has no Save button. */
+.login-language {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.login-language .field-label {
+  margin-bottom: 0;
+}
+
+/* A message is authored against white paper; in dark mode the frame is muted to the
+   surface colour so an un-backgrounded message is not a white slab. The document inside
+   is inverted by `reader.js`, which composes the `srcdoc`. */
+html[data-theme-resolved="dark"] .reader-html {
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+/* The sign-in card's own theme switch, in the corner the top bar's occupies once signed
+   in. */
+/* Two classes deep on purpose: `.theme-toggle` sets `position: relative`, and the two
+   rules have the same specificity, so the later one (the shared toggle) would win and put
+   this button back in the flow, on top of the brand. */
+.login-card .login-theme {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  color: var(--text-muted);
+  border-color: transparent;
+  background: transparent;
+}
+
+.login-card .login-theme:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-3);
+  border-color: transparent;
+}
+
 .login-hint {
   margin-top: 14px;
   color: var(--text-faint);
@@ -452,10 +546,6 @@ select.input {
   text-overflow: ellipsis;
 }
 
-.pane-close {
-  display: none;
-}
-
 .count-pill {
   padding: 1px 8px;
   background: var(--surface-3);
@@ -485,6 +575,79 @@ select.input {
   flex: 1 1 auto;
   overflow-y: auto;
   padding: 6px 8px;
+}
+
+/* Dropping a folder *inside* another one (a move) looks different from dropping it
+   *between* two rows of the same level (a reorder): the first lights the whole row, the
+   second draws a line where it will land. */
+/* The insertion line, drawn below the row instead of above it. */
+.folder-button.drop-after {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.folder-button.drop-into {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* The explicit "move to the top level" target: it appears at the end of the tree while a
+   nested folder is being dragged, so lifting a folder out of its parent does not depend on
+   there being empty space to aim at. */
+.folder-root-drop {
+  margin: 6px 8px;
+  padding: 8px 10px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  text-align: center;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  list-style: none;
+}
+
+.folder-root-drop.drop-root,
+.folder-root-drop:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* The tree's empty space: the way back to the top level. */
+.folder-list.drop-root {
+  background: var(--accent-soft);
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+  border-radius: var(--radius-sm);
+}
+
+/* Drag-to-reorder feedback for the folder tree: the row being moved dims, the row that
+   would take its place grows a line above itself. */
+.folder-button.is-dragging {
+  opacity: 0.45;
+}
+
+.folder-button.drop-target {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.folder-button[draggable="true"] {
+  cursor: grab;
+  /* A selected label would otherwise start a *text* drag, whose payload is the folder's
+     name — which a numeric name turns into a plausible-looking folder id. */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.folder-button[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+/* A nested folder list. The indentation is the only signal that a row belongs to the
+   one above it, so it is applied here rather than with an inline style per row. */
+.folder-children {
+  margin: 0;
+  padding: 0 0 0 14px;
+  list-style: none;
 }
 
 .folder-button {
@@ -686,32 +849,20 @@ select.input {
   height: 1px;
 }
 
-.skeleton-list {
-  padding: 10px;
-}
-
-.skeleton-row {
-  height: 42px;
-  margin-bottom: 8px;
-  background: var(--surface-3);
-  border-radius: var(--radius-sm);
-  animation: pulse 1.2s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%,
-  100% {
-    opacity: 0.55;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
 /* ------------------------------------------------------------- reading pane */
 
+/*
+ * One screenful, one scrollbar.
+ *
+ * The pane used to scroll as a whole *and* hold a frame pinned at `max(360px, 62vh)`, so
+ * a message with an attachment strip pushed the total past the pane's height: the pane grew
+ * a scrollbar, and the frame inside it grew another one whenever the message was longer
+ * than the box. Now the header and the attachment strip are fixed, the body takes exactly
+ * what is left, and the only things that ever scroll are the message inside the frame and
+ * the body itself when the attachments alone do not fit.
+ */
 .pane-reader {
-  overflow-y: auto;
+  overflow: hidden;
 }
 
 .reader-empty {
@@ -723,8 +874,10 @@ select.input {
 
 .reader {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
-  min-height: 100%;
+  min-height: 0;
+  height: 100%;
 }
 
 .reader-head {
@@ -829,8 +982,24 @@ select.input {
   height: 16px;
 }
 
+/* The strip is fixed and bounded, so a message with twenty attachments still gets a body
+   to read: past this height the attachments scroll inside their own strip. */
+.attachments {
+  flex: 0 0 auto;
+  max-height: 30vh;
+  overflow-y: auto;
+}
+
+/* The body is the growing part: it hands the frame every pixel the header and the
+   attachments did not claim, and scrolls only when its own contents (a long plain-text
+   message, or that bounded strip still being too tall) do not fit. */
 .reader-body {
+  display: flex;
   flex: 1 1 auto;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
   padding: 12px 16px 24px;
 }
 
@@ -857,7 +1026,14 @@ select.input {
 
 .reader-html {
   width: 100%;
-  min-height: 240px;
+  /* A sandboxed frame has an opaque origin: the parent cannot read its content height, so
+     it can neither be grown to fit a long message nor shrunk to fit a short one. It takes
+     the space the pane has left instead — which is what keeps a one-line message from
+     producing a page-sized white slab with its own scrollbar — and the document inside
+     scrolls when the message really is longer than the box. */
+  flex: 1 1 auto;
+  min-height: 200px;
+  height: auto;
   background: #ffffff;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -1051,6 +1227,35 @@ select.input {
   outline-offset: 1px;
 }
 
+/* The reset strips markers from every `ul`/`ol` on the page, which is right for the
+   navigation lists and wrong for a message body: a bulleted line in the editor came out
+   as plain indented text, so the toolbar button looked like it had done nothing. */
+.editor ul,
+.editor ol {
+  margin: 6px 0;
+  padding-left: 24px;
+}
+
+.editor ul {
+  list-style: disc;
+}
+
+.editor ul ul {
+  list-style: circle;
+}
+
+.editor ol {
+  list-style: decimal;
+}
+
+.editor li {
+  margin: 2px 0;
+}
+
+.editor a {
+  color: var(--accent);
+}
+
 .editor blockquote {
   margin: 8px 0 8px 10px;
   padding-left: 10px;
@@ -1240,6 +1445,1138 @@ select.input {
   font-size: 12.5px;
 }
 
+/* ================================================================= visual layer
+   Refinements that sit on top of the component rules above: depth, motion and the
+   small affordances that make a dense three-pane client feel deliberate. Placed
+   before the responsive rules so a narrow layout still wins where it must.
+   ================================================================= */
+
+/* ------------------------------------------------------------------ surfaces */
+
+body {
+  background-color: var(--bg);
+  background-image: var(--bg-glow);
+  background-attachment: fixed;
+  font-size: 13.5px;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: var(--accent-soft-strong);
+  color: var(--text);
+}
+
+/* A themed, unobtrusive scrollbar. Both spellings: `scrollbar-*` for Firefox. */
+/* Scoped to this app's own containers on purpose. A global `*` rule also lands on markup
+   a browser extension injects into the page — that is how a password manager's panel ends
+   up wearing Ferroma's scrollbar colours and surfaces. Nothing here belongs to an element
+   this app did not create. */
+:where(#app-view, #login-view, #compose-host, #modal-host, #dialog-host, #toast-region, #alert-region, #offline-banner) {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+:where(#app-view, #login-view, #compose-host, #modal-host, #dialog-host, #toast-region, #alert-region, #offline-banner) ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+:where(#app-view, #login-view, #compose-host, #modal-host, #dialog-host, #toast-region, #alert-region, #offline-banner) ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+:where(#app-view, #login-view, #compose-host, #modal-host, #dialog-host, #toast-region, #alert-region, #offline-banner) ::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 3px solid transparent;
+  border-radius: var(--radius-pill);
+  background-clip: content-box;
+}
+
+:where(#app-view, #login-view, #compose-host, #modal-host, #dialog-host, #toast-region, #alert-region, #offline-banner) ::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+  background-clip: content-box;
+}
+
+/* One ring for every interactive element, drawn only for keyboard users. */
+:where(#app-view, #login-view, #compose-host, #modal-host, #dialog-host, #toast-region, #alert-region, #offline-banner) :where(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+
+/* ------------------------------------------------------------------- controls */
+
+.btn {
+  gap: 7px;
+  min-height: 36px;
+  padding: 7px 14px;
+  border-radius: var(--radius-sm);
+  font-weight: 550;
+  transition:
+    background-color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease),
+    color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(0) scale(0.985);
+}
+
+.btn-primary {
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0));
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.18);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background-color: var(--accent-hover);
+  filter: none;
+  box-shadow: 0 6px 16px rgba(47, 111, 237, 0.28);
+}
+
+.btn-danger {
+  border-color: color-mix(in srgb, var(--danger) 46%, transparent);
+  color: var(--danger);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+}
+
+/* The folder toolbar's delete: present, but not shouting until pointed at. */
+.btn-danger-quiet {
+  color: var(--text-muted);
+}
+
+.btn-danger-quiet:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.btn-icon {
+  min-width: 36px;
+  padding: 6px;
+}
+
+.btn-small {
+  min-height: 30px;
+  padding: 4px 10px;
+  font-size: 12.5px;
+}
+
+.btn-small.btn-icon {
+  min-width: 30px;
+}
+
+.btn[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  color: var(--accent);
+}
+
+.btn-star[aria-pressed="true"] {
+  color: #e3a008;
+  border-color: color-mix(in srgb, #e3a008 50%, transparent);
+  background: color-mix(in srgb, #e3a008 14%, transparent);
+}
+
+.icon {
+  width: 18px;
+  height: 18px;
+}
+
+.btn-small .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.input {
+  min-height: 36px;
+  padding: 7px 11px;
+  border-radius: var(--radius-sm);
+  transition:
+    border-color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease),
+    background-color var(--dur) var(--ease);
+}
+
+.input:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+
+.input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+  outline: none;
+}
+
+select.input {
+  appearance: none;
+  padding-right: 32px;
+  background-image: var(--chevron);
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  background-size: 16px 16px;
+}
+
+/* --------------------------------------------------------------------- login */
+
+.login-view {
+  position: relative;
+  padding: 32px 20px;
+}
+
+.login-view::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--bg-glow);
+  pointer-events: none;
+}
+
+.login-card {
+  position: relative;
+  width: min(420px, 100%);
+  padding: 30px;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  animation: rise-in var(--dur-slow) var(--ease-out) both;
+  /* The card's coloured top rule is a `::before` on the card box; without this its square
+     corners poke out of the rounded ones, which reads as a line that "runs past" the card. */
+  overflow: hidden;
+}
+
+.login-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  background: linear-gradient(90deg, var(--accent), #7c5cff 60%, #22b8a0);
+}
+
+.login-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 23px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+
+.login-brand .brand-mark {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+}
+
+.login-brand .brand-mark svg {
+  width: 19px;
+  height: 19px;
+}
+
+/* Chrome paints an autofilled field its own pale yellow and ignores `background`;
+   a huge inset shadow is the only way to bring it back into the theme, and in dark
+   mode it is the difference between a themed form and one bright stripe. */
+.input:-webkit-autofill,
+.input:-webkit-autofill:hover,
+.input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--text);
+  box-shadow: 0 0 0 100px var(--surface) inset;
+  caret-color: var(--text);
+}
+
+.login-subtitle {
+  margin-top: 2px;
+}
+
+/* --------------------------------------------------------------------- shell */
+
+.app {
+  background: transparent;
+}
+
+.topbar {
+  position: relative;
+  z-index: 20;
+  background: var(--topbar-bg);
+  border-bottom: 1px solid var(--border-subtle);
+  backdrop-filter: blur(14px) saturate(150%);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  background: linear-gradient(145deg, var(--accent), #7c5cff);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(47, 111, 237, 0.35);
+}
+
+.brand-mark svg {
+  width: 17px;
+  height: 17px;
+}
+
+.search-form {
+  position: relative;
+}
+
+.search-input {
+  padding-left: 14px;
+  padding-right: 40px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+}
+
+.search-input:focus {
+  background: var(--surface);
+}
+
+.search-form .btn-icon {
+  position: absolute;
+  right: 3px;
+  top: 50%;
+  min-width: 30px;
+  min-height: 30px;
+  transform: translateY(-50%);
+}
+
+.search-form .btn-icon:hover:not(:disabled) {
+  transform: translateY(-50%);
+}
+
+.topbar-actions .btn-icon {
+  color: var(--text-muted);
+  border-color: transparent;
+  background: transparent;
+}
+
+.topbar-actions .btn-icon:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-3);
+  border-color: transparent;
+}
+
+/* -------------------------------------------------------------- theme switch */
+
+/* One button, two glyphs, and a rotate-and-cross-fade between them. Which glyph shows
+   is decided by `data-theme-resolved`, so `auto` displays whatever is actually on
+   screen rather than a mode name. */
+.theme-toggle {
+  position: relative;
+  overflow: hidden;
+}
+
+/* The icon turns for as long as the reveal takes; the two are one gesture. */
+.theme-toggle .icon {
+  transition:
+    transform 620ms var(--ease-out),
+    opacity 260ms var(--ease);
+}
+
+.theme-toggle .icon-moon {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  opacity: 0;
+  transform: rotate(-90deg) scale(0.4);
+}
+
+html[data-theme-resolved="dark"] .theme-toggle .icon-sun {
+  opacity: 0;
+  transform: rotate(90deg) scale(0.4);
+}
+
+html[data-theme-resolved="dark"] .theme-toggle .icon-moon {
+  opacity: 1;
+  transform: none;
+}
+
+/* ---------------------------------------------------- the light switch itself */
+
+/* The circular reveal (see `shared/theme.js`).
+   `startViewTransition` keeps a snapshot of the page before the change and one after it;
+   the incoming snapshot is then clipped to a circle that grows from the toggle, so the new
+   scheme sweeps across the window instead of cross-fading. The default cross-fade between
+   the two snapshots is switched off — the clip-path is the whole effect — and the outgoing
+   snapshot is parked underneath so the circle uncovers the new page rather than blending
+   with the old one. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+::view-transition-old(root) {
+  z-index: 1;
+}
+
+::view-transition-new(root) {
+  z-index: 2;
+}
+
+/* A ring that leaves the button as the reveal starts, so the switch has a source.
+   Drawn as the button's own `box-shadow`, not on a pseudo-element: the toggle clips its
+   contents (`overflow: hidden`, so the turning icons cannot spill), and that would clip a
+   ring growing outside it. An element's own box-shadow is not clipped by its own overflow. */
+.theme-toggle.theme-pulsing {
+  animation: theme-halo 620ms var(--ease-out);
+}
+
+@keyframes theme-halo {
+  from {
+    box-shadow: 0 0 0 0 var(--focus);
+  }
+  to {
+    box-shadow: 0 0 0 18px rgb(0 0 0 / 0%);
+  }
+}
+
+/* The icon leads the reveal: it turns before the light arrives. */
+html.theme-switching .theme-toggle .icon,
+.theme-toggle .icon {
+  transition:
+    transform 620ms var(--ease-out),
+    opacity 260ms var(--ease);
+}
+
+/* Every surface cross-fades for the length of one switch. A permanent `transition` of
+   colours on every node is the usual way to do this and the wrong one: it makes ordinary
+   hovers sluggish and shows up in a profile. `theme.js` adds this class for ~400ms. */
+html.theme-switching body,
+html.theme-switching :where(#app-view, #login-view, #compose-host, #modal-host, #dialog-host, #toast-region, #alert-region, #offline-banner),
+html.theme-switching :where(#app-view, #login-view, #compose-host, #modal-host, #dialog-host, #toast-region, #alert-region, #offline-banner) *,
+html.theme-switching :where(#app-view, #login-view, #compose-host, #modal-host, #dialog-host, #toast-region, #alert-region, #offline-banner) *::before,
+html.theme-switching :where(#app-view, #login-view, #compose-host, #modal-host, #dialog-host, #toast-region, #alert-region, #offline-banner) *::after {
+  transition:
+    background-color 320ms var(--ease),
+    border-color 320ms var(--ease),
+    color 320ms var(--ease),
+    fill 320ms var(--ease),
+    stroke 320ms var(--ease),
+    box-shadow 320ms var(--ease),
+    outline-color 320ms var(--ease) !important;
+}
+
+/* …except the toggle itself, whose whole point is the slower icon morph. */
+html.theme-switching .theme-toggle .icon {
+  transition:
+    transform 620ms var(--ease-out),
+    opacity 260ms var(--ease) !important;
+}
+
+.panes {
+  background: var(--bg);
+}
+
+.pane {
+  background: var(--surface);
+  border-color: var(--border-subtle);
+}
+
+.pane-head {
+  background: linear-gradient(180deg, var(--surface), var(--surface-2));
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.pane-title {
+  letter-spacing: -0.005em;
+}
+
+.count-pill {
+  background: var(--surface-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------------- folders */
+
+.folder-list {
+  /* The nested lists are indented, which used to push a horizontal scrollbar across
+     the bottom of the pane. The tree scrolls vertically only. */
+  overflow-x: hidden;
+  padding: 8px 10px 4px;
+}
+
+.mailbox-select {
+  width: calc(100% - 20px);
+  margin: 8px 10px 4px;
+  border-radius: var(--radius-pill);
+  background-color: var(--surface-2);
+  font-weight: 550;
+}
+
+/* The single-address case: a quiet line, not a control. It ellipsises rather than
+   clipping mid-word, and carries the full address in its title. */
+.mailbox-identity {
+  margin: 10px 12px 4px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.folder-button {
+  position: relative;
+  min-height: 34px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  transition:
+    background-color var(--dur) var(--ease),
+    color var(--dur) var(--ease),
+    padding-left var(--dur) var(--ease);
+}
+
+.folder-button::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 50%;
+  width: 3px;
+  height: 0;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  transform: translateY(-50%);
+  transition: height var(--dur) var(--ease);
+}
+
+.folder-button:hover:not([aria-current="true"]) {
+  background: var(--surface-2);
+  padding-left: 13px;
+}
+
+.folder-button[aria-current="true"] {
+  background: var(--accent-soft);
+  border-color: transparent;
+  color: var(--accent);
+}
+
+.folder-button[aria-current="true"]::before {
+  height: 18px;
+}
+
+.folder-children {
+  position: relative;
+  margin-left: 6px;
+  padding-left: 14px;
+  border-left: 1px solid var(--border-subtle);
+}
+
+.folder-unread {
+  min-width: 20px;
+  padding: 1px 7px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 1px 3px rgba(47, 111, 237, 0.35);
+}
+
+.pane-foot {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* "New folder" leads the row; rename and delete sit together on the right. */
+.pane-foot .btn:first-child {
+  margin-right: auto;
+}
+
+/* The toolbar is a strip of glyphs, not three boxed buttons: the pane already has a
+   border there, and a second row of outlines reads as clutter. */
+.pane-foot .btn {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-muted);
+}
+
+.pane-foot .btn:hover:not(:disabled) {
+  background: var(--surface-3);
+  border-color: transparent;
+  color: var(--text);
+  transform: none;
+}
+
+/* -------------------------------------------------------------- message list */
+
+.list-scroll {
+  background: var(--surface);
+  /* A row's snippet is a block with an ellipsis, but a long unbroken word in a subject
+     can still push the pane wider than it is. The list scrolls vertically, never
+     sideways — a horizontal scrollbar across the bottom of the pane was the tell. */
+  overflow-x: hidden;
+}
+
+/* The list header: select-all, title, count. The title takes the slack so the count
+   stays against the right edge. */
+.pane-head .pane-title {
+  flex: 1 1 auto;
+}
+
+.list-select-all {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+
+.row-check {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+/* The box is always on screen. It used to fade in on hover, which hid the one control
+   that makes multi-select discoverable until you already knew where to look. */
+
+.message-row {
+  grid-template-columns: 15px 14px minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.row-snippet {
+  /* A span is inline, and `text-overflow` does nothing to an inline box: the snippet
+     grew the row to its full text width instead of clipping, which is what gave the
+     pane its horizontal scrollbar. */
+  display: block;
+}
+
+.message-row {
+  position: relative;
+  margin: 2px 6px;
+  padding: 9px 10px;
+  border-radius: var(--radius-sm);
+  transition:
+    background-color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+
+.message-row::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  transition: background-color var(--dur) var(--ease);
+}
+
+.message-row:hover {
+  background: var(--surface-2);
+}
+
+.message-row.is-active {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.message-row.is-active::after {
+  background: var(--accent);
+}
+
+.message-row.is-checked {
+  background: var(--surface-3);
+}
+
+.message-row.unread .row-sender,
+.message-row.unread .row-subject {
+  font-weight: 650;
+  color: var(--text);
+}
+
+.row-sender {
+  color: var(--text-muted);
+  font-weight: 550;
+}
+
+.row-subject {
+  color: var(--text);
+}
+
+.row-snippet {
+  color: var(--text-muted);
+}
+
+.row-side,
+.row-line time {
+  font-variant-numeric: tabular-nums;
+}
+
+.row-dot .dot {
+  width: 7px;
+  height: 7px;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.row-flag {
+  opacity: 0.35;
+  transition: opacity var(--dur) var(--ease), color var(--dur) var(--ease), transform var(--dur-fast) var(--ease);
+}
+
+.message-row:hover .row-flag,
+.row-flag:focus-visible {
+  opacity: 1;
+}
+
+.row-flag[aria-pressed="true"] {
+  opacity: 1;
+  color: #e3a008;
+  border-color: transparent;
+  background: transparent;
+}
+
+.row-flag:active {
+  transform: scale(0.9);
+}
+
+/* The selection bar holds its place: it is a strip above the list, not a pop-up, so
+   ticking a row never shoves the messages down under the pointer. Only its tone changes
+   — neutral with nothing selected, accent-tinted once there is a selection — and its
+   actions are disabled rather than absent. */
+.bulk-bar {
+  margin: 0;
+  padding: 7px 10px;
+  background: var(--surface-2);
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: 0;
+  box-shadow: none;
+  transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+
+.bulk-bar.is-active {
+  background: var(--accent-soft);
+  border-bottom-color: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.bulk-count {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.bulk-bar.is-active .bulk-count {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.bulk-actions {
+  gap: 4px;
+}
+
+.bulk-bar .btn {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 4px;
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-muted);
+}
+
+.bulk-bar .btn:hover:not(:disabled) {
+  background: var(--surface-3);
+  border-color: transparent;
+  color: var(--text);
+  transform: none;
+}
+
+.bulk-bar .btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.bulk-bar .btn-danger {
+  color: var(--danger);
+}
+
+.empty {
+  display: grid;
+  place-items: center;
+  min-height: 180px;
+  padding: 28px 20px;
+  color: var(--text-faint);
+  text-align: center;
+}
+
+/* ------------------------------------------------------------- reading pane */
+
+.reader-head {
+  background: linear-gradient(180deg, var(--surface), var(--surface-2));
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.reader-subject {
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+}
+
+.reader-meta {
+  gap: 4px;
+}
+
+.meta-label {
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+}
+
+.reader-address {
+  color: var(--text-muted);
+}
+
+.reader-actions {
+  gap: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.reader-actions .btn {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-muted);
+}
+
+.reader-actions .btn:hover:not(:disabled) {
+  background: var(--surface-3);
+  border-color: transparent;
+  color: var(--text);
+}
+
+.reader-actions .btn-danger {
+  color: var(--danger);
+}
+
+.reader-actions .btn-danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+}
+
+.reader-tabs {
+  display: inline-flex;
+  gap: 2px;
+  margin-top: 12px;
+  padding: 3px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+}
+
+.tab {
+  padding: 4px 12px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 550;
+  cursor: pointer;
+  transition:
+    background-color var(--dur) var(--ease),
+    color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab[aria-pressed="true"] {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+
+.attachments {
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.attachment-chip {
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  transition:
+    background-color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease),
+    transform var(--dur-fast) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+
+.attachment-chip:hover {
+  background: var(--surface);
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.attachment-icon {
+  color: var(--accent);
+}
+
+.reader-text {
+  max-width: 78ch;
+  margin: 0 auto;
+  line-height: 1.7;
+}
+
+.reader-html {
+  border-radius: var(--radius);
+  border-color: var(--border-subtle);
+  box-shadow: var(--shadow-sm);
+}
+
+/* ------------------------------------------------------------------ dialogs */
+
+.modal {
+  background: var(--overlay);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  animation: fade-in var(--dur) var(--ease-out) both;
+}
+
+.modal-card {
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  animation: pop-in var(--dur-slow) var(--ease-out) both;
+}
+
+.modal-head {
+  padding: 14px 18px;
+  border-bottom-color: var(--border-subtle);
+}
+
+.modal-title {
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.modal-body {
+  padding: 18px;
+}
+
+.modal-foot {
+  padding: 12px 18px;
+  background: var(--surface-2);
+  border-top-color: var(--border-subtle);
+}
+
+.modal-message {
+  color: var(--text-muted);
+}
+
+/* ------------------------------------------------------------------- toasts */
+
+.toast {
+  position: relative;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  animation: toast-in var(--dur-slow) var(--ease-out) both;
+  overflow: hidden;
+}
+
+/* The bar drains over the toast's own lifetime, so a message that is about to leave
+   says so. `toast.js` sets `--toast-life`; without it the bar stays full. */
+.toast::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  height: 2px;
+  transform-origin: left center;
+  background: currentColor;
+  opacity: 0.35;
+  animation: drain var(--toast-life, 5s) linear both;
+}
+
+.toast-close {
+  border-radius: var(--radius-pill);
+  transition: background-color var(--dur) var(--ease);
+}
+
+.toast-close:hover {
+  background: var(--surface-3);
+}
+
+/* -------------------------------------------------------------- account menu */
+
+.menu {
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  animation: pop-in var(--dur) var(--ease-out) both;
+  transform-origin: top right;
+}
+
+.menu-item {
+  border-radius: var(--radius-xs);
+  transition:
+    background-color var(--dur) var(--ease),
+    padding-left var(--dur) var(--ease);
+}
+
+.menu-item:hover {
+  padding-left: 14px;
+}
+
+/* ------------------------------------------------------- segmented control */
+
+/* A three-way (or N-way) switch: one track, an animated selected pill, and a glyph per
+   choice. Used for the theme picker, where a `<select>` would hide what the options
+   are until it is opened. */
+.segmented {
+  display: inline-flex;
+  gap: 3px;
+  padding: 3px;
+  background: var(--surface-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+}
+
+.segmented-option {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  padding: 5px 13px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 550;
+  cursor: pointer;
+  transition:
+    background-color var(--dur) var(--ease),
+    color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+
+.segmented-option .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.segmented-option:hover {
+  color: var(--text);
+}
+
+.segmented-option:active {
+  transform: scale(0.97);
+}
+
+.segmented-option[aria-checked="true"] {
+  background: var(--surface);
+  color: var(--accent);
+  box-shadow: var(--shadow-sm);
+}
+
+/* A prompt asks one question: a narrow card, a label, one field, and a line that says what
+   will happen. The default modal width left a lot of empty paper around a single input. */
+.modal-card.modal-narrow {
+  width: min(420px, 100%);
+}
+
+.prompt-body {
+  display: grid;
+  gap: 8px;
+}
+
+.prompt-label {
+  margin-bottom: 0;
+  font-weight: 600;
+}
+
+.prompt-input {
+  min-height: 40px;
+  font-size: 14px;
+}
+
+.prompt-hint {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 12.5px;
+}
+
+/* ------------------------------------------------------------------ keyframes */
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(14px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes drain {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
 /* -------------------------------------------------------------- responsive */
 
 @media (max-width: 1100px) {
@@ -1272,32 +2609,10 @@ select.input {
 }
 
 @media (max-width: 640px) {
-  .panes {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .app[data-view="reader"] .pane-reader {
-    display: flex;
-  }
-
-  .pane-folders {
-    position: absolute;
-    inset: 0 auto 0 0;
-    z-index: 30;
-    width: min(280px, 82vw);
-    border-right: 1px solid var(--border);
-    box-shadow: var(--shadow);
-  }
-
-  .app:not([data-folders="open"]) .pane-folders {
-    display: none;
-  }
-
-  .pane-close {
-    display: inline-flex;
-  }
-
-  .brand,
+  /* The folders pane is part of the layout at every width; there is no drawer and no
+     button that hides it, so the grid keeps its column instead of collapsing the tree
+     into a panel the reader would have no way to open. */
+  .brand-text,
   .btn-label {
     display: none;
   }

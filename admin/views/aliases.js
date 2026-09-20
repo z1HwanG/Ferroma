@@ -15,6 +15,7 @@ import { el, setHidden, setText } from '../../shared/dom.js';
 import { formatLogStamp } from '../../shared/format.js';
 import { t, tn } from '../../shared/i18n.js';
 import { confirmDialog, openModal, promptDialog } from '../../shared/modal.js';
+import { icon } from '../icons.js';
 import { go } from '../router.js';
 import { toastError, toastSuccess } from '../../shared/toast.js';
 import {
@@ -77,7 +78,7 @@ export async function render(params) {
   });
 
   const root = el('div', {}, [
-    viewHead(t('Aliases'), t('Forwarding addresses'), [createButton]),
+    viewHead(t('Aliases'), t('Addresses that forward to one or more mailboxes'), [createButton]),
     bar,
     card.node,
   ]);
@@ -173,6 +174,7 @@ export async function render(params) {
         label: t('Type {localPart} to confirm', { localPart: alias.localPart }),
         confirmLabel: t('Delete alias'),
         requireValue: alias.localPart,
+        danger: true,
       });
       if (target === null) return;
       try {
@@ -279,9 +281,9 @@ function renderTable(aliases, handlers) {
         badge(alias.enabled ? 'enabled' : 'disabled'),
         cell(createdAt ? formatLogStamp(createdAt) : '—', 'cell-mono'),
         actions(
-          button(t('Details'), () => handlers.onDetails(alias)),
-          button(t('Retarget'), () => handlers.onEdit(alias)),
-          button(t('Delete'), () => handlers.onDelete(alias), 'btn-danger'),
+          button(t('Details'), () => handlers.onDetails(alias), '', 'details'),
+          button(t('Retarget'), () => handlers.onEdit(alias), '', 'edit'),
+          button(t('Delete'), () => handlers.onDelete(alias), 'btn-danger', 'trash'),
         ),
       ],
     };
@@ -415,8 +417,11 @@ function openAliasDialog(options, onDone) {
 
 /* -------------------------------------------------------------------- helpers */
 
-function button(label, onClick, className = '') {
-  const node = el('button', { type: 'button', class: `btn btn-small ${className}`.trim(), text: label });
+function button(label, onClick, className = '', glyph = '') {
+  const node = el('button', { type: 'button', class: `btn btn-small ${className}`.trim() }, [
+    glyph ? icon(glyph, 'icon') : null,
+    el('span', { text: label }),
+  ]);
   node.addEventListener('click', onClick);
   return node;
 }

@@ -144,12 +144,17 @@ impl MessagesRepository {
         &self.pool
     }
 
-    /// Insert a message and allocate its IMAP UID atomically.
+    /// Insert a message, allocate its IMAP UID, and keep the folder's counters true.
     ///
-    /// The `UPDATE ... RETURNING` on `folders.uid_next` takes the folder's row lock,
-    /// so two simultaneous deliveries into the same folder receive different UIDs
-    /// even though they run in separate statements. A missing folder is a
-    /// [`StorageError::NotFound`].
+    /// The `UPDATE ... RETURNING` on `folders.uid_next` takes the folder's row lock, so
+    /// two simultaneous deliveries into the same folder receive different UIDs however
+    /// they interleave. A missing folder is a [`StorageError::NotFound`].
+    ///
+    /// The counters move in the *same* statement. They used to be the caller's job —
+    /// delivery remembered to `recount`, IMAP `APPEND`/`COPY` and the draft mirroring did
+    /// not — and the result was a Drafts folder whose row said `0` while five messages sat
+    /// in it, because nothing had ever told the row otherwise. A rule that every caller has
+    /// to remember is a rule that will be forgotten; this one cannot be.
     pub async fn insert(&self, new: NewMessage) -> Result<Message> {
         if new.size_bytes < 0 {
             return Err(StorageError::Invalid("message size_bytes must be >= 0".into()));
@@ -160,24 +165,50 @@ impl MessagesRepository {
             ));
         }
 
+        // A message counts as unseen until its flag string says otherwise — the same test
+        // `recount` applies, so the incremental update and the full recomputation agree.
+        let unseen = i32::from(!flag_is_set(&new.flags, "seen"));
+
+        // Two statements, one row each, in one transaction.
+        //
+        // The first attempt at this put both updates in a single statement as two
+        // data-modifying CTEs — and PostgreSQL silently applied only one of them, because
+        // both wrote the *same* `folders` row and a row may be updated once per statement.
+        // The counters looked maintained and were not. Here the folder row is updated
+        // exactly once, carrying the UID allocation and the counters together, and the row
+        // lock that takes is still what serialises two deliveries into the same folder.
+        let mut tx = self.pool.begin().await?;
+
+        let uid = sqlx::query_scalar::<_, i64>(
+            "UPDATE folders
+                SET uid_next      = uid_next + 1,
+                    message_count = message_count + 1,
+                    unseen_count  = unseen_count + $2,
+                    total_bytes   = total_bytes + $3,
+                    updated_at    = NOW()
+              WHERE id = $1
+              RETURNING uid_next - 1",
+        )
+        .bind(new.folder_id.get())
+        .bind(unseen)
+        .bind(new.size_bytes)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| not_found(format!("folder {}", new.folder_id)))?;
+
         let message = sqlx::query_as::<_, Message>(
-            "WITH next_uid AS (
-                 UPDATE folders SET uid_next = uid_next + 1, updated_at = NOW()
-                  WHERE id = $1
-                  RETURNING uid_next - 1 AS uid
-             )
-             INSERT INTO messages (
+            "INSERT INTO messages (
                  folder_id, mailbox_id, uid, rfc_message_id, thread_id, subject, sender,
                  sender_name, snippet, size_bytes, storage_path, checksum_sha256, flags,
                  internal_date, sent_at, has_attachments, attachment_count, is_draft
              )
-             SELECT $1, $2, next_uid.uid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                    COALESCE($13::TIMESTAMPTZ, NOW()), $14, $15, $16, $17
-               FROM next_uid
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                     COALESCE($14::TIMESTAMPTZ, NOW()), $15, $16, $17, $18)
              RETURNING *",
         )
         .bind(new.folder_id.get())
         .bind(new.mailbox_id.get())
+        .bind(uid)
         .bind(new.rfc_message_id.as_deref())
         .bind(new.thread_id.as_deref())
         .bind(new.subject.as_deref())
@@ -193,10 +224,13 @@ impl MessagesRepository {
         .bind(new.has_attachments)
         .bind(new.attachment_count)
         .bind(new.is_draft)
-        .fetch_optional(&self.pool)
-        .await?;
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| not_found(format!("folder {}", new.folder_id)))?;
 
-        message.ok_or_else(|| not_found(format!("folder {}", new.folder_id)))
+        tx.commit().await?;
+
+        Ok(message)
     }
 
     /// Look a message up by row id, tombstones included.
@@ -443,6 +477,8 @@ impl MessagesRepository {
     /// The rows are *not* deleted: they become tombstones so that a client which
     /// still holds the id can be told what happened. The caller deletes the files.
     pub async fn expunge(&self, folder_id: MailboxId) -> Result<Vec<Message>> {
+        let mut tx = self.pool.begin().await?;
+
         let mut expunged = sqlx::query_as::<_, Message>(
             "UPDATE messages SET expunged_at = NOW(), updated_at = NOW()
               WHERE folder_id = $1
@@ -451,8 +487,38 @@ impl MessagesRepository {
               RETURNING *",
         )
         .bind(folder_id.get())
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await?;
+
+        if !expunged.is_empty() {
+            // The deltas are computed here rather than in SQL so the folder row is written
+            // once, by one statement: `GREATEST` keeps a folder that was already drifting
+            // from going negative.
+            let removed = expunged.len() as i64;
+            let unread = expunged
+                .iter()
+                .filter(|message| !flag_is_set(&message.flags, "seen"))
+                .count() as i64;
+            let bytes: i64 = expunged.iter().map(|message| message.size_bytes).sum();
+
+            sqlx::query(
+                "UPDATE folders
+                    SET message_count = GREATEST(message_count - $2, 0),
+                        unseen_count  = GREATEST(unseen_count - $3, 0),
+                        total_bytes   = GREATEST(total_bytes - $4, 0),
+                        updated_at    = NOW()
+                  WHERE id = $1",
+            )
+            .bind(folder_id.get())
+            .bind(removed)
+            .bind(unread)
+            .bind(bytes)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+
         // `UPDATE ... RETURNING` has no defined row order (PostgreSQL rejects
         // `ORDER BY` on `UPDATE`), so the UID ordering IMAP wants is applied here.
         expunged.sort_by_key(|message| message.uid);
@@ -470,6 +536,7 @@ impl MessagesRepository {
                 .await?,
         )
     }
+
 
     /// Move a message into another folder with a fresh UID in that folder.
     ///
@@ -904,4 +971,17 @@ impl AttachmentsRepository {
                 .await?;
         Ok(total)
     }
+
+}
+
+/// Whether a flag string contains `flag`.
+///
+/// Flags are stored bare and lower-case (`seen`, `flagged draft`), which is why
+/// `recount`'s SQL compares `'seen'` against the lower-cased string: the incremental
+/// update in `insert` and that recomputation have to agree, or a folder would drift the
+/// moment a message arrived.
+fn flag_is_set(flags: &str, flag: &str) -> bool {
+    flags
+        .split_whitespace()
+        .any(|entry| entry.eq_ignore_ascii_case(flag))
 }

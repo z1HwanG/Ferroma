@@ -715,9 +715,14 @@ Until it exists, the rules are:
 * **Never render raw `html_body` into a privileged origin.** The Webmail and
   Admin SPAs are served from the same origin as the API, so an unsanitised HTML
   body is a stored XSS against a session that can call the admin API.
-* **Render in a sandboxed iframe** with `sandbox="allow-popups"` and no
+* **Render in a sandboxed iframe** with
+  `sandbox="allow-popups allow-popups-to-escape-sandbox"` and no
   `allow-scripts`/`allow-same-origin`, and block remote content by default so a
-  tracking pixel cannot confirm that a message was read.
+  tracking pixel cannot confirm that a message was read. The frame adds
+  `<base target="_blank">`, so following a link opens it in a new tab instead of
+  replacing the message; `allow-popups-to-escape-sandbox` is what lets that tab be an
+  ordinary page rather than another sandboxed document. The framed message itself still
+  cannot run script, read this origin, or navigate its parent.
 * **The official client is not a browser.** Its reader should not execute
   anything from a message; HTML rendering goes through the same sanitiser, and
   when the sanitiser is absent it falls back to the text part.
@@ -891,16 +896,25 @@ away.
 
 | Secret | Where it must live | Where it must not |
 |---|---|---|
-| `api.jwt_secret` / `FERROMA_JWT_SECRET` | environment, or a secret manager injected as an environment variable | the config file in version control; the backup archive (`scripts/backup.sh` excludes `*.env` and `credentials*`) |
+| `api.jwt_secret` / `FERROMA_JWT_SECRET` | environment, or a secret manager injected as an environment variable; when neither is set, the server generates one into `<data_dir>/jwt_secret` | the config file in version control; `.env` or a `ferroma-data` archive left readable by others — no backup tooling ships, so nothing excludes credentials for you |
 | `POSTGRES_PASSWORD` | `.env`, gitignored, or a secret manager | the compose files, which interpolate `${POSTGRES_PASSWORD:?…}` and refuse to start without it |
 | DKIM private key | `dkim.private_key_path` on a read-only mount, or `domains.dkim_private_key` | the public `GET /api/v1/domains/:id/dkim` response, which returns only the `p=` public key |
 | TLS private key | `tls.key_path`, mounted read-only (`./tls:/etc/ferroma/tls:ro`) | the image |
 | User passwords | nowhere, ever | — |
 
+No backup tooling ships any more, so the protection of a backup is entirely the
+operator's. That matters because a backup of the data volume is secret-bearing: it
+contains the DKIM private key and, when the secret was generated rather than
+configured, `<data_dir>/jwt_secret`; the volume's `<data_dir>/database.json`
+remembers the database address, including any password carried in the URL. Encrypt
+the archive, or restrict it as tightly as the database itself.
+
 Practices the repository already enforces:
 
-* **Compose fails fast on a missing secret.** `${FERROMA_JWT_SECRET:?set FERROMA_JWT_SECRET in .env}` and `${POSTGRES_PASSWORD:?…}` mean a deployment with no secret does not start, rather than starting with a default.
-* **The config archive excludes credentials.** `tar … --exclude='*.env' --exclude='credentials*'`.
+* **The single-host compose fails fast on a missing secret.** `${FERROMA_JWT_SECRET:?set FERROMA_JWT_SECRET in .env}` and `${POSTGRES_PASSWORD:?…}` in `docker-compose.yml` mean a deployment with no secret does not start, rather than starting with a default. `docker-compose.prod.yml` deliberately leaves the JWT secret unset: the server generates one into the data volume on first start, which is one reason that volume is secret-bearing.
+* **Backups are the operator's, credentials included.** No script excludes `*.env`
+  or `credentials*` for you; an archive of `.env` or of the `ferroma-data` volume
+  must be encrypted and stored like the secrets it holds.
 * **`.env.example` carries placeholders and the generation command**, never a real value.
 * **The database container is not published.** `docker-compose.yml` uses `expose: ['5432']` on the internal network, not a host port mapping.
 * **Configuration is mounted read-only.** `./config/ferroma.toml:/etc/ferroma/ferroma.toml:ro`.
@@ -1057,7 +1071,7 @@ Consequences:
 So the failure mode is a delayed notification, not lost data — and that is the
 property that makes a single-process bus acceptable for v1. But it means
 horizontal scaling is **not** a configuration change: running two replicas behind
-a load balancer gives users a realtime experience that depends on which replica
+a load balancer gives users a real-time experience that depends on which replica
 they landed on.
 
 **Why:** a broker is another stateful service to operate, secure and monitor, and

@@ -300,7 +300,7 @@ fn maildir_folder_name(folder: &str) -> Result<String> {
 |---|---|---|
 | 作用域 | 在**单个文件夹内**唯一且单调递增 | 标识某个文件夹 UID 空间的一个*代* |
 | 存储 | `messages.uid`、`UNIQUE (folder_id, uid)` | `folders.uid_validity` |
-| 分配者 | `folders.uid_next` | 在创建邮箱时分配，默认 `1` |
+| 分配者 | `folders.uid_next` | 在创建文件夹时分配，默认 `1` |
 | 在以下情况保持稳定 | 标志变更、同一文件夹*内*的移动（并不存在这种移动） | 任何情况都不稳定，只有 UID 空间被重建时它才会变 |
 | 绝不重用 | `MessagesRepository::move_to_folder` 在目标文件夹分配一个**全新** UID；旧 UID 永不重新发放 | — |
 

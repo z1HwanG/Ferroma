@@ -105,7 +105,7 @@ export async function render() {
   const root = el('div', {}, [
     viewHead(
       t('TLS certificates'),
-      t('The certificates this server loads, and the ports that use them'),
+      t('Certificates in use, and the listeners that present them'),
       [refreshButton],
     ),
     summary,

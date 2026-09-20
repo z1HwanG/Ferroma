@@ -6,7 +6,7 @@ It does **not** replace IMAP or SMTP. Third-party clients — Thunderbird, Apple
 Outlook, phones — keep speaking IMAP and SMTP and are first-class citizens
 (specification §53). FCP exists because those protocols cannot express the things an
 official client needs: incremental sync with a resumable cursor, server-side drafts,
-device management, chunked attachment transfer and realtime push.
+device management, chunked attachment transfer and real-time push.
 
 ```text
                     Ferroma

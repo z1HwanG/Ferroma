@@ -1116,7 +1116,7 @@ evidence of the intended shape:
 | `tokio` | the async runtime; one sync task per account |
 | `sqlx` (features `sqlite`, `runtime-tokio-rustls`, `migrate`, `chrono`) | the local cache, with real migrations |
 | `reqwest` (`rustls-tls`, `json`, `stream`, `multipart`) | the FCP HTTP client, including streaming downloads and multipart uploads |
-| `tokio-tungstenite` | the realtime WebSocket (`GET /api/v1/client/events`) |
+| `tokio-tungstenite` | the real-time WebSocket (`GET /api/v1/client/events`) |
 | `serde` / `serde_json` | the wire types, matching [fcp.md](fcp.md) |
 | `chrono` | timestamps; everything is UTC |
 | `clap` | the client binary's own CLI (account management, a headless sync mode for testing) |
@@ -1137,7 +1137,7 @@ crate and nothing else from the server side ([architecture.md](architecture.md)
 
 | Topic | Document |
 |---|---|
-| FCP wire format: endpoints, cursor, realtime framing, chunked upload | [fcp.md](fcp.md) |
+| FCP wire format: endpoints, cursor, real-time framing, chunked upload | [fcp.md](fcp.md) |
 | Management API, autodiscovery, health, error envelope | [api.md](api.md) |
 | Sync model: change log, apply-then-advance, tombstones, failure matrix | [sync.md](sync.md) |
 | IMAP behaviour for third-party clients on the same accounts | [imap.md](imap.md) |

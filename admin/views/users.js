@@ -10,6 +10,7 @@ import { clear, el, setHidden, setText } from '../../shared/dom.js';
 import { formatBytes, formatLogStamp } from '../../shared/format.js';
 import { t, tn } from '../../shared/i18n.js';
 import { confirmDialog, openModal, promptDialog } from '../../shared/modal.js';
+import { icon } from '../icons.js';
 import { go } from '../router.js';
 import { toastError, toastSuccess } from '../../shared/toast.js';
 import {
@@ -23,6 +24,7 @@ import {
   filterBar,
   openDrawer,
   pager,
+  table,
   viewHead,
 } from '../ui.js';
 
@@ -83,7 +85,7 @@ export async function render(params) {
   });
 
   const root = el('div', {}, [
-    viewHead(t('Users'), t('Every account hosted by this server'), [createButton, refreshButton]),
+    viewHead(t('Users'), t('Accounts with their addresses, roles and quotas'), [createButton, refreshButton]),
     bar,
     card.node,
   ]);
@@ -126,6 +128,7 @@ export async function render(params) {
         label: t('Type {email} to confirm', { email: user.email }),
         confirmLabel: t('Delete account'),
         requireValue: user.email,
+        danger: true,
         hint: t('This cascades: addresses, folders, messages and queue rows go with it.'),
       });
       if (typed === null) return;
@@ -230,11 +233,11 @@ function renderTable(users, handlers, total, offset) {
       cell(storageLabel(user)),
       cell(user.createdAt ? formatLogStamp(user.createdAt) : '—', 'cell-mono'),
       actions(
-        button(t('Details'), () => handlers.onDetails(user)),
-        button(t('Edit'), () => handlers.onEdit(user)),
-        button(t('Password'), () => handlers.onPassword(user)),
-        button(user.enabled ? t('Disable') : t('Enable'), () => handlers.onToggle(user)),
-        button(t('Delete'), () => handlers.onDelete(user), 'btn-danger'),
+        button(t('Details'), () => handlers.onDetails(user), '', 'details'),
+        button(t('Edit'), () => handlers.onEdit(user), '', 'edit'),
+        button(t('Password'), () => handlers.onPassword(user), '', 'key'),
+        button(user.enabled ? t('Disable') : t('Enable'), () => handlers.onToggle(user), '', 'power'),
+        button(t('Delete'), () => handlers.onDelete(user), 'btn-danger', 'trash'),
       ),
     ],
   }));
@@ -458,8 +461,21 @@ function openUserDialog(options, onDone) {
             await request(`${API_BASE}/users/${user.id}`, { method: 'PATCH', body: payload, toast: false });
             toastSuccess(t('Account updated.'));
           } else {
-            await request(`${API_BASE}/users`, { method: 'POST', body: payload, toast: false });
-            toastSuccess(t('Account {email} created.', { email: payload.email }));
+            const created = await request(`${API_BASE}/users`, { method: 'POST', body: payload, toast: false });
+            // The server provisions the primary address with the account when the
+            // address's domain exists. It answers with the addresses it created, so the
+            // one case the operator has to finish by hand — a domain that does not
+            // exist yet — is reported instead of looking like success.
+            const addresses = mailboxesOf(created && created.mailboxes ? created.mailboxes : []);
+            if (addresses.length > 0) {
+              toastSuccess(t('Account {email} created with the address {address}.', {
+                email: payload.email,
+                address: addresses[0].address,
+              }));
+            } else {
+              const domain = String(payload.email).split('@')[1] || '';
+              toastError(t('The account was created, but not its address: the domain {domain} does not exist yet. Create the domain, then add the address from the account’s row.', { domain }));
+            }
           }
           modal.close('saved');
           onDone();
@@ -606,8 +622,11 @@ async function openAddressDialog(user, onDone) {
 
 /* -------------------------------------------------------------------- helpers */
 
-function button(label, onClick, className = '') {
-  const node = el('button', { type: 'button', class: `btn btn-small ${className}`.trim(), text: label });
+function button(label, onClick, className = '', glyph = '') {
+  const node = el('button', { type: 'button', class: `btn btn-small ${className}`.trim() }, [
+    glyph ? icon(glyph, 'icon') : null,
+    el('span', { text: label }),
+  ]);
   node.addEventListener('click', onClick);
   return node;
 }

@@ -331,12 +331,26 @@ if (appProfile === 'webmail') {
   const index = join(ROOT, 'index.html');
   if (existsSync(index)) {
     const source = readFileSync(index, 'utf8');
+    // The rule is what the sandbox must *deny*, not which tokens it may carry.
+    // `docs/security.md` §10.2 asks for `allow-popups` so a link in a message can open in
+    // a new tab; asserting the attribute was literally empty made that impossible and
+    // failed the documented design. Scripts and same-origin access stay forbidden.
+    const frame = /<iframe[^>]*\bsandbox="([^"]*)"/i.exec(source);
     check(
-      /sandbox=""/.test(source),
+      frame !== null,
       index,
       'html:sandbox',
-      'the message HTML frame must carry an empty sandbox attribute',
+      'the message HTML frame must carry a sandbox attribute',
     );
+    if (frame) {
+      const tokens = frame[1].split(/\s+/).filter(Boolean);
+      check(
+        !tokens.includes('allow-scripts') && !tokens.includes('allow-same-origin'),
+        index,
+        'html:sandbox',
+        `the message frame may not allow scripts or same-origin access: sandbox="${frame[1]}"`,
+      );
+    }
   }
 }
 

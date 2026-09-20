@@ -188,3 +188,10 @@ tools/               the crates proxy and the HTTPS fetcher
 A change is done when: it compiles without new warnings, its tests pass, it is
 documented, and the behaviour it claims is covered by a test that would fail if the
 behaviour regressed. "It compiles" is not done.
+
+A **documentation** change is done when `node tools/check-docs.mjs` and
+`node tools/check-zh.mjs` pass: every relative link and anchor resolves, a Chinese
+document links to its Chinese sibling rather than to the English file it mirrors, each
+pair keeps the same headings and code fences, and `docs/dockerhub.md` still carries both
+languages with English first. Both checks run in CI before a release image is built, so
+a reference that breaks in a later edit fails the release instead of the reader.

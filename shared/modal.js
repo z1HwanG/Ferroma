@@ -65,7 +65,9 @@ export function openModal(options) {
   const restoreTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 
   const card = el('div', {
-    class: `modal-card${options.size === 'wide' ? ' modal-wide' : ''}`,
+    class: `modal-card${options.size === 'wide' ? ' modal-wide' : ''}${
+      options.size === 'narrow' ? ' modal-narrow' : ''
+    }`,
     role: 'dialog',
     'aria-modal': 'true',
     'aria-label': options.title,
@@ -158,6 +160,7 @@ export function confirmDialog(options) {
       title: options.title,
       body,
       footer: [cancel, confirm],
+      size: options.size || 'narrow',
       hostId: 'dialog-host',
       onClose: () => {
         finish(false);
@@ -184,7 +187,10 @@ export function confirmDialog(options) {
 
 /**
  * A single-line prompt with an optional exact-match confirmation string.
- * @param {{title: string, label: string, confirmLabel?: string, requireValue?: string, hint?: string}} options
+ *
+ * @param {{title: string, label: string, confirmLabel?: string, requireValue?: string,
+ *          hint?: string, value?: string, placeholder?: string, danger?: boolean,
+ *          size?: 'default'|'narrow'|'wide'}} options
  * @returns {Promise<string|null>}
  */
 export function promptDialog(options) {
@@ -197,20 +203,34 @@ export function promptDialog(options) {
     };
 
     const inputId = `prompt-input-${Date.now()}`;
-    const input = el('input', { class: 'input', id: inputId, type: 'text', autocomplete: 'off' });
+    const input = el('input', {
+      class: 'input prompt-input',
+      id: inputId,
+      type: 'text',
+      autocomplete: 'off',
+      // A prompt asks one question; the placeholder shows the shape of the answer, which
+      // is what makes "链接地址（https://…）" a hint rather than a second label.
+      placeholder: options.placeholder || '',
+    });
+    // A starting value the caller can offer, e.g. the parent path a new child folder
+    // should sit under. The operator edits it or replaces it; it is a suggestion, not
+    // a fixed prefix.
+    if (typeof options.value === 'string' && options.value !== '') input.value = options.value;
     const error = el('p', { class: 'field-error', hidden: true });
     const children = [
-      el('label', { class: 'field-label', for: inputId, text: options.label }),
+      el('label', { class: 'field-label prompt-label', for: inputId, text: options.label }),
       input,
     ];
-    if (options.hint) children.push(el('p', { class: 'modal-message', text: options.hint }));
+    if (options.hint) children.push(el('p', { class: 'modal-message prompt-hint', text: options.hint }));
     children.push(error);
-    const body = el('div', {}, children);
+    const body = el('div', { class: 'prompt-body' }, children);
 
     const cancel = el('button', { type: 'button', class: 'btn', text: t('Cancel') });
+    // Destructive by default was wrong: most prompts ask for a name, a path or an address.
+    // A caller that really is about to delete something says so with `danger: true`.
     const confirm = el('button', {
       type: 'button',
-      class: 'btn btn-danger',
+      class: options.danger ? 'btn btn-danger' : 'btn btn-primary',
       text: options.confirmLabel || t('Confirm'),
     });
 
@@ -236,6 +256,7 @@ export function promptDialog(options) {
       title: options.title,
       body,
       footer: [cancel, confirm],
+      size: options.size || 'narrow',
       hostId: 'dialog-host',
       onClose: () => finish(null),
       onMount: (card) => {

@@ -65,7 +65,9 @@ pub use extract::{
     SESSION_COOKIE,
 };
 pub use logbuf::{floor_for, LogBuffer, LogEntry, LogFilter, LogSink, DEFAULT_CAPACITY};
-pub use router::{build, body_limit, client_api, cors_layer, management_api, route_table};
+pub use router::{
+    body_limit, build, client_api, cors_layer, frontends_only, management_api, route_table,
+};
 pub use service::{MessageService, SendRequest, SendResult};
 pub use state::{
     AppState, ConnTracker, ConnectionGuard, MailSender, QueueMailSender, SendOutcome,

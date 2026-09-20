@@ -518,6 +518,23 @@ impl FoldersRepository {
         name: &str,
         special_use: Option<&str>,
     ) -> Result<Folder> {
+        self.create_in(mailbox_id, name, None, special_use).await
+    }
+
+    /// Create a folder inside an address, recording its parent.
+    ///
+    /// The `name` stays the *full* IMAP path (`Archive/2026`), because that is what
+    /// `SELECT`, `RENAME`, `APPEND` and the `LIST` response must carry; `parent_id`
+    /// is the same relationship in a form the UI can walk without parsing strings.
+    /// Both are stored, and `parent_id` may be `None` for a top-level folder and for
+    /// every folder created before this column was populated.
+    pub async fn create_in(
+        &self,
+        mailbox_id: MailboxId,
+        name: &str,
+        parent_id: Option<MailboxId>,
+        special_use: Option<&str>,
+    ) -> Result<Folder> {
         let name = canonical_folder_name(name);
         if name.is_empty() {
             return Err(StorageError::Invalid(
@@ -527,15 +544,35 @@ impl FoldersRepository {
         validate_special_use(special_use)?;
 
         sqlx::query_as::<_, Folder>(
-            "INSERT INTO folders (mailbox_id, name, special_use) VALUES ($1, $2, $3) RETURNING *",
+            "INSERT INTO folders (mailbox_id, name, parent_id, special_use)
+             VALUES ($1, $2, $3, $4) RETURNING *",
         )
         .bind(mailbox_id.get())
         .bind(&name)
+        .bind(parent_id.map(|parent| parent.get()))
         .bind(special_use)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| unique_conflict(e.into(), format!("folder {name}")))
     }
+
+    /// Record the parent of an existing folder, when it has none.
+    ///
+    /// Used to adopt folders created before `parent_id` was populated: a folder whose
+    /// name contains a `/` gets the parent its name already implies. Returns whether a
+    /// row changed, so a caller can report it.
+    pub async fn set_parent(&self, id: MailboxId, parent_id: Option<MailboxId>) -> Result<bool> {
+        let done = sqlx::query(
+            "UPDATE folders SET parent_id = $2, updated_at = NOW()
+              WHERE id = $1 AND parent_id IS DISTINCT FROM $2",
+        )
+        .bind(id.get())
+        .bind(parent_id.map(|parent| parent.get()))
+        .execute(&self.pool)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
 
     /// Look a folder up by id.
     pub async fn find_by_id(&self, id: MailboxId) -> Result<Option<Folder>> {
@@ -628,6 +665,83 @@ impl FoldersRepository {
         .await
         .map_err(|e| unique_conflict(e.into(), format!("folder {new_name}")))?
         .ok_or_else(|| not_found(format!("folder {id}")))
+    }
+
+    /// Every folder beneath `id`, breadth first, by `parent_id`.
+    ///
+    /// A rename has to move them too: a child left named `Old/Child` under a folder now
+    /// called `New` is a row the tree can no longer place, and a Maildir directory that
+    /// nothing reads. The walk follows `parent_id` rather than the `/` in a name, because
+    /// a folder renamed on its own (which the console allowed) no longer spells its
+    /// ancestry out.
+    pub async fn descendants(&self, id: MailboxId) -> Result<Vec<Folder>> {
+        Ok(sqlx::query_as::<_, Folder>(
+            "WITH RECURSIVE tree AS (
+                 SELECT f.* FROM folders f WHERE f.parent_id = $1
+                 UNION ALL
+                 SELECT c.* FROM folders c JOIN tree t ON c.parent_id = t.id
+             )
+             SELECT * FROM tree ORDER BY length(name) ASC, id ASC",
+        )
+        .bind(id.get())
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    /// Rename a folder, move it under another one, and re-path every descendant — in one
+    /// transaction.
+    ///
+    /// `new_names` carries the descendant rows and the name each one takes; the caller
+    /// derives them (see the API's `rename_plan`) because the same plan also drives the
+    /// Maildir moves, and the two must agree. `new_parent` is `Some` only when the folder
+    /// is being moved: `None` means "leave the parent alone", and a move to the top level
+    /// passes the caller's explicit `Some(None)` decision as a name change with no parent
+    /// — see the API's handler, which resolves the two into `parent_id`.
+    pub async fn rename_folder_tree(
+        &self,
+        id: MailboxId,
+        new_name: &str,
+        new_parent: Option<Option<i64>>,
+        new_names: &[(i64, String)],
+    ) -> Result<Folder> {
+        let new_name = canonical_folder_name(new_name);
+        if new_name.is_empty() {
+            return Err(StorageError::Invalid(
+                "folder name must not be blank".into(),
+            ));
+        }
+
+        let mut tx = self.pool.begin().await?;
+        let renamed = match new_parent {
+            Some(parent) => sqlx::query_as::<_, Folder>(
+                "UPDATE folders SET name = $2, parent_id = $3, updated_at = NOW()
+                  WHERE id = $1 RETURNING *",
+            )
+            .bind(id.get())
+            .bind(&new_name)
+            .bind(parent),
+            None => sqlx::query_as::<_, Folder>(
+                "UPDATE folders SET name = $2, updated_at = NOW() WHERE id = $1 RETURNING *",
+            )
+            .bind(id.get())
+            .bind(&new_name),
+        }
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| unique_conflict(e.into(), format!("folder {new_name}")))?
+        .ok_or_else(|| not_found(format!("folder {id}")))?;
+
+        for (child_id, child_name) in new_names {
+            sqlx::query("UPDATE folders SET name = $2, updated_at = NOW() WHERE id = $1")
+                .bind(child_id)
+                .bind(child_name)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| unique_conflict(e.into(), format!("folder {child_name}")))?;
+        }
+
+        tx.commit().await?;
+        Ok(renamed)
     }
 
     /// Subscribe or unsubscribe a folder (IMAP `SUBSCRIBE`/`UNSUBSCRIBE`).

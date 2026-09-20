@@ -502,6 +502,19 @@ impl MessageService {
             .await?
             .unwrap_or(message);
 
+        // `unseen_count` is a denormalised counter the sidebar renders. Delivery and
+        // move recounted it, but a flag change did not, so reading a message left the
+        // unread badge untouched — permanently, since nothing else recounts that folder
+        // until the next delivery. The recount is best-effort: the flag change itself
+        // has already been committed, and a failed counter must not fail the request.
+        if let Err(err) = self.repos.folders.recount(MailboxId::new(updated.folder_id)).await {
+            tracing::warn!(
+                folder_id = updated.folder_id,
+                error = %err,
+                "folder counters could not be recomputed after a flag change"
+            );
+        }
+
         // Keep the Maildir file name in step with the flags, which is what an IMAP
         // client reads directly off the filesystem.
         let mailbox = owned_mailbox(&self.repos, MailboxId::new(updated.mailbox_id), user).await?;

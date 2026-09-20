@@ -16,6 +16,7 @@ import { clear, el, setHidden, setText } from '../../shared/dom.js';
 import { formatLogStamp } from '../../shared/format.js';
 import { t, tn } from '../../shared/i18n.js';
 import { confirmDialog, openModal, promptDialog } from '../../shared/modal.js';
+import { icon } from '../icons.js';
 import { go } from '../router.js';
 import { toastError, toastSuccess } from '../../shared/toast.js';
 import {
@@ -29,6 +30,7 @@ import {
   errorState,
   field,
   filterBar,
+  isValidDomain,
   loadingState,
   openDrawer,
   viewHead,
@@ -44,7 +46,6 @@ const STATUS_LABEL = { ok: t('ok'), warn: t('warn'), fail: t('fail'), skip: t('s
  * alphabetically, which puts the records that need work in the middle. Ranking the
  * verdicts instead means one click on Status lifts every failure to the top.
  */
-const STATUS_RANK = { fail: 0, warn: 1, ok: 2, skip: 3 };
 
 /**
  * @returns {Promise<{node: Node, cleanup: () => void}>}
@@ -72,7 +73,7 @@ export async function render() {
   const bar = filterBar({
     id: 'domains-filter-bar',
     fields: [
-      field(t('Filter'), filterInput, t('Matches the domain name or its description.')),
+      field(t('Filter'), filterInput, t('Matches a domain name or its description.')),
       el('button', { type: 'submit', class: 'btn', text: t('Filter') }),
     ],
   });
@@ -93,7 +94,7 @@ export async function render() {
   refreshButton.addEventListener('click', () => refresh());
 
   const root = el('div', {}, [
-    viewHead(t('Domains'), t('Mail domains hosted by this server'), [createButton, refreshButton]),
+    viewHead(t('Domains'), t('Domains this server accepts and delivers mail for'), [createButton, refreshButton]),
     bar,
     listCard.node,
   ]);
@@ -270,9 +271,9 @@ function renderTable(domains, handlers) {
       badge(domain.enabled ? 'enabled' : 'disabled'),
       cell(domain.createdAt ? formatLogStamp(domain.createdAt) : '—', 'cell-mono'),
       actions(
-        button(t('Details'), () => handlers.onDetails(domain)),
-        button(t('Aliases'), () => handlers.onAliases(domain)),
-        button(t('Delete'), () => handlers.onDelete(domain), 'btn-danger'),
+        button(t('Details'), () => handlers.onDetails(domain), '', 'details'),
+        button(t('Aliases'), () => handlers.onAliases(domain), '', 'aliases'),
+        button(t('Delete'), () => handlers.onDelete(domain), 'btn-danger', 'trash'),
       ),
     ],
   }));
@@ -404,7 +405,7 @@ async function loadDns(domain, host) {
     clear(host);
     host.append(
       errorState(messageOf(error, t('The DNS checks could not be run.')), [
-        button(t('Retry'), () => loadDns(domain, host)),
+        button(t('Retry'), () => loadDns(domain, host), '', 'refresh'),
       ]),
     );
   }
@@ -419,44 +420,46 @@ function renderDns(domain, report, record, onReload) {
         text: report.checkedAt ? t(' · checked {when}', { when: formatLogStamp(report.checkedAt) }) : '',
       }),
     ]),
-    el('div', { class: 'card-actions' }, [button(t('Re-run checks'), onReload)]),
+    el('div', { class: 'card-actions' }, [button(t('Re-run checks'), onReload, '', 'refresh')]),
   ]);
 
-  const rows = report.records.map((entry) => ({
-    key: entry.kind,
-    entry,
-    cells: [
-      el('span', { class: `badge badge-${entry.status}`, text: `${STATUS_GLYPH[entry.status] || '?'} ${entry.kind}` }),
-      cell(STATUS_LABEL[entry.status] || entry.status),
-      cell(entry.expected === null ? '—' : String(entry.expected), 'cell-mono'),
+  // One card per record, read top to bottom.
+  //
+  // This was a five-column table, and a DNS record is the wrong shape for one: a single
+  // SPF or DMARC value is longer than the column that held it, so the drawer showed
+  // `a:localho / st -all` and `p=quarant / ine` broken mid-word, next to a horizontal
+  // scrollbar. A record is a label, a verdict and three short facts — a card reads in one
+  // pass and its values wrap instead of being chopped.
+  const cards = report.records.map((entry) => {
+    const facts = [
+      [t('Expected'), entry.expected === null ? '—' : String(entry.expected), true],
+      [t('Found'), entry.found.length === 0 ? '—' : entry.found.join('\n'), true],
+      [t('Hint'), entry.hint || '—', false],
+    ];
+    return el('article', { class: `dns-record dns-record-${entry.status}` }, [
+      el('header', { class: 'dns-record-head' }, [
+        el('span', {
+          class: `badge badge-${entry.status}`,
+          text: `${STATUS_GLYPH[entry.status] || '?'} ${entry.kind}`,
+        }),
+        el('span', { class: 'dns-record-status', text: STATUS_LABEL[entry.status] || entry.status }),
+      ]),
       el(
-        'span',
-        { class: 'cell-mono' },
-        entry.found.length === 0
-          ? [document.createTextNode('—')]
-          : entry.found.map((value) => el('div', { class: 'truncate', title: value, text: value })),
+        'dl',
+        { class: 'dns-record-facts' },
+        facts.flatMap(([label, value, mono]) => [
+          el('dt', { text: label }),
+          el('dd', { class: mono ? 'cell-mono' : '', text: value }),
+        ]),
       ),
-      cell(entry.hint || ''),
-    ],
-  }));
+    ]);
+  });
 
   const children = [
     summary,
-    dataTable({
-      columns: [
-        { key: 'record', label: t('Record'), value: (row) => row.entry.kind },
-        { key: 'status', label: t('Status'), value: (row) => STATUS_RANK[row.entry.status] ?? 9 },
-        {
-          key: 'expected',
-          label: t('Expected'),
-          value: (row) => (row.entry.expected === null ? '' : String(row.entry.expected)),
-        },
-        { key: 'found', label: t('Found'), value: (row) => row.entry.found.join(' ') },
-        { key: 'hint', label: t('Hint'), value: (row) => row.entry.hint || '' },
-      ],
-      rows,
-      emptyMessage: t('No DNS record was checked.'),
-    }).node,
+    cards.length === 0
+      ? el('p', { class: 'view-sub', text: t('No DNS record was checked.') })
+      : el('div', { class: 'dns-records' }, cards),
   ];
 
   if (record) {
@@ -486,13 +489,13 @@ function renderDns(domain, report, record, onReload) {
       valueNode,
       el('div', { class: 'card-actions' }, [
         copy,
-        button(t('Generate new key'), () => generateDkim(domain.id, onReload)),
+        button(t('Generate new key'), () => generateDkim(domain.id, onReload), '', 'key'),
       ]),
     );
   } else {
     children.push(
       el('p', { class: 'view-sub', text: t('No DKIM key is published yet for this domain.') }),
-      el('div', { class: 'card-actions' }, [button(t('Generate DKIM key'), () => generateDkim(domain.id, onReload))]),
+      el('div', { class: 'card-actions' }, [button(t('Generate DKIM key'), () => generateDkim(domain.id, onReload), '', 'key')]),
     );
   }
 
@@ -538,7 +541,14 @@ function openCreateDialog(onDone) {
       cancel.addEventListener('click', () => modal.close('cancel'));
       create.addEventListener('click', async () => {
         const value = name.value.trim().toLowerCase();
-        if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(value)) {
+        if (/[^\x00-\x7f]/.test(value)) {
+          // The server is ASCII-only, so a Chinese domain has to arrive as punycode.
+          setText(error, t('Use the punycode (xn--) form of an internationalised domain, for example xn--fsq.com.'));
+          setHidden(error, false);
+          name.focus();
+          return;
+        }
+        if (!isValidDomain(value)) {
           setText(error, t('Enter a valid domain, for example example.com.'));
           setHidden(error, false);
           name.focus();
@@ -582,8 +592,11 @@ function addressCount(domain) {
   return count === null || count === undefined ? '—' : String(count);
 }
 
-function button(label, onClick, className = '') {
-  const node = el('button', { type: 'button', class: `btn btn-small ${className}`.trim(), text: label });
+function button(label, onClick, className = '', glyph = '') {
+  const node = el('button', { type: 'button', class: `btn btn-small ${className}`.trim() }, [
+    glyph ? icon(glyph, 'icon') : null,
+    el('span', { text: label }),
+  ]);
   node.addEventListener('click', onClick);
   return node;
 }

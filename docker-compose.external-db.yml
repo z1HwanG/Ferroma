@@ -57,15 +57,12 @@ services:
     environment:
       FERROMA_CONFIG: /etc/ferroma/ferroma.toml
       FERROMA_DATA_DIR: /var/lib/ferroma
-      # `.env` writes the short name — the one the other compose files
-      # interpolate — and the server reads the *alias*. Without this line the
-      # value is passed through under a name `Config::load` does not know, so
-      # `api.public_url` silently falls back to its default
-      # (`http://localhost:8080`), which is what then lands in `.well-known/ferroma`
-      # and in the links inside notification mail.
-      FERROMA_API_PUBLIC_URL: ${FERROMA_PUBLIC_URL:?set FERROMA_PUBLIC_URL in .env}
+      # `api.public_url` is deliberately *not* set here. It is the one value the first-run
+      # wizard collects, it is stored in the database, and the server adopts it at startup
+      # precisely because the configuration still holds the default — stating it here (or
+      # in `.env`) would make the deployment win and the wizard's answer a no-op.
     volumes:
-      # Maildir, attachments, DKIM keys, backups. This is the volume to back up.
+      # Maildir, attachments and DKIM keys. This is the volume to back up.
       - ferroma-data:/var/lib/ferroma
       # Certificates for SMTPS (465) and IMAPS (993). Read-only: Ferroma never
       # writes here. `deploy.sh` installs them with the ownership uid 10001
@@ -93,71 +90,12 @@ services:
         limits:
           memory: 2g
 
-  # Nightly logical dump of PostgreSQL plus the mail store, on the host network
-  # so that it reaches the same 127.0.0.1 database. scripts/backup.sh keeps the
-  # two halves in step — restoring one without the other loses messages — and
-  # prunes to BACKUP_RETENTION_DAYS.
-  backup:
-    # Match the server's major version, or pg_dump refuses to dump it:
-    # `POSTGRES_IMAGE=postgres:16-alpine` for a PostgreSQL 16 server.
-    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
-    container_name: ferroma-backup
-    restart: unless-stopped
-    network_mode: host
-    entrypoint: ['/bin/sh', '/usr/local/bin/backup.sh']
-    # Loop, rather than exit and be restarted: a one-shot script under
-    # `restart: always` writes a full backup every restart backoff.
-    command: ['--loop']
-    environment:
-      PGHOST: ${DB_HOST:-127.0.0.1}
-      PGPORT: ${DB_PORT:-5432}
-      PGUSER: ${POSTGRES_USER:-ferroma}
-      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
-      PGDATABASE: ${POSTGRES_DB:-ferroma}
-      BACKUP_DIR: /backups
-      MAIL_DIR: /mail
-      CONFIG_DIR: /etc/ferroma
-      RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
-      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
-      # A backup must fail loudly rather than sit in a dropped-packet connect.
-      PGCONNECT_TIMEOUT: '10'
-    volumes:
-      - ./scripts/backup.sh:/usr/local/bin/backup.sh:ro
-      # The mail store is mounted read-only: the backup never writes to it.
-      - ferroma-data:/mail:ro
-      - ./tls:/etc/ferroma/tls:ro
-      - backups:/backups
-    logging: *default-logging
-
-  # One-off restore helper, deliberately *not* started by `up` (hence the
-  # profile): restoring has to write to the mail store, which the nightly sidecar
-  # above is not allowed to do. deploy.sh stops Ferroma before running it.
-  #
-  #   docker compose -f docker-compose.external-db.yml --profile tools run --rm \
-  #     restore /backups/20260916T030000Z
-  restore:
-    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
-    profiles: ['tools']
-    network_mode: host
-    entrypoint: ['/bin/sh', '/usr/local/bin/restore.sh']
-    environment:
-      PGHOST: ${DB_HOST:-127.0.0.1}
-      PGPORT: ${DB_PORT:-5432}
-      PGUSER: ${POSTGRES_USER:-ferroma}
-      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
-      PGDATABASE: ${POSTGRES_DB:-ferroma}
-      MAIL_DIR: /mail
-      CONFIG_DIR: /etc/ferroma
-      PGCONNECT_TIMEOUT: '10'
-    volumes:
-      - ./scripts/restore.sh:/usr/local/bin/restore.sh:ro
-      - ferroma-data:/mail
-      - ./tls:/etc/ferroma/tls
-      - backups:/backups
-    logging: *default-logging
+  # No backup or restore service ships here on purpose. Back up the host's
+  # PostgreSQL and the ferroma-data volume with whatever the host already uses
+  # (pg_dump + restic/borg/rsync, a volume-level snapshot). The two halves belong
+  # together — a database restored without its Maildir loses messages and vice
+  # versa. docs/deployment.md §8 has the commands and what a backup must contain.
 
 volumes:
   ferroma-data:
     name: ferroma-data
-  backups:
-    name: ferroma-backups

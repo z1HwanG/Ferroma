@@ -206,6 +206,15 @@ pub async fn list_users(
 }
 
 /// `POST /api/v1/users`
+///
+/// When the account's own address belongs to a domain this server hosts, the primary
+/// address is created with it: the `mailboxes` row, the Maildir and the six standard
+/// folders. `ferroma user create` has always done that, and an account made in the
+/// console without it could log in to the Webmail and find no folder to open, no
+/// address to send from and nothing that worked — which is exactly what it looked like.
+/// An account whose domain does not exist yet is still created, because an
+/// administrator may legitimately exist before its domain does; the response then
+/// carries an empty address list instead of a half-built one.
 pub async fn create_user(
     State(state): State<AppState>,
     admin: AdminUser,
@@ -223,17 +232,58 @@ pub async fn create_user(
         )
         .await?;
 
+    let mut created: Vec<MailboxResponse> = Vec::new();
+    match ferroma_core::EmailAddress::parse(&user.email) {
+        Ok(address) => {
+            let domain_name = ferroma_core::address::normalise_domain(address.domain());
+            if let Some(domain) = state.repos.domains.find_by_name(&domain_name).await? {
+                match create_address(
+                    &state,
+                    UserId::new(user.id),
+                    &domain,
+                    address.local_part(),
+                    true,
+                    request.quota_bytes,
+                )
+                .await
+                {
+                    Ok((mailbox, _folders)) => {
+                        created.push(MailboxResponse::from_row(&mailbox, &domain.name));
+                    }
+                    // The account exists and is usable as a login; only its address
+                    // failed. Reporting that as a failed *creation* would leave the
+                    // operator believing nothing happened, so it is a warning plus an
+                    // empty address list the console renders honestly.
+                    Err(err) => tracing::warn!(
+                        user_id = user.id,
+                        address = %address,
+                        error = %err,
+                        "the account was created but its primary address was not"
+                    ),
+                }
+            }
+        }
+        Err(err) => tracing::warn!(user_id = user.id, error = %err, "account address is not parsable"),
+    }
+
     audit(
         &state,
         &admin,
         "user.created",
         Some("user"),
         Some(&user.id.to_string()),
-        serde_json::json!({ "email": user.email, "is_admin": user.is_admin }),
+        serde_json::json!({
+            "email": user.email,
+            "is_admin": user.is_admin,
+            "address": created.first().map(|mailbox| mailbox.address.clone()),
+        }),
     )
     .await;
 
-    Ok((StatusCode::CREATED, Json(UserResponse::from_row(&user))))
+    Ok((
+        StatusCode::CREATED,
+        Json(UserResponse::from_row(&user).with_mailboxes(created)),
+    ))
 }
 
 /// `GET /api/v1/users/:id`
@@ -432,38 +482,15 @@ pub async fn create_user_mailbox(
             )))
         })?;
 
-    // The row first: the unique index is what refuses a duplicate address, and it does
-    // so before anything is written to disk.
-    let mailbox = state
-        .repos
-        .mailboxes
-        .create(NewMailbox {
-            user_id,
-            domain_id: domain.domain_id(),
-            local_part: local_part.clone(),
-            display_name: None,
-            is_primary: request.is_primary,
-            quota_bytes: request.quota_bytes,
-        })
-        .await?;
-
-    // The Maildir, then the folder rows. A filesystem failure is reported, because an
-    // address whose directory is missing cannot receive mail.
-    state
-        .maildir
-        .ensure_mailbox(&domain.name, &local_part)
-        .map_err(|err| {
-            ApiError::new(FerromaError::storage(err)).with_details(serde_json::json!({
-                "address": format!("{local_part}@{}", domain.name),
-                "stage": "maildir",
-            }))
-        })?;
-
-    let folders = state
-        .repos
-        .folders
-        .ensure_standard(mailbox.mailbox_id())
-        .await?;
+    let (mailbox, folders) = create_address(
+        &state,
+        user_id,
+        &domain,
+        &local_part,
+        request.is_primary,
+        request.quota_bytes,
+    )
+    .await?;
 
     audit(
         &state,
@@ -479,8 +506,61 @@ pub async fn create_user_mailbox(
         StatusCode::CREATED,
         Json(CreatedMailboxResponse {
             mailbox: MailboxResponse::from_row(&mailbox, &domain.name),
-            folders: folders.iter().map(FolderResponse::from_row).collect(),
+            folders,
         }),
+    ))
+}
+
+/// Create one address: its row, its Maildir and its six standard folders.
+///
+/// The order is the contract: the row first, so the unique index refuses a duplicate
+/// address before anything reaches disk; then the Maildir, so an address that can
+/// receive mail has somewhere to put it; then the folders.
+///
+/// Shared by `POST /users/:id/mailboxes` and by `POST /users`, which provisions the
+/// primary address itself. Both must behave identically, so both go through here.
+async fn create_address(
+    state: &AppState,
+    user_id: UserId,
+    domain: &ferroma_storage::models::Domain,
+    local_part: &str,
+    is_primary: bool,
+    quota_bytes: Option<i64>,
+) -> Result<(ferroma_storage::models::Mailbox, Vec<FolderResponse>), ApiError> {
+    let mailbox = state
+        .repos
+        .mailboxes
+        .create(NewMailbox {
+            user_id,
+            domain_id: domain.domain_id(),
+            local_part: local_part.to_string(),
+            display_name: None,
+            is_primary,
+            quota_bytes,
+        })
+        .await?;
+
+    // A filesystem failure is reported, because an address whose directory is missing
+    // cannot receive mail.
+    state
+        .maildir
+        .ensure_mailbox(&domain.name, local_part)
+        .map_err(|err| {
+            ApiError::new(FerromaError::storage(err)).with_details(serde_json::json!({
+                "address": format!("{local_part}@{}", domain.name),
+                "stage": "maildir",
+            }))
+        })?;
+
+    let folders = state
+        .repos
+        .folders
+        .ensure_standard(mailbox.mailbox_id())
+        .await?;
+
+    Ok((
+        mailbox,
+        folders.iter().map(FolderResponse::from_row).collect(),
     ))
 }
 

@@ -144,6 +144,21 @@ fn message_in(f: &Fixture, folder: MailboxId, subject: &str, offset_secs: i64) -
     }
 }
 
+/// The folder row, which is where the counters live.
+async fn folder(repos: &ferroma_storage::Repositories, id: MailboxId) -> ferroma_storage::models::Folder {
+    repos
+        .folders
+        .find_by_id(id)
+        .await
+        .expect("read folder")
+        .expect("folder must exist")
+}
+
+/// Just the counters: the timestamps move on every write.
+fn counters(f: &ferroma_storage::models::Folder) -> (i32, i32, i64) {
+    (f.message_count, f.unseen_count, f.total_bytes)
+}
+
 /// Store one message in the fixture's INBOX.
 async fn seed_message(t: &TestDatabase, f: &Fixture, subject: &str, offset_secs: i64) -> Message {
     t.repos()
@@ -2429,6 +2444,78 @@ async fn attachment_delete_referenced_paths_and_total_size() {
     );
     assert!(repos.attachments.delete(second).await.unwrap());
     assert!(repos.attachments.referenced_paths().await.unwrap().is_empty());
+
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn inserting_a_message_moves_the_folder_counters() {
+    // The counters belong to `insert`, not to whoever remembers to call `recount`: the
+    // Drafts folder showed `0` while five drafts sat in it, because IMAP `APPEND`, `COPY`
+    // and the draft mirroring all forgot. This is that regression.
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+
+    let before = folder(&repos, f.inbox_id).await;
+    assert_eq!(before.message_count, 0);
+    assert_eq!(before.total_bytes, 0);
+
+    seed_message(&t, &f, "counted", 0).await;
+
+    let after = folder(&repos, f.inbox_id).await;
+    assert_eq!(after.message_count, 1, "the row arrived but the folder did not hear");
+    assert_eq!(after.unseen_count, 1, "a message with no `seen` flag is unread");
+    assert_eq!(after.total_bytes, 512, "the folder's byte total follows its messages");
+
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_seen_message_does_not_count_as_unread() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+
+    let mut message = message_in(&f, f.inbox_id, "already read", 0);
+    message.flags = "seen".to_string();
+    repos.messages.insert(message).await.unwrap();
+
+    let after = folder(&repos, f.inbox_id).await;
+    assert_eq!(after.message_count, 1);
+    assert_eq!(after.unseen_count, 0);
+    // The incremental arithmetic and the full recomputation have to agree, or a folder
+    // drifts one message at a time. (Only the counters: `updated_at` differs by a
+    // microsecond, since the two ran at different moments.)
+    let recounted = repos.folders.recount(f.inbox_id).await.unwrap();
+    assert_eq!(counters(&recounted), counters(&after));
+
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn expunging_a_message_takes_it_out_of_the_counters() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+
+    let kept = seed_message(&t, &f, "kept", 0).await;
+    let gone = seed_message(&t, &f, "gone", 1).await;
+    repos.messages.mark_deleted(gone.message_id()).await.unwrap();
+    assert_eq!(folder(&repos, f.inbox_id).await.message_count, 2);
+
+    let expunged = repos.messages.expunge(f.inbox_id).await.unwrap();
+    assert_eq!(expunged.len(), 1);
+    assert_eq!(expunged[0].message_id(), gone.message_id());
+
+    let after = folder(&repos, f.inbox_id).await;
+    assert_eq!(after.message_count, 1);
+    let recounted = repos.folders.recount(f.inbox_id).await.unwrap();
+    assert_eq!(counters(&recounted), counters(&after));
+    assert_eq!(
+        kept.message_id(),
+        repos.messages.find_by_id(kept.message_id()).await.unwrap().unwrap().message_id()
+    );
 
     t.cleanup().await;
 }

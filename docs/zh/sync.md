@@ -498,7 +498,7 @@ Webmail 客户端并不总能往请求体里放字段（`DELETE` 就没有请求
 ### 9.1 标志与文件夹：最后写入者胜，以服务器时钟为准
 
 两台设备同时把同一封邮件标为已读和未读。服务端应用后到的那个请求；
-另一台设备在下一次同步时得知结果，因为每次变更都会追加一条变更记录。
+另一台设备在下一次同步时得知结果，因为每次变更都会追加一条变更日志条目。
 这里没有合并，也没有向量时钟，对一种布尔标志而言这就是正确的答案：
 用户最近的意图是唯一重要的事，而一次「冲突」不值得告诉他。
 
@@ -580,7 +580,7 @@ Draft   Pending   Uploading   Queued   Sending   Sent   Failed   Retrying
 
 | 客户端状态 | 含义 | 服务端对应物 |
 |---|---|---|
-| `Draft` | 已撰写，尚未排入发送队列 | 无（如果保存过，则有一行 `drafts`） |
+| `Draft` | 已撰写，尚未排入发件箱 | 无（如果保存过，则有一行 `drafts`） |
 | `Pending` | 已在本地排队，等待同步引擎把它取走 | 无 |
 | `Uploading` | 附件正在（分块）传输 | `/attachments/chunk` 的进度 |
 | `Queued` | 服务端已接受：`POST /client/messages` 返回 `{message_id, queued}` | `mail_queue.status = 'pending'`，每个收件人一行 |
@@ -642,7 +642,7 @@ Draft   Pending   Uploading   Queued   Sending   Sent   Failed   Retrying
 | **`404 not_found`** | `404` | 目标已不存在。丢弃该操作，在下一次同步时应用服务端的状态 | 移除 | 不变 |
 | **来自 `/sync` 的 `409 conflict`** | `409` | 游标过旧 ⇒ 丢弃该文件夹的缓存，从 `0` 同步（§6） | 不受影响 | 重置为 `0` |
 | **来自某个变更的 `409 conflict`** | `409` | 一个被重放的 `operation_id`（本应重放缓存响应），或是一次状态违规 ⇒ 暴露给用户 | 标记为失败 | 不变 |
-| **`413 limit_exceeded`** | `413` | 告诉用户什么太大了；保留草稿 | 从发送队列移除，草稿保留 | 不变 |
+| **`413 limit_exceeded`** | `413` | 告诉用户什么太大了；保留草稿 | 从发件箱移除，草稿保留 | 不变 |
 | **`426 unsupported`** | `426` | 拒绝运行；提示升级。低于 `client.min_protocol_version` 的客户端无法被服务 | 冻结 | 冻结 |
 | **`429 rate_limited`** | `429` + `Retry-After` | 严格遵循 `Retry-After`；在本地排队 | 保留 | 不变 |
 | **`500 storage_error` / `internal_error`** | `500` | 当作临时错误；退避；绝不丢失该操作 | 保留 | 不变 |
