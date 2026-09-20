@@ -66,18 +66,18 @@ inside the container — 10–30 minutes, and several gigabytes of build cache �
 is the faster path onto a server:
 
 ```bash
-docker pull wesukilaye/ferroma:0.1.5
+docker pull wesukilaye/ferroma:0.1.6
 ```
 
 `docker-compose.prod.yml` and `docker-compose.external-db.yml` already default to that
 repository; pin the release you want in `.env`:
 
 ```bash
-FERROMA_VERSION=0.1.5                      # docker-compose.prod.yml: the tag to pull
-# FERROMA_IMAGE=wesukilaye/ferroma:0.1.5   # docker-compose.external-db.yml: the whole reference
+FERROMA_VERSION=0.1.6                      # docker-compose.prod.yml: the tag to pull
+# FERROMA_IMAGE=wesukilaye/ferroma:0.1.6   # docker-compose.external-db.yml: the whole reference
 ```
 
-Available tags are `0.1.5` (an exact release) and `latest` (the newest release) — a
+Available tags are `0.1.6` (an exact release) and `latest` (the newest release) — a
 release publishes those two and nothing else, so a tag always names one specific
 version. For a reproducible deployment pin the exact release, never `latest`.
 
@@ -223,7 +223,7 @@ cargo clippy --workspace  →  0 errors (2 `manual_is_multiple_of` notes with cl
 The official client ships as a tested shared core plus a CLI. The three-pane GUI
 described in specification §51 is the one piece that is not built.
 
-### Carried into 0.1.6
+### Carried into 0.1.7
 
 Two things found while cutting 0.1.3. Both are real, neither was worth stalling the
 release for, and neither is fixed by a mechanical edit:
@@ -240,7 +240,7 @@ release for, and neither is fixed by a mechanical edit:
   there and set `ENV FERROMA_GIT_SHA` / `FERROMA_BUILD_TIMESTAMP` before the real
   `cargo build`, **after** the dependency-cache layer, or every release would
   invalidate that layer. Deferred because it needs another arm64 build under
-  emulation (~70 minutes) and 0.1.3 was already published — see the `TODO(0.1.6)`
+  emulation (~70 minutes) and 0.1.3 was already published — see the `TODO(0.1.7)`
   comment in the `Dockerfile`.
 * **Eight documents still carry `_(planned)_` claims from before the crates existed.**
   Five of them (`client.md`, `imap.md`, `security.md`, `smtp.md`, `sync.md`) still open

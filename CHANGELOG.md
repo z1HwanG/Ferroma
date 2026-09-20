@@ -14,13 +14,28 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ## [Unreleased]
 
-## [0.1.5] — 2026-09-20
+## [0.1.6] — 2026-09-20
 
 ### Changed
 
 - **Setting up is one page.** A server with no database serves the console at `/`; the
   database step hands that page to the first-run wizard instead of sending the operator to
   another address; and finishing lands on the domain root rather than on the console's own path.
+
+### Fixed
+
+- **The domain DNS panel reads `nslookup`, and two of its answer shapes were not understood.**
+  A TXT answer arrives as `name  text = "…"` — the record type is spelled `text`, never `TXT` —
+  so SPF, DKIM and DMARC were reported empty on domains whose records were published and
+  correct; an address answer arrives as `Name:` plus `Address:`, so the A and AAAA rows carried
+  no value either, and the PTR row could not run at all: its expected address was a field
+  nothing ever filled in, and it now comes from the A record the domain itself publishes —
+  which is the address a PTR record has to answer for. A DKIM key printed as several quoted
+  pieces is joined into the one string an operator has to paste.
+
+## [0.1.5] — 2026-09-20
+
+### Changed
 
 - **The interface follows the system's light or dark setting until someone chooses otherwise.**
   The theme default was light; it is now `match system`, so a desktop that has been dark all day
@@ -55,15 +70,6 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
   own pages finish by navigating to `/admin/` rather than reloading `/`.
 
 ### Fixed
-
-- **The domain DNS panel reads `nslookup`, and two of its answer shapes were not understood.**
-  A TXT answer arrives as `name  text = "…"` — the record type is spelled `text`, never `TXT` —
-  so SPF, DKIM and DMARC were reported empty on domains whose records were published and
-  correct; an address answer arrives as `Name:` plus `Address:`, so the A and AAAA rows carried
-  no value either, and the PTR row could not run at all: its expected address was a field
-  nothing ever filled in, and it now comes from the A record the domain itself publishes —
-  which is the address a PTR record has to answer for. A DKIM key printed as several quoted
-  pieces is joined into the one string an operator has to paste.
 
 - **The panel that reports a front-end which did not start now speaks the chosen language.**
   `shared/diag.js` held its text in English on purpose — it is a classic script loaded before
@@ -538,13 +544,13 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
   indistinguishable from a server that never answered.
 
 
-### Known issues carried into 0.1.6
+### Known issues carried into 0.1.7
 
 Both items found while cutting 0.1.3 are still open: a published image cannot say which
 build it is, and eight documents still carry `_(planned)_` claims written before those
 crates existed. They are now tracked in [`TODO.md`](TODO.md) under "Next release
-(0.1.6)"; the fix for the first is described in
-[README — Carried into 0.1.6](README.md#carried-into-016).
+(0.1.7)"; the fix for the first is described in
+[README — Carried into 0.1.6](README.md#carried-into-017).
 
 ## [0.1.3] — 2026-09-19
 

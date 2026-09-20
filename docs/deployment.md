@@ -320,7 +320,7 @@ fixes it rather than leaving you to guess:
 | 2. Collect configuration | asks interactively: mail domain, MX hostname, admin address, database address, API port (default `127.0.0.1:18080`) |
 | 3. Write `.env` | generates a random database password and `FERROMA_JWT_SECRET`, mode 600; **it is the only configuration file** |
 | 4. Create the role and the database | tries, in order: `sudo -u postgres` (peer auth), the `psql` **inside a PostgreSQL container on this host** (how 1Panel and similar panels run it, through `docker exec`), and the superuser named by `--pg-password`; if none works it prints SQL you can paste — in the `docker exec` form when the database is a container |
-| 5. Build the image | a local `docker build` (10–30 minutes the first time). Pass `--image wesukilaye/ferroma:0.1.5` to pull the release instead — the same command skips the build entirely |
+| 5. Build the image | a local `docker build` (10–30 minutes the first time). Pass `--image wesukilaye/ferroma:0.1.6` to pull the release instead — the same command skips the build entirely |
 | 6. Create the schema | runs `ferroma database init` in the container (which also creates the database when it is missing) |
 | 7. Install the certificate | installs the certificate into `./tls` as uid 10001 for 465/993, and checks that the SAN covers the MX hostname |
 | 8. Start | `docker compose up -d`, waiting up to 3 minutes for the health check and printing the log on timeout |
@@ -524,7 +524,7 @@ Stating any of these in the environment wins over the wizard, which is the point
 deployment that knows its identity sets it once, and an instance being set up by hand gets
 asked. `scripts/deploy.sh --wizard` writes none of them, so a fresh container needs only
 the web port published — plus `POSTGRES_PASSWORD`, which the script generates.
-| `FERROMA_VERSION` | `0.1.5` | prod (`:?`) | a released image tag; prod never builds |
+| `FERROMA_VERSION` | `0.1.6` | prod (`:?`) | a released image tag; prod never builds |
 
 ### 4.2 Commonly set
 
@@ -1405,7 +1405,7 @@ step 1 is step 1.
 
 ```bash
 # Roll the image back.
-sed -i 's/^FERROMA_VERSION=.*/FERROMA_VERSION=0.1.5/' .env
+sed -i 's/^FERROMA_VERSION=.*/FERROMA_VERSION=0.1.6/' .env
 docker compose -f docker-compose.prod.yml pull ferroma
 docker compose -f docker-compose.prod.yml up -d ferroma
 ```
@@ -1462,7 +1462,7 @@ git push origin main v0.2.0
 ```
 
 `.github/workflows/docker-publish.yml` then checks that the tag and `Cargo.toml`
-agree — a `v0.2.0` tag on a tree that says `0.1.5` fails before anything is built —
+agree — a `v0.2.0` tag on a tree that says `0.1.6` fails before anything is built —
 runs `node tools/check-deploy.mjs`, builds both architectures with a GitHub Actions
 layer cache, and pushes `0.2.0` and `latest`. A release publishes those two tags and
 nothing else: there is deliberately no rolling minor tag (`0.2`, `0.3`, …), and no
@@ -1567,7 +1567,7 @@ For a **single-host private registry** instead of Docker Hub, point
 ```json
 {
   "status": "ok",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "protocol_version": 1,
   "uptime_secs": 84213,
   "database": { "ok": true, "server_version": "PostgreSQL 16.15",
