@@ -71,3 +71,20 @@ export function onRouteChange(handler) {
   window.addEventListener('hashchange', listener);
   return () => window.removeEventListener('hashchange', listener);
 }
+
+/**
+ * Where the console answers once the server has a database.
+ *
+ * The console is mounted at `/` while there is none, so that the page an operator needs is
+ * the page the hostname opens. That mount exists only in that mode: once the database is
+ * accepted, `/` is the Webmail again and the console is at `/admin/`. A plain `reload()`
+ * therefore drops the operator into the Webmail at the exact moment they finish a step here,
+ * which reads as the page having disappeared.
+ *
+ * Built from the origin rather than written as `/admin/` so that a deployment behind a proxy
+ * on a subdomain keeps working, which is the same reason the apps reference their assets
+ * relatively.
+ */
+export function consoleUrl() {
+  return new URL('admin/', window.location.origin).toString();
+}

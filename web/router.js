@@ -40,6 +40,13 @@ export function parseHash() {
     };
   }
 
+  // Not a route this app knows. The mail client has nowhere else to be, so it shows the
+  // inbox — but the address bar must stop claiming otherwise, which is the promise in this
+  // file's first paragraph. `#/admin/` is what makes that concrete: it is the *console's*
+  // shape (its sections are `#/<section>`, and it lives at `/admin/`), so opening it here
+  // showed an inbox under a URL that named a different application. `replaceState` keeps it
+  // out of history and fires no `hashchange`, so this cannot loop.
+  replaceHash(`/f/${DEFAULT_FOLDER}`);
   return { name: 'folder', slug: DEFAULT_FOLDER, messageId: 0, search: '' };
 }
 

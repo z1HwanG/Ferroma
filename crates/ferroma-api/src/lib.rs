@@ -66,9 +66,10 @@ pub use extract::{
 };
 pub use logbuf::{floor_for, LogBuffer, LogEntry, LogFilter, LogSink, DEFAULT_CAPACITY};
 pub use router::{
-    body_limit, build, client_api, cors_layer, frontends_for_bootstrap, frontends_only,
-    management_api, route_table,
+    body_limit, build, build_with_root, client_api, cors_layer, frontends_for_bootstrap,
+    management_api, route_table, RootApp,
 };
+pub use routes::admin::system::setup_required;
 pub use service::{MessageService, SendRequest, SendResult};
 pub use state::{
     AppState, ConnTracker, ConnectionGuard, MailSender, QueueMailSender, SendOutcome,

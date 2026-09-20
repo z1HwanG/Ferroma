@@ -16,17 +16,29 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ### Changed
 
-- **The page that asks for the database is now the site root.** A server with no connection
-  stated serves the Admin console at `/` instead of leaving `/` to the Webmail, whose
-  sign-in box cannot work before there is a database — it answered `405` to its own login
-  request, so an operator who opened the mail hostname saw a page that looked broken while
-  the form they needed sat one path away. `/admin/` still serves the same console (earlier
-  releases printed that URL) and `/shared` is unmoved, so this is one application mounted
-  twice; the Webmail is not mounted at all until there is a database.
-  `crates/ferroma-api/src/router.rs` now says *which* app answers at `/` and why the app
-  mounted there must be the one whose directory is mounted there.
+- **Setting up happens at one address: `/`.** While an instance still owes an administrator —
+  no database, or a database with no administrator in it — `/` serves the Admin console, and
+  the console shows whichever step is outstanding: the form that asks for the connection and
+  the one-time code, then the first-run wizard. Before this, the database step was at `/admin/`
+  and, once the database was accepted, a half-set-up instance left `/` to the Webmail: its
+  sign-in box cannot work yet (it answers its own login request `405`), so an operator who
+  opened the mail hostname met a page that looked broken while the step they owed sat one path
+  away — and the two steps of initialisation were two addresses. `/admin/` serves the same
+  console throughout (earlier releases printed that URL) and `/shared` is unmoved, so this is
+  one application mounted twice; once an administrator exists, `/` is the Webmail that a mail
+  hostname is for. `crates/ferroma-api/src/router.rs` now names the choice (`RootApp`) and why
+  the app mounted at `/` must be the one whose *directory* is mounted there, and the console's
+  own pages finish by navigating to `/admin/` rather than reloading `/`.
 
 ### Fixed
+
+- **The Webmail no longer keeps an address that names a different application.** The hash is
+  how both front-ends say what is on screen, and they use different shapes: the Webmail's are
+  `#/f/<folder>` and `#/search/…`, the console's are `#/<section>` under `/admin/`. A URL that
+  mixed them — `/#/admin/`, which nothing in the product produces but a person can type — loaded
+  the Webmail, which showed the inbox while the address bar named the console: `web/router.js`
+  promises the opposite in its own opening paragraph. An unrecognised hash is now replaced, in
+  the address bar, with the route that is actually being shown.
 
 - **A fresh installation could land on the sign-in page instead of the first-run wizard.**
   The console asks `GET /api/v1/setup` to decide which page to show, and the moment the

@@ -34,7 +34,7 @@
 
 ## 测试
 
-- bootstrap 服务器（连不上数据库时提供设置页的那个模式）没有验收测试：`server/tests/e2e.rs` 只覆盖正常运行中的服务器，所以"根路径 `/` 提供控制台"这件事目前只由 `crates/ferroma-api/src/router.rs` 里的单元测试守着，没有任何测试真的通过 socket 走一遍——[router.rs](crates/ferroma-api/src/router.rs)。
+- bootstrap 服务器（连不上数据库时提供设置页的那个模式）没有验收测试：`server/tests/e2e.rs` 只覆盖正常运行中的服务器，所以"根路径挂载"以及 `serve` 对"`/` 由哪个应用回答"的选择（取决于是否已有管理员）目前只由 `crates/ferroma-api/src/router.rs` 里的单元测试守着，没有任何测试真的通过 socket 走一遍——[router.rs](crates/ferroma-api/src/router.rs)。
 
 ## 已决定不做
 

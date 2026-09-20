@@ -19,7 +19,7 @@
 import { API_BASE, ApiError, request, setTokens } from '../../shared/api.js';
 import { el, setHidden, setText } from '../../shared/dom.js';
 import { t } from '../../shared/i18n.js';
-import { go } from '../router.js';
+import { consoleUrl, go } from '../router.js';
 import { toastSuccess } from '../../shared/toast.js';
 import { firstRunHeader } from './first-run.js';
 import { badge, errorState, field, isValidDomain } from '../ui.js';
@@ -223,9 +223,11 @@ function renderWizard(status) {
         return;
       }
       toastSuccess(t('Administrator created. Welcome to Ferroma.'));
-      // A reload is what leaves the setup mode: the console boots with the session this
-      // form just created and renders its real sections.
-      window.setTimeout(() => window.location.reload(), 600);
+      // Leaving setup mode means the server now has an administrator, and the console is
+      // where it has always been: `/admin/`. This page may have been served at `/`, which
+      // becomes the Webmail the moment the server is initialised, so a plain reload would
+      // hand the operator the Webmail instead of the console they just unlocked.
+      window.setTimeout(() => window.location.replace(consoleUrl()), 600);
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
         // Someone else finished the wizard between the page load and this click. The
@@ -258,7 +260,7 @@ function renderWizard(status) {
       }),
       el('ul', { class: 'setup-summary' }, rows.map(([label, value]) => summaryItem(label, value))),
       el('div', { class: 'card-actions' }, [
-        linkButton(t('Continue to the console'), () => window.location.reload()),
+        linkButton(t('Continue to the console'), () => window.location.replace(consoleUrl())),
       ]),
     );
     setHidden(notice, false);

@@ -13,6 +13,7 @@
 import { API_BASE, ApiError, request } from '../../shared/api.js';
 import { el, setHidden, setText } from '../../shared/dom.js';
 import { t } from '../../shared/i18n.js';
+import { consoleUrl } from '../router.js';
 import { firstRunHeader } from './first-run.js';
 
 /**
@@ -100,10 +101,12 @@ function form(state) {
         toast: false,
         retryOn401: false,
       });
-      // The server has already finished starting on the same port; this reload lands on
-      // the wizard, or on the console if the database was already set up.
+      // The server has already finished starting on the same port; this lands on the wizard,
+      // or on the console if the database was already set up. Deliberately not a plain
+      // reload: this page was served at `/` (that is where a server with no database mounts
+      // the console), and after this call `/` is the Webmail again.
       setText(submit, t('Connected. Loading…'));
-      window.location.reload();
+      window.location.replace(consoleUrl());
     } catch (err) {
       const message = err instanceof ApiError ? err.message : t('The database could not be reached.');
       setText(error, message);

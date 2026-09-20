@@ -470,10 +470,16 @@ A server that cannot reach PostgreSQL has nothing to serve — no repositories, 
 not even the page that would let you fix it. So it does not exit: when no connection was
 *stated* (no `FERROMA_DATABASE__URL`, nothing in `ferroma.toml`, nothing in
 `<data_dir>/database.json`), it binds the web port anyway and serves one page, at
-`http://<host>:<port>/`, that asks for the connection. `/admin/` serves the same page,
-which is where releases before 0.1.5 sent you; the console is mounted at both, and the
-Webmail is not mounted at all until there is a database, because a sign-in box that
-cannot work is a worse answer than the form that asks for the connection.
+`http://<host>:<port>/`, that asks for the connection.
+
+That address is also where the rest of setting up happens. While an instance still owes an
+administrator — no database, or a database with no administrator in it — `/` serves the Admin
+console, and the console shows whichever step is outstanding: the form that asks for the
+connection and the code, then the first-run wizard. So opening the mail hostname always lands
+on the step that is owed rather than on a sign-in box for an account that does not exist yet,
+and initialisation is one address from beginning to end. `/admin/` serves the same console
+throughout (releases before 0.1.5 printed that URL, and it is worth keeping working); once an
+administrator exists, `/` is the Webmail, which is what a mail hostname is for.
 
 ```
 No database is connected yet. Open http://0.0.0.0:8080/ and enter:

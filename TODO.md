@@ -36,7 +36,7 @@ one of its two.
 
 ## Testing
 
-- The bootstrap server — the mode that serves the setup page when no database is reachable — has no acceptance test: `server/tests/e2e.rs` covers the running server only, so the root mount (`/` serving the console) is held by a unit test in `crates/ferroma-api/src/router.rs` and nothing drives it over a socket — [router.rs](crates/ferroma-api/src/router.rs).
+- The bootstrap server — the mode that serves the setup page when no database is reachable — has no acceptance test: `server/tests/e2e.rs` covers the running server only, so the root mount and `serve`'s choice of which app answers at `/` (which turns on there being an administrator) are held by unit tests in `crates/ferroma-api/src/router.rs`, and nothing drives either over a socket — [router.rs](crates/ferroma-api/src/router.rs).
 
 ## Decided against
 

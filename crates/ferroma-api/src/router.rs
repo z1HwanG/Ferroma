@@ -43,8 +43,24 @@ use crate::routes;
 use crate::state::AppState;
 use crate::ws;
 
-/// Build the complete router.
+/// Build the complete router, with the Webmail answering at `/`.
+///
+/// A running server that still needs its first administrator wants
+/// [`build_with_root`] instead: see [`RootApp`].
 pub fn build(state: AppState) -> Router {
+    build_with_root(state, RootApp::Webmail)
+}
+
+/// Build the complete router with a chosen app at `/`.
+///
+/// The caller decides because the answer depends on the database: while an instance is not
+/// finished being set up — no database at all, or a database without its first administrator —
+/// `/` serves the console, so that opening the hostname lands on the step that is still owed
+/// rather than on a sign-in box for an account nobody has created yet. The choice is made when
+/// the router is built, which for a server coming out of bootstrap mode is *after* the database
+/// was accepted, and it covers the whole of initialisation: the database form and the first-run
+/// wizard are the same address, one after the other.
+pub fn build_with_root(state: AppState, root: RootApp) -> Router {
     let api = management_api();
     let client = client_api(&state.config);
     let discovery = discovery_routes();
@@ -68,7 +84,7 @@ pub fn build(state: AppState) -> Router {
         .layer(DefaultBodyLimit::max(body_limit(&state.config)));
 
     if state.config.api.serve_frontend {
-        router = with_frontends(router, &state.config);
+        router = with_frontends(router, &state.config, root);
     }
 
     router.with_state(state)
@@ -476,6 +492,21 @@ pub fn apply_negotiation_headers(
     }
 }
 
+/// Which app answers at `/`.
+///
+/// Not a cosmetic choice. Both apps reference their assets relatively (`./main.js`,
+/// `./styles.css`) so that each one works from wherever it is mounted, which means the app
+/// serving `/` has to be the app whose *directory* is mounted there — see
+/// [`redirect_admin_to_slash`] for what shipping that backwards produced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RootApp {
+    /// The Webmail: what a mail hostname is for, once the instance is set up.
+    Webmail,
+    /// The Admin console: the instance still owes an administrator (or a database), and the
+    /// console is the only one of the two apps with a page for that.
+    Console,
+}
+
 /// Serve `web/` at `/` and `admin/` at `/admin/`, each with an SPA fallback, plus
 /// the modules they share at `/shared`.
 ///
@@ -487,32 +518,10 @@ pub fn apply_negotiation_headers(
 /// `/shared` is what lets the two apps keep one copy of the modules they have in
 /// common. Each app is served from its own root, so `../shared/api.js` from
 /// `/main.js` and from `/admin/main.js` both resolve to `/shared/api.js`.
-pub fn with_frontends(router: Router<AppState>, config: &Config) -> Router<AppState> {
-    frontends(router, config, RootApp::Webmail)
-}
-
-/// Which app answers at `/`.
 ///
-/// Not a cosmetic choice. Both apps reference their assets relatively (`./main.js`,
-/// `./styles.css`) so that each one works from wherever it is mounted, which means the app
-/// serving `/` has to be the app whose *directory* is mounted there — see
-/// [`redirect_admin_to_slash`] for what shipping that backwards produced.
-#[derive(Clone, Copy)]
-enum RootApp {
-    /// The Webmail: the sign-in page of a server that has a database.
-    Webmail,
-    /// The Admin console: the server has no database yet, and the console is the only one
-    /// of the two apps that has a page for that state.
-    Console,
-}
-
-/// The static apps alone, with no application state.
-///
-/// Before there is a database there is no `AppState` to mount the API on, but the page that
-/// asks for the database still has to be served — so the static half is available on its
-/// own. The bootstrap server in the `ferroma` binary is the only caller.
-pub fn frontends_only(router: Router, config: &Config) -> Router {
-    frontends(router, config, RootApp::Webmail)
+/// `root` picks the app at `/`; the console is always mounted at `/admin/` as well.
+pub fn with_frontends(router: Router<AppState>, config: &Config, root: RootApp) -> Router<AppState> {
+    frontends(router, config, root)
 }
 
 /// The static apps for a server that has no database yet: the Admin console at `/`.
@@ -904,7 +913,7 @@ mod tests {
                 .expect("the admin directory is in the repository"),
         );
 
-        let app = with_frontends(Router::new(), &config).with_state(test_state());
+        let app = with_frontends(Router::new(), &config, RootApp::Webmail).with_state(test_state());
 
         let response = app
             .clone()
@@ -1022,7 +1031,7 @@ mod tests {
                 .expect("the shared directory is in the repository"),
         );
 
-        let app = with_frontends(Router::new(), &config).with_state(test_state());
+        let app = with_frontends(Router::new(), &config, RootApp::Webmail).with_state(test_state());
 
         let response = app
             .oneshot(

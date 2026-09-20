@@ -652,7 +652,28 @@ async fn serve(config: &Config, args: &ServeArgs, log_sink: ferroma_api::LogSink
         // answers with what this process has actually logged.
         .with_log_sink(log_sink);
 
-        let router = ferroma_api::build(state);
+        // Which app answers at `/` is decided here, because the answer is a fact about the
+        // database: an instance that still owes its first administrator serves the console at
+        // the root — the first-run wizard lives there — and a finished one serves the Webmail
+        // that a mail hostname is for. Deciding once, at build time, covers the whole of
+        // initialisation: this router is built after the database is known, so a server that
+        // has just come out of bootstrap mode keeps the console at `/` for the wizard that is
+        // the next step, and the two steps of setting up are one address instead of two.
+        let root = match ferroma_api::setup_required(&state).await {
+            Ok(true) => ferroma_api::RootApp::Console,
+            Ok(false) => ferroma_api::RootApp::Webmail,
+            Err(error) => {
+                // A database that cannot answer this cannot serve the console either, so the
+                // Webmail is the honest default for a running server.
+                tracing::warn!(
+                    %error,
+                    "could not tell whether the instance needs its first administrator; serving the Webmail at /"
+                );
+                ferroma_api::RootApp::Webmail
+            }
+        };
+
+        let router = ferroma_api::build_with_root(state, root);
         let address = format!("{}:{}", config.api.host, config.api.port);
 
         // Bootstrap mode already bound this port and served the page that produced the
