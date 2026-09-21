@@ -225,24 +225,10 @@ described in specification §51 is the one piece that is not built.
 
 ### Carried into 0.1.9
 
-Two things found while cutting 0.1.3. Both are real, neither was worth stalling the
-release for, and neither is fixed by a mechanical edit:
+One thing found while cutting 0.1.3. It is real, it was not worth stalling the
+release for, and it is not fixed by a mechanical edit:
 
-* **The image cannot say which build it is.** `ferroma-core/src/version.rs` reads
-  `FERROMA_BUILD_TIMESTAMP` and `FERROMA_GIT_SHA` with `option_env!`, so they have to
-  be in the environment of the `cargo build`. The `Dockerfile` declares
-  `FERROMA_VERSION`, `FERROMA_REVISION` and `FERROMA_CREATED` and uses them *only* for
-  the OCI labels, so the compiler never sees them: `ferroma version` inside the
-  container prints `built: unknown` / `revision: unknown`, and the Admin sidebar
-  footer prints the same. `docker inspect` does have the revision, so the release is
-  identifiable from outside and not from within — which is the direction a bug report
-  arrives from. The fix is a few lines in the builder stage: re-declare the `ARG`s
-  there and set `ENV FERROMA_GIT_SHA` / `FERROMA_BUILD_TIMESTAMP` before the real
-  `cargo build`, **after** the dependency-cache layer, or every release would
-  invalidate that layer. Deferred because it needs another arm64 build under
-  emulation (~70 minutes) and 0.1.3 was already published — see the `TODO(0.1.9)`
-  comment in the `Dockerfile`.
-* **Eight documents still carry `_(planned)_` claims from before the crates existed.**
+* **Seven documents still carry `_(planned)_` claims from before the crates existed.**
   Four of them (`imap.md`, `security.md`, `smtp.md`, `sync.md`) still open
   with a status banner calling implemented crates unimplemented; `architecture.md`'s
   banner and product table were corrected in 0.1.3, the rest were not. Every marker is
@@ -256,6 +242,8 @@ A Chinese translation of this file is at [`README_zh.md`](README_zh.md).
 ---
 
 ## Documentation
+
+The whole set is also published as a bilingual site: <https://ferroma.z1hwang.cn/>.
 
 | Document | What it covers |
 |---|---|

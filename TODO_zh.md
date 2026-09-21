@@ -9,7 +9,6 @@
 
 ## 下一版（0.1.9）
 
-- 已发布的镜像仍说不清自己是哪个构建：容器里的 `ferroma version` 与 Admin 管理后台都打印 `built: unknown` / `revision: unknown`，因为 `Dockerfile` 只把构建标识传给了 OCI 标签——[README — 带入 0.1.9 的待办](README_zh.md#带入-019-的待办)、[CHANGELOG_zh — 带入 0.1.9 的已知问题](CHANGELOG_zh.md#带入-019-的已知问题)。
 - 七篇文档仍在描述骨架：里面留有写于各 crate 尚不存在之时的 `_(planned)_` 断言，其中四篇——`imap.md`、`security.md`、`smtp.md`、`sync.md`——开头仍挂着把已实现 crate 称作未实现的状态横幅——[README — 带入 0.1.9 的待办](README_zh.md#带入-019-的待办)、[CHANGELOG_zh — 带入 0.1.9 的已知问题](CHANGELOG_zh.md#带入-019-的已知问题)。
 
 ## 文档已写、尚未交付

@@ -59,6 +59,17 @@ COPY web ./web
 COPY admin ./admin
 COPY shared ./shared
 
+# The build identity, for the binary and not only for the labels below.
+#
+# Declared here — after the dependency-cache layer and immediately before the final build —
+# because these change with every release: placed any earlier they would invalidate the cached
+# dependency build on every release. `ferroma-core/src/version.rs` reads them with
+# `option_env!`, so `ferroma version` and the Admin dashboard can name the build they are.
+ARG FERROMA_REVISION=unknown
+ARG FERROMA_CREATED=unknown
+ENV FERROMA_GIT_SHA=$FERROMA_REVISION \
+    FERROMA_BUILD_TIMESTAMP=$FERROMA_CREATED
+
 # `touch` so cargo notices the placeholder sources changed.
 RUN set -eux; \
     find crates server -name '*.rs' -exec touch {} +; \
@@ -75,15 +86,8 @@ FROM debian:bookworm-slim AS runtime
 # produced it — and `org.opencontainers.image.source` is what links the Docker Hub
 # repository back to the source tree. The defaults keep a plain `docker build .`
 # self-describing instead of labelling the image with empty strings.
-# TODO(0.1.9): these three reach the OCI labels below and never reach the compiler.
-# `ferroma-core/src/version.rs` reads FERROMA_BUILD_TIMESTAMP and FERROMA_GIT_SHA with
-# `option_env!` at compile time, so `ferroma version` in the image prints
-# `built: unknown` / `revision: unknown` even though the label carries the commit.
-# Re-declare the ARGs in the `builder` stage and set
-#   ENV FERROMA_GIT_SHA=$FERROMA_REVISION FERROMA_BUILD_TIMESTAMP=$FERROMA_CREATED
-# immediately BEFORE the final `cargo build` — after the dependency-cache layer, which
-# a per-release value would otherwise invalidate every time. See README "Carried into
-# 0.1.9".
+# The `builder` stage declares the same two arguments and hands them to the compiler, so the
+# binary reports the same release, commit and date that these labels carry.
 ARG FERROMA_VERSION=dev
 ARG FERROMA_REVISION=unknown
 ARG FERROMA_CREATED=unknown

@@ -58,6 +58,15 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 
 ### Fixed
+- **A published image now names the build it is.** The builder stage re-declares
+  `FERROMA_REVISION` and `FERROMA_CREATED` and exports them as `FERROMA_GIT_SHA` and
+  `FERROMA_BUILD_TIMESTAMP` immediately before the real `cargo build` — after the
+  dependency-cache layer, which a per-release value placed any earlier would invalidate on
+  every release. `ferroma version` inside the container and the Admin sidebar footer now
+  print the commit and the date instead of `unknown`. `docker inspect` had the revision all
+  along, which is the wrong direction for a bug report to travel: the person holding the
+  container can read the labels, the person reading the report cannot.
+
 
 - **A front-end document is revalidated like the scripts it loads.** `/` and `/admin/` have no
   file extension, so the revalidation layer skipped them and their responses carried no
@@ -598,11 +607,10 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ### Known issues carried into 0.1.9
 
-Both items found while cutting 0.1.3 are still open: a published image cannot say which
-build it is, and eight documents still carry `_(planned)_` claims written before those
-crates existed. They are now tracked in [`TODO.md`](TODO.md) under "Next release
-(0.1.9)"; the fix for the first is described in
-[README — Carried into 0.1.6](README.md#carried-into-019).
+One item found while cutting 0.1.3 is still open: seven documents still carry
+`_(planned)_` claims written before those crates existed. It is now tracked in
+[`TODO.md`](TODO.md) under "Next release (0.1.9)"; the reasoning is in
+[README — Carried into 0.1.9](README.md#carried-into-019).
 
 ## [0.1.3] — 2026-09-19
 

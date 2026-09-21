@@ -180,20 +180,9 @@ cargo clippy --workspace  →  0 错误（clippy 1.98 下多 2 条 `manual_is_mu
 
 ### 带入 0.1.9 的待办
 
-发 0.1.3 时发现的两件事。两件都真实存在，但都不值得为它们推迟发版，也都不是一次机械替换就能了结的：
+发 0.1.3 时发现的一件事。它真实存在，但不值得为它推迟发版，也不是一次机械替换就能了结的：
 
-* **镜像说不清自己是哪个构建。** `ferroma-core/src/version.rs` 用 `option_env!` 读取
-  `FERROMA_BUILD_TIMESTAMP` 与 `FERROMA_GIT_SHA`，因此这两个变量必须出现在 `cargo build`
-  的环境里。而 `Dockerfile` 声明的 `FERROMA_VERSION`、`FERROMA_REVISION`、
-  `FERROMA_CREATED` **只用在了 OCI 标签上**，编译器从来没看到过它们：容器里执行
-  `ferroma version` 会打印 `built: unknown` / `revision: unknown`，Admin 侧栏页脚也是同
-  一个结果。`docker inspect` 里其实有正确的 revision——也就是说，从外部能认出发的是哪个
-  提交，从内部反而不能，而 bug 报告恰恰是从内部来的。修法是 builder 阶段里几行：在那里
-  重新声明 `ARG`，并在真正 `cargo build` 之前设置 `ENV FERROMA_GIT_SHA` /
-  `FERROMA_BUILD_TIMESTAMP`，而且必须放在**依赖缓存层之后**，否则每次发版都会击穿那层缓存。
-  之所以推迟：它需要再跑一次模拟下的 arm64 构建（约 70 分钟），而 0.1.3 已经发布——见
-  `Dockerfile` 里的 `TODO(0.1.9)` 注释。
-* **八篇文档里还留着写于各 crate 尚不存在之时的 `_(planned)_` 断言。**
+* **七篇文档里还留着写于各 crate 尚不存在之时的 `_(planned)_` 断言。**
   其中四篇（`imap.md`、`security.md`、`smtp.md`、`sync.md`）开头仍挂着把已实现
   crate 称作未实现的状态横幅；`architecture.md` 的横幅与产品表已在 0.1.3 修正，其余没有。
   每一处标记都是关于行为的一句断言，需要对着代码逐条核实，所以这是一次独立的通读，而不是
@@ -204,6 +193,8 @@ cargo clippy --workspace  →  0 错误（clippy 1.98 下多 2 条 `manual_is_mu
 ---
 
 ## 文档
+
+整套文档另有一个中英双语的在线站点：<https://ferroma.z1hwang.cn/>。
 
 | 文档 | 内容 |
 |---|---|

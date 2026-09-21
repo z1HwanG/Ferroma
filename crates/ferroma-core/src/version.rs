@@ -36,6 +36,16 @@ pub fn build_info() -> String {
 mod tests {
     use super::*;
 
+    /// The wiring the Dockerfile's build arguments depend on: whatever the constants hold has
+    /// to reach the banner. Locally they are `"unknown"`; in a published image they are the
+    /// release's commit and date. This is the assertion that would have failed when the image
+    /// carried the identity only in its OCI labels.
+    #[test]
+    fn build_info_reports_the_identity_it_was_built_with() {
+        assert!(build_info().contains(BUILD_TIMESTAMP));
+        assert!(build_info().contains(GIT_SHA));
+    }
+
     #[test]
     fn version_banner_is_well_formed() {
         assert!(banner().starts_with("Ferroma/"));
