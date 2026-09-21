@@ -339,6 +339,11 @@ tools/               the crates proxy and the HTTPS fetcher
 6. **rustls everywhere.** No OpenSSL, no schannel — one TLS implementation, in Rust.
 7. **Never log secrets or message bodies.**
 
+## Contributing
+
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) first: the checks that have to pass, what a change has to
+carry (a test that would fail without it), and the DCO sign-off.
+
 ## Licence
 
 **AGPL-3.0-only.** Run it, modify it, self-host it — the condition that matters for a server is

@@ -74,7 +74,26 @@ function darkMode() {
  * ones the sanitiser rewrote; the frame's `sandbox` allows the popup (and nothing else:
  * scripts and same-origin access stay denied — see `docs/security.md` §10.2).
  */
-const FRAME_BASE = '<base target="_blank">';
+/**
+ * The stylesheet every message frame gets, and it is here for the *quoted* part.
+ *
+ * A reply carries the message it answers, and it arrives however the other client wrapped it:
+ * `<blockquote>` for most, `div.gmail_quote`, `.yahoo_quoted`, Outlook's `#appendonly`. In every
+ * one of those cases it lands in the body with nothing to separate it from what the sender wrote
+ * today — which is the part a reader is looking for, and the part that becomes unreadable when a
+ * wall of older text looks exactly like it. One muted left edge says "the older message starts
+ * here"; the colour says where it ends.
+ */
+const FRAME_QUOTE_CSS = `<style>
+  blockquote, div.gmail_quote, div.yahoo_quoted, #appendonly {
+    margin: 12px 0 0 0;
+    padding-left: 12px;
+    border-left: 2px solid rgba(127, 127, 127, 0.45);
+  }
+  blockquote { color: rgba(127, 127, 127, 1); }
+</style>`;
+
+const FRAME_BASE = '<base target="_blank">' + FRAME_QUOTE_CSS;
 
 /** A message body ready for `srcdoc`, in the colour scheme currently in force. */
 function frameSource(html) {

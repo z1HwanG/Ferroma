@@ -192,7 +192,9 @@ export function quoteHtml(message) {
   const inner = source !== '' ? source : textToHtml(message.text || '');
   return (
     `<p><br></p><p>${escapeHtml(attribution)}</p>` +
-    `<blockquote style="margin:0 0 0 12px;padding-left:12px;border-left:2px solid #cccccc">${inner}</blockquote>`
+    '<blockquote class="quoted-reply" ' +
+    'style="margin:0 0 0 12px;padding-left:12px;border-left:2px solid #cccccc">' +
+    `${inner}</blockquote>`
   );
 }
 

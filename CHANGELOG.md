@@ -16,6 +16,14 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ### Changed
 
+- **A reply's quoted text is visibly the older message, in both places you meet it.** In the
+  reader, every message frame now carries a stylesheet for the wrappers clients actually use —
+  `<blockquote>`, Gmail's `div.gmail_quote`, Yahoo's `.yahoo_quoted`, Outlook's `#appendonly` — so
+  a wall of quoted text has a muted left edge and a colour of its own instead of looking like what
+  the sender wrote today. In the reply editor the quote is dimmed (through the whole block, a
+  copied signature card included), which is the only thing that can separate it from the text
+  being typed: both are editable, so only the styling can tell them apart.
+
 - **One licence, and it is the server one: AGPL-3.0-only.** The project was dual-licensed
   (`MIT OR Apache-2.0`); it is now a single licence, chosen so that a *modified* version offered
   to others as a network service has to come with its source. `LICENSE` carries the verbatim

@@ -279,6 +279,11 @@ tools/               crates 代理与 HTTPS 下载器
 6. **全面使用 rustls。** 不用 OpenSSL、不用 schannel——只有一份 Rust 实现的 TLS。
 7. **绝不记录密钥或邮件正文。**
 
+## 参与贡献
+
+先读 [`CONTRIBUTING_zh.md`](CONTRIBUTING_zh.md)：必须通过的检查、一个改动必须带的东西（没有它就会红的
+测试），以及 DCO 签署方式。
+
 ## 许可
 
 **AGPL-3.0-only。** 运行、修改、自托管都可以——对服务端软件真正要紧的是第 13 条：如果你把**修改过的**

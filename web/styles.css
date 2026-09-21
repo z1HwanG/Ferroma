@@ -1256,11 +1256,16 @@ html[data-theme-resolved="dark"] .reader-html {
   color: var(--accent);
 }
 
+/* The reply's own text and the message it answers are both editable, so the only thing that
+   can tell them apart is the styling: the quote is dimmed, and a left edge marks where it
+   starts. `opacity` reaches everything inside it, including whatever signature card the other
+   client drew. */
 .editor blockquote {
-  margin: 8px 0 8px 10px;
+  margin: 12px 0 12px 10px;
   padding-left: 10px;
   border-left: 3px solid var(--border-strong);
   color: var(--text-muted);
+  opacity: 0.82;
 }
 
 .compose-tabs {
