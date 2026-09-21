@@ -62,7 +62,10 @@ if (fs.existsSync(specPath)) {
 // Chinese one is the authority — so the parity rows below skip them. Their
 // existence in both directories is still checked, through `zhFiles`.
 const zhFiles = fs.readdirSync(zhDir).filter((f) => f.endsWith('.md'));
-const files = zhFiles.filter((f) => f !== 'GLOSSARY.md');
+// Only the pairs that exist on both sides are compared below; a Chinese document whose English
+// original is gone is reported on its own (see `orphans`), and an uncaught `readFileSync` ENOENT
+// would otherwise turn that finding into a stack trace.
+const files = zhFiles.filter((f) => f !== 'GLOSSARY.md' && fs.existsSync(path.join(enDir, f)));
 
 // A single bilingual artifact rather than a translated pair: its Chinese half lives
 // inside the same file, because it is pasted into a page with no language switch
@@ -71,9 +74,19 @@ const files = zhFiles.filter((f) => f !== 'GLOSSARY.md');
 // of being reported as untranslated below.
 const bilingual = new Set(['dockerhub.md']);
 
+/* Documents that are deliberately English-only. Empty today: every document under docs/ has a
+ * Chinese counterpart, and the rule below is what keeps it that way. A document that is *meant*
+ * to be untranslated belongs here, with a reason — silence is not a reason, and neither is
+ * "later": a missing pair is invisible to every reader who only reads one language. */
+const enOnly = new Set([]);
+
 const missing = fs
   .readdirSync(enDir)
-  .filter((f) => f.endsWith('.md') && !zhFiles.includes(f) && !bilingual.has(f));
+  .filter((f) => f.endsWith('.md') && !zhFiles.includes(f) && !bilingual.has(f) && !enOnly.has(f));
+
+// The other direction matters just as much: a Chinese document whose English original was renamed
+// or removed is a page no reader of the English set can reach.
+const orphans = zhFiles.filter((f) => !fs.existsSync(path.join(enDir, f)));
 
 let totalLines = 0;
 let totalEnLines = 0;
@@ -117,7 +130,13 @@ for (const file of files.sort()) {
 
 console.log('');
 if (missing.length) {
-  notes.push(`no Chinese version yet: ${missing.join(', ')}`);
+  problems.push(
+    `no Chinese version: ${missing.join(', ')} — every document is a pair; add docs/zh/<name>.md, ` +
+      'or list it in `enOnly` with a reason',
+  );
+}
+if (orphans.length) {
+  problems.push(`Chinese document without an English original: ${orphans.join(', ')}`);
 }
 
 // --- 2b. bilingual artifacts hold both halves, English first -----------------
