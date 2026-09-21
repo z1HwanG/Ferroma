@@ -677,8 +677,9 @@ A Maildir file name carries its flags after an "info" section:
 
 ```text
 1758012751.M4821P3210.mail:2,S
-└─────── base ───────┘ └┬┘└┬┘
-                     version flags
+└───────── base ─────────┘ │ │
+                           │ └── flags
+                           └──── version
 ```
 
 On Unix the separator is `:` — that is the de-facto standard every Maildir
