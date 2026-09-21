@@ -826,7 +826,7 @@ For "IMAP login fails", see [deployment.md](deployment.md) §11.
 
 | Topic | Document |
 |---|---|
-| Why IMAP and FCP both exist; the official client's own protocol | [fcp.md](fcp.md), [client.md](client.md) |
+| Why IMAP and FCP both exist | [fcp.md](fcp.md) |
 | Folder and message tables, Maildir delivery, integrity checks | [storage.md](storage.md) |
 | Sync cursors, tombstones, conflict resolution | [sync.md](sync.md) |
 | TLS, `require_tls_for_login`, threat model | [security.md](security.md), [deployment.md](deployment.md) |

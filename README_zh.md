@@ -167,8 +167,6 @@ ferroma config check --dns-domain example.com
 | `ferroma-api` — REST API、Ferroma 客户端协议、WebSocket、前端托管 | 完成 |
 | `server` — `ferroma` 二进制及其运维命令 | 完成 |
 | Webmail、Admin | 完成 |
-| `client` — 官方桌面客户端**核心**（同步、缓存、发件箱、搜索、多账户） | 完成 |
-| `client` — 桌面端**图形外壳** | 未构建 |
 
 上表最后一行以上的全部内容，都由下面的测试体系验证，其中包括一项验收测试：启动真实服务器、通过 SMTP 投递一封信、用 IMAP 读回来、再通过 API 找到它，并用真实的桌面客户端完成同步。
 
@@ -196,7 +194,7 @@ cargo clippy --workspace  →  0 错误（clippy 1.98 下多 2 条 `manual_is_mu
   之所以推迟：它需要再跑一次模拟下的 arm64 构建（约 70 分钟），而 0.1.3 已经发布——见
   `Dockerfile` 里的 `TODO(0.1.8)` 注释。
 * **八篇文档里还留着写于各 crate 尚不存在之时的 `_(planned)_` 断言。**
-  其中五篇（`client.md`、`imap.md`、`security.md`、`smtp.md`、`sync.md`）开头仍挂着把已实现
+  其中四篇（`imap.md`、`security.md`、`smtp.md`、`sync.md`）开头仍挂着把已实现
   crate 称作未实现的状态横幅；`architecture.md` 的横幅与产品表已在 0.1.3 修正，其余没有。
   每一处标记都是关于行为的一句断言，需要对着代码逐条核实，所以这是一次独立的通读，而不是
   查找替换。逐篇的标记数量由 [`TODO_zh.md`](TODO_zh.md) 维护，数字只留一处，免得在这里过期。
@@ -219,7 +217,6 @@ cargo clippy --workspace  →  0 错误（clippy 1.98 下多 2 条 `manual_is_mu
 | [`sync.md`](docs/zh/sync.md) | 同步模型深入说明 |
 | [`security.md`](docs/zh/security.md) | 威胁模型、各项控制，以及已知缺口 |
 | [`deployment.md`](docs/zh/deployment.md) | DNS、TLS、备份、升级、故障排查 |
-| [`client.md`](docs/zh/client.md) | 官方客户端的架构与功能 |
 | [`CHANGELOG_zh.md`](CHANGELOG_zh.md) | 每个版本改了什么 |
 | [`TODO_zh.md`](TODO_zh.md) | 还没做完的事，以及已经决定不做的方向 |
 

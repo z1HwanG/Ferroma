@@ -785,7 +785,7 @@ e OK LOGOUT completed
 
 | 主题 | 文档 |
 |---|---|
-| 为什么 IMAP 与 FCP 同时存在；官方客户端自己的协议 | [fcp.md](fcp.md)、[client.md](client.md) |
+| 为什么 IMAP 与 FCP 同时存在 | [fcp.md](fcp.md) |
 | 文件夹与邮件表、Maildir 投递、完整性检查 | [storage.md](storage.md) |
 | 同步游标、墓碑、冲突消解 | [sync.md](sync.md) |
 | TLS、`require_tls_for_login`、威胁模型 | [security.md](security.md)、[deployment.md](deployment.md) |

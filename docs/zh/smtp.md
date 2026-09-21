@@ -844,6 +844,6 @@ QUIT
 | 端口、DNS 记录、TLS 终止、首次运行设置 | [deployment.md](deployment.md) |
 | SPF、DKIM、DMARC、HTML 清洗、中继防御的理由 | [security.md](security.md) |
 | 字节最终落在哪里，以及 `messages` / `mail_queue` 模式 | [storage.md](storage.md) |
-| 从客户端视角看重的重试状态机，Outbox | [sync.md](sync.md)、[client.md](client.md) |
+| 重试状态机、发件箱 | [sync.md](sync.md) |
 | 把邮件入队的 API：`POST /api/v1/messages` | [api.md](api.md) §5.2 |
 | crate 分层与请求生命周期 | [architecture.md](architecture.md) |

@@ -24,7 +24,7 @@ Outlook、手机端，继续使用 IMAP 与 SMTP，并且是一等公民
 * 传输：HTTPS（开发期可在可信代理之后使用纯 HTTP）
 * 媒体类型：`application/json; charset=utf-8`
 * 实时：`GET /api/v1/client/events`升级为 WebSocket
-* 参考实现：`ferroma-api::client`（服务端）、`ferroma-client::api`（客户端）
+* 参考实现：`ferroma-api::client`（服务端这一半）
 
 ---
 

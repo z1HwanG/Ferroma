@@ -1955,7 +1955,6 @@ is expected — identical attachments share a blob — so compare *sizes*, not c
 | Schema, Maildir layout, quota, GC, integrity procedure | [storage.md](storage.md) |
 | Threat model, relay defence, TLS decision, known gaps | [security.md](security.md) |
 | Sync model and the client's failure matrix | [sync.md](sync.md) |
-| The official desktop client | [client.md](client.md) |
 | Crate graph and request lifecycle | [architecture.md](architecture.md) |
 | The text of the published Docker Hub repository page | [dockerhub.md](dockerhub.md) |
 | Every term, and the form to write it in | [GLOSSARY.md](GLOSSARY.md) |

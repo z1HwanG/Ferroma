@@ -27,7 +27,6 @@ TCP connection to the moment a client's socket receives a `mail.received` frame.
 | **Ferroma Server** | `server/` (binary `ferroma`), `crates/*` | The daemon: SMTP, IMAP, HTTP API, queue workers, sync service, event bus | implemented; `ferroma serve` binds every listener |
 | **Ferroma Webmail** | `web/`, `shared/` | Browser mail client, a static SPA served by the API | served at `/` by `api.serve_frontend`; English and Simplified Chinese |
 | **Ferroma Admin** | `admin/`, `shared/` | Domain/user/queue/DNS/storage administration SPA | served at `/admin/`, behind `is_admin`; English and Simplified Chinese |
-| **Ferroma Client** | `client/` (binary `ferroma-client`) | Official desktop client (Windows, Linux, macOS), shared core + UI shell | core implemented and tested, driven by a CLI; the three-pane GUI (§51) is not built |
 
 Webmail and Admin are not separate processes. They are static assets served by
 `ferroma-api` under the same origin as `/api/v1`, gated by `api.serve_frontend`
@@ -80,13 +79,12 @@ Members of the workspace, from `Cargo.toml`:
             │ ferroma-api │  REST + FCP + WebSocket + frontends
             └──────┬──────┘
                    │
-        ┌──────────┴──────────┐
-        ▼                     ▼
-  ┌───────────┐        ┌────────────┐
-  │  server/  │        │  client/   │
-  │  ferroma  │        │ ferroma-   │
-  │  binary   │        │ client     │
-  └───────────┘        └────────────┘
+                   ▼
+            ┌───────────┐
+            │  server/  │
+            │  ferroma  │
+            │  binary   │
+            └───────────┘
 ```
 
 Read the edges off the manifests, not off the diagram:
@@ -103,7 +101,6 @@ Read the edges off the manifests, not off the diagram:
 | `ferroma-sync` | core, mail, storage, events |
 | `ferroma-api` | core, mail, storage, auth, events, sync, smtp |
 | `server` | every crate above |
-| `client` | `ferroma-core` only |
 
 Two consequences worth knowing before you touch a manifest:
 
@@ -577,7 +574,6 @@ chain, for conversation grouping.
 | Sync model, tombstones, conflicts, Outbox, failure matrix | [sync.md](sync.md) |
 | Threat model, controls, known gaps | [security.md](security.md) |
 | DNS, compose files, TLS, backup/restore, troubleshooting | [deployment.md](deployment.md) |
-| Official desktop client | [client.md](client.md) |
 | Every term, and the form to write it in | [GLOSSARY.md](GLOSSARY.md) |
 | What is still not done | [../TODO.md](../TODO.md) |
 | Build quirks on this machine | [../AGENTS.md](../AGENTS.md) |

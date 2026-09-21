@@ -10,11 +10,9 @@ Ferroma 是一个单一的 Rust 进程，它讲 SMTP、IMAP 和 HTTPS，把
 TCP 连接的那一刻，到客户端的 socket 收到一个 `mail.received` 帧的那一刻，
 中间会发生什么。
 
-> **状态：**对当前仓库的架构描述。`ferroma-core`、`ferroma-mail`、
-> `ferroma-storage`、`ferroma-auth` 和 `ferroma-events` 这几个 crate 已实现。
-> `ferroma-smtp`、`ferroma-imap`、`ferroma-sync`、`ferroma-api`、`server` 和
-> `client` 是 crate 骨架，有文档化的接口但尚无实现；下文关于它们内部的一切陈述
-> 都标记为_(计划中)_，是设计规格，不是观察结论。HTTP 与 FCP 的线上契约另行冻结在
+> **状态：**对当前仓库的架构描述。下文提到的每个 crate 都已实现，并由
+> `cargo test --workspace` 覆盖。凡是描述"规格要求、但本构建尚未具备"的行为，都标记为
+> _(计划中)_，那是设计注记，不是观察结论。HTTP 与 FCP 的线上契约另行冻结在
 > [api.md](api.md) 和 [fcp.md](fcp.md) 中，本文档从不重述它们。
 
 ---
@@ -26,7 +24,6 @@ TCP 连接的那一刻，到客户端的 socket 收到一个 `mail.received` 帧
 | **Ferroma Server** | `server/`（二进制 `ferroma`）、`crates/*` | 守护进程：SMTP、IMAP、HTTP API、队列工作进程、同步服务、事件总线 | 二进制是桩；库部分实现 |
 | **Ferroma Webmail** | `web/` | 浏览器邮件客户端，一个由 API 提供服务的静态 SPA | SPA 源码已存在；尚未被服务 _(计划中)_ |
 | **Ferroma Admin** | `admin/` | 域名/用户/队列/DNS/存储管理 SPA | SPA 源码已存在；尚未被服务 _(计划中)_ |
-| **Ferroma Client** | `client/`（二进制 `ferroma-client`） | 官方桌面客户端（Windows、Linux、macOS），共享核心加 UI 外壳 | 骨架 |
 
 Webmail 和 Admin 不是独立进程。它们是由 `ferroma-api` 在与
 `/api/v1` 同源之下提供的静态资源，受 `api.serve_frontend` 门控，
@@ -76,13 +73,12 @@ API、事件总线和认证。这样服务端上「把这封邮件标为已读�
             │ ferroma-api │  REST + FCP + WebSocket + frontends
             └──────┬──────┘
                    │
-        ┌──────────┴──────────┐
-        ▼                     ▼
-  ┌───────────┐        ┌────────────┐
-  │  server/  │        │  client/   │
-  │  ferroma  │        │ ferroma-   │
-  │  binary   │        │ client     │
-  └───────────┘        └────────────┘
+                   ▼
+            ┌───────────┐
+            │  server/  │
+            │  ferroma  │
+            │  binary   │
+            └───────────┘
 ```
 
 依赖边以 manifest 为准，不要从图上读：
@@ -99,7 +95,6 @@ API、事件总线和认证。这样服务端上「把这封邮件标为已读�
 | `ferroma-sync` | core、mail、storage、events |
 | `ferroma-api` | core、mail、storage、auth、events、sync、smtp |
 | `server` | 上面的每一个 crate |
-| `client` | 只有 `ferroma-core` |
 
 在你动手改一个 manifest 之前，有两点后果值得知道：
 
@@ -564,7 +559,6 @@ CREATE TABLE messages (
 | 同步模型、墓碑、冲突、发件箱、失败矩阵 | [sync.md](sync.md) |
 | 威胁模型、控制措施、已知缺口 | [security.md](security.md) |
 | DNS、compose 文件、TLS、备份/恢复、故障排查 | [deployment.md](deployment.md) |
-| 官方桌面客户端 | [client.md](client.md) |
 | 每条术语及其规范写法 | [GLOSSARY.md](GLOSSARY.md) |
 | 还有哪些没做 | [../../TODO_zh.md](../../TODO_zh.md) |
 | 这台机器上的构建怪癖 | [../../AGENTS.md](../../AGENTS.md) |

@@ -34,9 +34,6 @@ const PAGES = [
   { slug: 'storage', group: 'internals',
     en: { title: 'Storage', desc: 'The schema, the Maildir, quotas, attachments, integrity.' },
     zh: { title: '存储', desc: '数据库模式、Maildir、配额、附件与完整性。' } },
-  { slug: 'client', group: 'client',
-    en: { title: 'Desktop Client', desc: 'The official client\u2019s architecture and features.' },
-    zh: { title: '桌面客户端', desc: '官方客户端的架构与功能。' } },
   { slug: 'security', group: 'operations',
     en: { title: 'Security', desc: 'The threat model and each control, plus known gaps.' },
     zh: { title: '安全', desc: '威胁模型、每项安全控制及已知缺口。' } },
@@ -52,7 +49,6 @@ const GROUPS = {
   overview:   { en: 'Overview',   zh: '总览' },
   protocols:  { en: 'Protocols',  zh: '协议' },
   internals:  { en: 'Internals',  zh: '内部实现' },
-  client:     { en: 'Client',     zh: '客户端' },
   operations: { en: 'Operations', zh: '运维' },
 };
 

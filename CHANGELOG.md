@@ -16,6 +16,13 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ### Changed
 
+- **This repository is the server, and only the server.** The desktop client crate is gone: it is a
+  separate project now, and a server repository that also ships a GUI carries a build matrix, a
+  release cadence and a dependency tree that the server does not need. What stays is everything a
+  client talks to — the FCP protocol, `docs/fcp.md`, and the `x-ferroma-client` header the API reads
+  to identify a caller. What leaves is `client/`, `docs/client.md` and its Chinese pair, and the
+  Dockerfile's build-cache stubs for it.
+
 - **A reply's quoted text is visibly the older message, in both places you meet it.** In the
   reader, every message frame now carries a stylesheet for the wrappers clients actually use —
   `<blockquote>`, Gmail's `div.gmail_quote`, Yahoo's `.yahoo_quoted`, Outlook's `#appendonly` — so

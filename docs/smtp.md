@@ -907,6 +907,6 @@ command list in [deployment.md](deployment.md) §11.
 | Ports, DNS records, TLS termination, first-run setup | [deployment.md](deployment.md) |
 | SPF, DKIM, DMARC, HTML sanitisation, relay defence rationale | [security.md](security.md) |
 | Where the bytes end up, and the `messages` / `mail_queue` schema | [storage.md](storage.md) |
-| Retry state machine from the client's point of view, Outbox | [sync.md](sync.md), [client.md](client.md) |
+| Retry state machine, Outbox | [sync.md](sync.md) |
 | The API that queues mail: `POST /api/v1/messages` | [api.md](api.md) §5.2 |
 | Crate layering and the request lifecycle | [architecture.md](architecture.md) |

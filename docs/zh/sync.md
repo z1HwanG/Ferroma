@@ -672,5 +672,4 @@ Draft   Pending   Uploading   Queued   Sending   Sent   Failed   Retrying
 | 事件名称、作用域、重放、进程内限制 | [architecture.md](architecture.md) §6 |
 | 表结构：`change_log`、`operations`、`client_sync_states` | [storage.md](storage.md) §2.7 |
 | IMAP 一侧的 UID 与 UIDVALIDITY 语义 | [imap.md](imap.md) §5 |
-| 客户端的同步引擎、SQLite 缓存、发件箱 UI | [client.md](client.md) |
 | 队列状态、重试计划、退信 | [smtp.md](smtp.md) §11 |

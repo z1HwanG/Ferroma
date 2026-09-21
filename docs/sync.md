@@ -709,5 +709,4 @@ acts rather than when the request is sent.
 | Event names, scopes, replay, the in-process limitation | [architecture.md](architecture.md) §6 |
 | Schema: `change_log`, `operations`, `client_sync_states` | [storage.md](storage.md) §2.7 |
 | UID and UIDVALIDITY semantics on the IMAP side | [imap.md](imap.md) §5 |
-| The client's sync engine, SQLite cache, Outbox UI | [client.md](client.md) |
 | Queue states, retry schedule, bounce | [smtp.md](smtp.md) §11 |

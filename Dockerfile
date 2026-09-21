@@ -33,7 +33,6 @@ COPY crates/ferroma-imap/Cargo.toml      crates/ferroma-imap/
 COPY crates/ferroma-sync/Cargo.toml      crates/ferroma-sync/
 COPY crates/ferroma-api/Cargo.toml       crates/ferroma-api/
 COPY server/Cargo.toml                   server/
-COPY client/Cargo.toml                   client/
 
 # Placeholder sources so the dependency graph can be compiled and cached on its own.
 RUN set -eux; \
@@ -42,9 +41,8 @@ RUN set -eux; \
         mkdir -p "crates/$crate/src"; \
         echo '' > "crates/$crate/src/lib.rs"; \
     done; \
-    mkdir -p server/src client/src; \
+    mkdir -p server/src; \
     echo 'fn main() {}' > server/src/main.rs; \
-    echo 'fn main() {}' > client/src/main.rs; \
     mkdir -p migrations; \
     echo '-- placeholder' > migrations/0001_initial.sql; \
     mkdir -p config; \
@@ -55,7 +53,6 @@ RUN set -eux; \
 # Real sources.
 COPY crates ./crates
 COPY server ./server
-COPY client ./client
 COPY migrations ./migrations
 COPY config ./config
 COPY web ./web
@@ -64,7 +61,7 @@ COPY shared ./shared
 
 # `touch` so cargo notices the placeholder sources changed.
 RUN set -eux; \
-    find crates server client -name '*.rs' -exec touch {} +; \
+    find crates server -name '*.rs' -exec touch {} +; \
     cargo build --release --bin ferroma; \
     strip target/release/ferroma
 

@@ -5,9 +5,9 @@
 **A Rust-native, self-hosted mail platform.**
 
 Ferroma is a complete mail system built from the protocols up: its own SMTP and IMAP
-servers, its own MIME and mail core, its own storage engine — plus a Webmail client,
-an Admin console and a set of official cross-platform clients that talk to it over a
-purpose-built synchronisation protocol.
+servers, its own MIME and mail core, its own storage engine — plus a Webmail client, an
+Admin console, and a synchronisation protocol (FCP) for clients that want to talk to it
+directly rather than through IMAP.
 
 It does **not** wrap Postfix, Dovecot, Stalwart or any other mail server. The point is
 to own the whole stack.
@@ -209,8 +209,6 @@ no records (`.test`, `.invalid`, `.localhost`).
 | `ferroma-api` — REST API, Ferroma Client Protocol, WebSocket, front-end hosting | done |
 | `server` — the `ferroma` binary and its operator commands | done |
 | Webmail, Admin console | done |
-| `client` — official desktop client **core** (sync, cache, outbox, search, multi-account) | done |
-| `client` — desktop **graphical shell** | not built |
 
 Everything above the last line is verified by the suite below, including an acceptance
 run that starts the real server, delivers a message over SMTP, reads it back over IMAP,
@@ -245,7 +243,7 @@ release for, and neither is fixed by a mechanical edit:
   emulation (~70 minutes) and 0.1.3 was already published — see the `TODO(0.1.8)`
   comment in the `Dockerfile`.
 * **Eight documents still carry `_(planned)_` claims from before the crates existed.**
-  Five of them (`client.md`, `imap.md`, `security.md`, `smtp.md`, `sync.md`) still open
+  Four of them (`imap.md`, `security.md`, `smtp.md`, `sync.md`) still open
   with a status banner calling implemented crates unimplemented; `architecture.md`'s
   banner and product table were corrected in 0.1.3, the rest were not. Every marker is
   a claim about behaviour that has to be checked against the code, so this is a read of
@@ -271,7 +269,6 @@ A Chinese translation of this file is at [`README_zh.md`](README_zh.md).
 | [`docs/sync.md`](docs/sync.md) | the synchronisation model in depth |
 | [`docs/security.md`](docs/security.md) | the threat model and each control, plus known gaps |
 | [`docs/deployment.md`](docs/deployment.md) | DNS, TLS, backups, upgrades, troubleshooting |
-| [`docs/client.md`](docs/client.md) | the official client's architecture and features |
 | [`CHANGELOG.md`](CHANGELOG.md) | what changed in each release |
 | [`TODO.md`](TODO.md) | what is not done yet, and what was decided against |
 

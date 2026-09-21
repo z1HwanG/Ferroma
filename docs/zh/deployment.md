@@ -1811,7 +1811,6 @@ docker compose -f docker-compose.prod.yml exec postgres \
 | 模式、Maildir 布局、配额、GC、完整性流程 | [storage.md](storage.md) |
 | 威胁模型、中继防御、TLS 决策、已知缺口 | [security.md](security.md) |
 | 同步模型与客户端的失败矩阵 | [sync.md](sync.md) |
-| 官方桌面客户端 | [client.md](client.md) |
 | crate 图与请求生命周期 | [architecture.md](architecture.md) |
 | 每条术语及其规范写法 | [GLOSSARY.md](GLOSSARY.md) |
 | 还有哪些没做 | [../../TODO_zh.md](../../TODO_zh.md) |

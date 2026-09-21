@@ -24,7 +24,7 @@ device management, chunked attachment transfer and real-time push.
 * Transport: HTTPS (or plain HTTP behind a trusted proxy during development)
 * Media type: `application/json; charset=utf-8`
 * Realtime: `GET /api/v1/client/events` upgraded to WebSocket
-* Reference implementation: `ferroma-api::client` (server), `ferroma-client::api` (client)
+* Reference implementation: `ferroma-api::client` (the server half)
 
 ---
 

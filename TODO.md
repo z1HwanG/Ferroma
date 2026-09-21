@@ -11,7 +11,7 @@ retired pieces is in its `## [Unreleased]` section.
 ## Next release (0.1.8)
 
 - A published image cannot say which build it is: `ferroma version` inside the container and the Admin console both print `built: unknown` / `revision: unknown`, because the `Dockerfile` passes its build identity only to the OCI labels — [README — Carried into 0.1.8](README.md#carried-into-018), [CHANGELOG — Known issues carried into 0.1.8](CHANGELOG.md#known-issues-carried-into-018).
-- Eight documents still describe skeletons: they carry `_(planned)_` claims written before those crates existed, and five of them — `client.md`, `imap.md`, `security.md`, `smtp.md`, `sync.md` — still open with a status banner calling implemented crates unimplemented — [README — Carried into 0.1.8](README.md#carried-into-018), [CHANGELOG — Known issues carried into 0.1.8](CHANGELOG.md#known-issues-carried-into-018).
+- Seven documents still describe skeletons: they carry `_(planned)_` claims written before those crates existed, and four of them — `imap.md`, `security.md`, `smtp.md`, `sync.md` — still open with a status banner calling implemented crates unimplemented — [README — Carried into 0.1.8](README.md#carried-into-018), [CHANGELOG — Known issues carried into 0.1.8](CHANGELOG.md#known-issues-carried-into-018).
 
 ## Documented but not delivered
 
@@ -21,7 +21,6 @@ checked; `architecture.md` also holds the sentence that explains the marker, whi
 one of its two.
 
 - `docs/architecture.md` carries 2 `_(planned)_` claims, one of which is the sentence explaining the marker itself — [architecture.md](docs/architecture.md).
-- `docs/client.md` carries 3 `_(planned)_` claims — [client.md](docs/client.md).
 - `docs/deployment.md` carries 1 `_(planned)_` claim — [deployment.md](docs/deployment.md).
 - `docs/imap.md` carries 19 `_(planned)_` claims — [imap.md](docs/imap.md).
 - `docs/security.md` carries 25 `_(planned)_` claims — [security.md](docs/security.md).
