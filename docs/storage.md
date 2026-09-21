@@ -81,7 +81,7 @@ and `Config::attachment_root()` is `storage.attachment_root` or
 `<server.data_dir>/attachments`.
 
 **Every path column is relative.** `messages.storage_path` looks like
-`example.com/alice/Maildir/cur/1758012751.M4821P3210.mail:2,S` — relative to the
+`example.com/alice/Maildir/cur/1758012751.M4821_P3210.mail:2,S` — relative to the
 Maildir root, and in a fixed form: forward slashes, always (`Maildir::relative`
 joins with `/`). That is what makes a data directory relocatable: move the root,
 update `server.data_dir`, and every path still resolves.
@@ -501,10 +501,10 @@ dotted directory names. Choose it on filesystems with unusual name rules — see
 ### 4.2 The file name
 
 ```text
-1758012751.M4821P3210.mail:2,S
-└────┬───┘ └──┬───┘ └─┬─┘ │ └┬┘
-  unix secs   pid _    host │  flags: S = \Seen
-              counter      version marker "2,"
+1758012751.M4821_P3210.mail:2,S
+└───┬────┘ └─┬──┘└─┬─┘ └┬─┘ │ │
+unix secs   pid        host │ └── flags: S = \Seen
+                counter     └──── version marker "2,"
 ```
 
 `Maildir::unique_filename` builds `<secs>.<pid>_<counter>.<hostname>` and appends

@@ -73,7 +73,7 @@ Ferroma 使用两个存储。PostgreSQL 保存应用要查询的每一个事实�
 `<server.data_dir>/attachments`。
 
 **每个路径列都是相对路径。** `messages.storage_path` 形如
-`example.com/alice/Maildir/cur/1758012751.M4821P3210.mail:2,S`，相对于 Maildir 根，
+`example.com/alice/Maildir/cur/1758012751.M4821_P3210.mail:2,S`，相对于 Maildir 根，
 且形式固定：始终使用正斜杠（`Maildir::relative` 用 `/` 拼接）。这正是数据目录可以迁移的
 原因：移动根目录，更新 `server.data_dir`，所有路径依然能解析。
 
@@ -476,10 +476,10 @@ Admin 面板可以修改而无需重启。它们**不**覆盖 `ferroma.toml`：�
 ### 4.2 文件名
 
 ```text
-1758012751.M4821P3210.mail:2,S
-└────┬───┘ └──┬───┘ └─┬─┘ │ └┬┘
-  unix 秒数   pid _    主机 │  标志位：S = \Seen
-              计数器       版本标记 "2,"
+1758012751.M4821_P3210.mail:2,S
+└───┬────┘ └─┬──┘└─┬─┘ └┬─┘ │ │
+unix 秒数     pid        主机   │ └── 标志位：S = \Seen
+                 计数器        └──── 版本标记 "2,"
 ```
 
 `Maildir::unique_filename` 构造 `<secs>.<pid>_<counter>.<hostname>`，并通过 `with_info`

@@ -676,16 +676,16 @@ not diverge, so a server-side draft is mirrored into the Drafts folder with the
 A Maildir file name carries its flags after an "info" section:
 
 ```text
-1758012751.M4821P3210.mail:2,S
-└───────── base ─────────┘ │ │
-                           │ └── flags
-                           └──── version
+1758012751.M4821_P3210.mail:2,S
+└───────── base ──────────┘ │ │
+                            │ └── flags
+                            └──── version
 ```
 
 On Unix the separator is `:` — that is the de-facto standard every Maildir
 implementation has used for twenty years. On Windows it cannot be, because NTFS
 treats `name:stream` as an **alternate data stream**: creating a file literally
-named `1758012751.M4821P3210.mail:2,S` either fails or silently creates something
+named `1758012751.M4821_P3210.mail:2,S` either fails or silently creates something
 other than a normal file, and the flags would be invisible or the write would
 fail outright. Maildir implementations on Windows have therefore used `;`
 instead for just as long.
