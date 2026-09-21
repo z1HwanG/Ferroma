@@ -203,3 +203,11 @@ link to its counterpart; `node tools/check-zh.mjs` reports a document with no Ch
 Chinese document whose English original is gone. A document that is *meant* to be English-only goes
 in `check-zh.mjs`'s `enOnly` set with a reason — a missing pair is invisible to every reader who
 reads only one language, which is why it fails rather than warns.
+
+A **figure** is done when `node tools/check-diagrams.mjs` passes: inside a fenced block, every row
+carrying the same number of box-drawing characters must put its last one in the same display column.
+Display columns, not character indices — a CJK character is two columns wide, so the same picture
+needs different arithmetic in English and in Chinese, and measuring the wrong one turns an aligned
+figure into a false finding. Rows from boxes side by side or nested carry different counts and are
+excluded by construction; that is what keeps the rule from firing on every crate graph in
+`architecture.md`.
