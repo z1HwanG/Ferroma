@@ -103,7 +103,7 @@ how correct the server is — see
 
 ## Licence
 
-MIT OR Apache-2.0, at your option.
+AGPL-3.0-only — free to run, modify and self-host. The condition that matters for a server: a modified version offered to others over a network has to come with its source.
 
 ---
 
@@ -171,4 +171,4 @@ docker run -d --name ferroma \
 
 ### 许可证
 
-MIT OR Apache-2.0，任选其一。
+AGPL-3.0-only —— 自由运行、修改、自托管。对服务端软件要紧的那一条：修改版若作为网络服务提供给别人，必须一并提供其源码。

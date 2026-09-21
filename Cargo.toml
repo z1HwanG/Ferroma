@@ -23,7 +23,7 @@ edition = "2021"
 # dependency rather than about this line. `tools/msrv.mjs` recomputes this from the
 # lockfile and the registry index, and fails if the claim and the graph disagree.
 rust-version = "1.88"
-license = "MIT OR Apache-2.0"
+license = "AGPL-3.0-only"
 repository = "https://github.com/z1HwanG/Ferroma"
 authors = ["Ferroma Contributors"]
 description = "Ferroma — a Rust-native self-hosted mail platform"

@@ -341,4 +341,7 @@ tools/               the crates proxy and the HTTPS fetcher
 
 ## Licence
 
-MIT OR Apache-2.0.
+**AGPL-3.0-only.** Run it, modify it, self-host it — the condition that matters for a server is
+§13: if you let other people use a *modified* version over a network, you have to offer them that
+version's source. This repository is the upstream source, and the full text is in
+[`LICENSE`](LICENSE).

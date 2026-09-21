@@ -93,7 +93,7 @@ ARG FERROMA_CREATED=unknown
 
 LABEL org.opencontainers.image.title="Ferroma" \
       org.opencontainers.image.description="A Rust-native self-hosted mail platform" \
-      org.opencontainers.image.licenses="MIT OR Apache-2.0" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
       org.opencontainers.image.url="https://github.com/z1HwanG/Ferroma" \
       org.opencontainers.image.source="https://github.com/z1HwanG/Ferroma" \
       org.opencontainers.image.documentation="https://github.com/z1HwanG/Ferroma/blob/main/docs/deployment.md" \
@@ -135,6 +135,10 @@ COPY --from=builder /build/config/ferroma.toml /etc/ferroma/ferroma.toml
 COPY --from=builder /build/web /usr/share/ferroma/web
 COPY --from=builder /build/admin /usr/share/ferroma/admin
 COPY --from=builder /build/shared /usr/share/ferroma/shared
+# The licence travels with the binary: this is a network service, and whoever runs it should not
+# have to guess what it is licensed under. Taken from the build context, not from the builder
+# stage, which never looks at it.
+COPY LICENSE /usr/share/doc/ferroma/LICENSE
 
 # `COPY` preserves the mode of the file it copies, and a checkout can legitimately hold a
 # source file that is not world-readable — `0600` is what some editors and agent tools

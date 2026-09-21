@@ -14,6 +14,14 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ## [Unreleased]
 
+### Changed
+
+- **One licence, and it is the server one: AGPL-3.0-only.** The project was dual-licensed
+  (`MIT OR Apache-2.0`); it is now a single licence, chosen so that a *modified* version offered
+  to others as a network service has to come with its source. `LICENSE` carries the verbatim
+  text, `Cargo.toml` and the image's OCI label carry the SPDX id, and the image now contains the
+  licence file itself.
+
 ## [0.1.7] — 2026-09-20
 
 ### Changed

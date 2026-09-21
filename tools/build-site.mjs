@@ -449,7 +449,7 @@ ${themeBootstrap()}
     <div class="sidebar-inner">
       <a class="nav-link nav-home${slug === 'home' ? ' active' : ''}" href="${root}index.html">${ui.home}</a>
       ${navGroupHtml(lang, slug, root)}
-      <div class="sidebar-foot">MIT OR Apache-2.0</div>
+      <div class="sidebar-foot">AGPL-3.0</div>
     </div>
   </aside>
   <div class="scrim" id="scrim"></div>
@@ -460,7 +460,7 @@ ${themeBootstrap()}
       ${prev ? `<a class="pager-prev" href="${root}${lang}/${prev.slug}.html"><span>←</span><span><small>${ui.previous}</small><b>${prev[lang].title}</b></span></a>` : '<span></span>'}
       ${next ? `<a class="pager-next" href="${root}${lang}/${next.slug}.html"><span><small>${ui.next}</small><b>${next[lang].title}</b></span><span>→</span></a>` : '<span></span>'}
     </nav>
-    <footer class="footer">Ferroma · MIT OR Apache-2.0 · <span>${ui.builtFrom}</span></footer>
+    <footer class="footer">Ferroma · AGPL-3.0 · <span>${ui.builtFrom}</span></footer>
   </main>
   ${tocHtml ? `<aside class="tocpane">${tocHtml}</aside>` : ''}
 </div>
@@ -560,7 +560,7 @@ ${themeBootstrap()}
 <section class="hero">
   <div class="hero-inner">
     <div class="hero-copy">
-      <div class="hero-badges"><span>Rust-native</span><span>Self-hosted</span><span>MIT OR Apache-2.0</span></div>
+      <div class="hero-badges"><span>Rust-native</span><span>Self-hosted</span><span>AGPL-3.0</span></div>
       <h1>Ferroma</h1>
       <p class="hero-line-en">A Rust-native, self-hosted mail platform — its own SMTP and IMAP servers, its own MIME core, its own storage engine. It does not wrap Postfix or Dovecot. The point is to own the whole stack.</p>
       <p class="hero-line-zh">一个 Rust 原生、可自托管的邮件平台——自研 SMTP 与 IMAP 服务器、自研 MIME 邮件核心与存储引擎，不封装 Postfix、Dovecot 等任何现有邮件服务器，目标是掌握全部技术栈。</p>
@@ -594,7 +594,7 @@ ${themeBootstrap()}
   <p class="section-note">完整部署说明（DNS、TLS、DKIM、备份与升级）见 <a href="en/deployment.html">Deployment</a> 与 <a href="zh/deployment.html">中文版部署文档</a>。</p>
 </section>
 
-<footer class="footer footer-home">Ferroma · MIT OR Apache-2.0 · <span>built from docs/ · 由 docs/ 生成</span></footer>
+<footer class="footer footer-home">Ferroma · AGPL-3.0 · <span>built from docs/ · 由 docs/ 生成</span></footer>
 <script src="assets/site.js"><\/script>
 </body>
 </html>`;
