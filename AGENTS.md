@@ -195,3 +195,11 @@ document links to its Chinese sibling rather than to the English file it mirrors
 pair keeps the same headings and code fences, and `docs/dockerhub.md` still carries both
 languages with English first. Both checks run in CI before a release image is built, so
 a reference that breaks in a later edit fails the release instead of the reader.
+
+A **page** is done the same way, and the coverage is checked rather than remembered: every document
+under `docs/` is a pair, and the generated site publishes both languages or the check fails.
+`node tools/site-check.mjs` reports a page that exists in only one language, and one that does not
+link to its counterpart; `node tools/check-zh.mjs` reports a document with no Chinese version and a
+Chinese document whose English original is gone. A document that is *meant* to be English-only goes
+in `check-zh.mjs`'s `enOnly` set with a reason — a missing pair is invisible to every reader who
+reads only one language, which is why it fails rather than warns.
