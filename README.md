@@ -1,5 +1,7 @@
 # Ferroma
 
+**English** · [简体中文](README_zh.md)
+
 **A Rust-native, self-hosted mail platform.**
 
 Ferroma is a complete mail system built from the protocols up: its own SMTP and IMAP
@@ -20,7 +22,7 @@ to own the whole stack.
       │                    ┌─────┼─────┐                    │
       │                    ▼     ▼     ▼                    │
       │                  Win   Linux  macOS                 │
-      │                                                      │
+      │                                                     │
       └──────────────────────────┼──────────────────────────┘
                                  │
                         Client API (FCP) / HTTP API
