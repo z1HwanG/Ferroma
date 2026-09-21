@@ -90,9 +90,9 @@ does not write the cache. It calls the core and reacts to events the core emits.
    ┌────────────────────────────────▼─────────────────────────────────────────┐
    │                        ferroma-client core (Rust)                        │
    │                                                                          │
-   │   account ── api ── sync ── database ── mail ── draft ── outbox           │
+   │   account ── api ── sync ── database ── mail ── draft ── outbox          │
    │                    │                     │                               │
-   │                    └── attachment ── search ── notification ── device     │
+   │                    └── attachment ── search ── notification ── device    │
    │                                                                          │
    │             settings (local + server-mirrored)                           │
    └────────────────────────────────┬─────────────────────────────────────────┘
@@ -435,11 +435,11 @@ shape.
    │                                                                           │
    │   loop:                                                                   │
    │     for each folder of the account:                                       │
-   │        cursor = SELECT cursor FROM sync_state WHERE …                      │
-   │        page   = api.get_sync(mailbox_id, folder_id, cursor, limit)         │
+   │        cursor = SELECT cursor FROM sync_state WHERE …                     │
+   │        page   = api.get_sync(mailbox_id, folder_id, cursor, limit)        │
    │        BEGIN;                                                             │
-   │          for change in page.changes: apply(change)     # idempotent         │
-   │          UPDATE sync_state SET cursor = page.next_cursor                   │
+   │          for change in page.changes: apply(change)     # idempotent       │
+   │          UPDATE sync_state SET cursor = page.next_cursor                  │
    │        COMMIT;                                                            │
    │     until not page.has_more                                               │
    │                                                                           │
