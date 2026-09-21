@@ -14,6 +14,8 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ## [Unreleased]
 
+## [0.1.8] — 2026-09-21
+
 ### Changed
 
 - **This repository is the server, and only the server.** The desktop client crate is gone: it is a
@@ -594,13 +596,13 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
   indistinguishable from a server that never answered.
 
 
-### Known issues carried into 0.1.8
+### Known issues carried into 0.1.9
 
 Both items found while cutting 0.1.3 are still open: a published image cannot say which
 build it is, and eight documents still carry `_(planned)_` claims written before those
 crates existed. They are now tracked in [`TODO.md`](TODO.md) under "Next release
-(0.1.8)"; the fix for the first is described in
-[README — Carried into 0.1.6](README.md#carried-into-018).
+(0.1.9)"; the fix for the first is described in
+[README — Carried into 0.1.6](README.md#carried-into-019).
 
 ## [0.1.3] — 2026-09-19
 
