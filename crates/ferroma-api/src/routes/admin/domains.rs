@@ -182,6 +182,14 @@ pub struct DnsChecks {
     pub dkim_public_key: Option<String>,
     /// The DMARC policy the operator should publish.
     pub expected_dmarc: Option<String>,
+    /// The relay outbound mail leaves through, when `[queue] relay_host` is set.
+    ///
+    /// It changes what two rows mean. A `PTR` record is what a *direct* sender needs — the
+    /// address on the wire is the one receivers reverse-resolve — and it is not what a relayed
+    /// sender needs, because the wire carries the relay's address instead. And an `SPF` record
+    /// for a relayed instance has to `include` the relay's own domain, a name only its provider
+    /// knows: nothing can guess `spf.example-relay.com` from `mail.example-relay.com`.
+    pub relay: Option<String>,
 }
 
 impl DnsChecks {
@@ -269,19 +277,10 @@ pub async fn check_domain(domain: &str, checks: &DnsChecks) -> Vec<DnsRecord> {
     records.push(match checks.expected_address.or(resolved_address) {
         Some(address) => match reverse_lookup(address).await {
             Ok(values) => {
-                let matched = values.iter().any(|value| {
-                    value
-                        .to_ascii_lowercase()
-                        .trim_end_matches('.')
-                        .eq_ignore_ascii_case(&checks.mail_host)
-                });
-                DnsRecord::new(
-                    "PTR",
-                    if matched { RecordStatus::Ok } else { RecordStatus::Warn },
-                    Some(checks.mail_host.clone()),
-                    values,
-                )
-                .with_hint("a matching PTR record keeps large receivers from deferring your mail")
+                let (status, hint) =
+                    ptr_verdict(&values, &checks.mail_host, checks.relay.as_deref());
+                DnsRecord::new("PTR", status, Some(checks.mail_host.clone()), values)
+                    .with_hint(hint)
             }
             Err(reason) => DnsRecord::skipped("PTR", Some(checks.mail_host.clone()), &reason),
         },
@@ -302,13 +301,8 @@ pub async fn check_domain(domain: &str, checks: &DnsChecks) -> Vec<DnsRecord> {
                 .collect();
             match checks.expected_spf.as_deref() {
                 Some(expected) => {
-                    let matched = spf.iter().any(|value| value.contains(expected));
-                    DnsRecord::new(
-                        "SPF",
-                        if matched { RecordStatus::Ok } else { RecordStatus::Warn },
-                        Some(expected.to_string()),
-                        spf,
-                    )
+                    let (status, hint) = spf_verdict(&spf, expected, checks.relay.as_deref());
+                    DnsRecord::new("SPF", status, Some(expected.to_string()), spf).with_hint(hint)
                 }
                 None if spf.is_empty() => DnsRecord::new("SPF", RecordStatus::Warn, None, spf)
                     .with_hint("publish an SPF record so receivers can tell legitimate mail apart"),
@@ -367,6 +361,77 @@ pub async fn check_domain(domain: &str, checks: &DnsChecks) -> Vec<DnsRecord> {
     });
 
     records
+}
+
+/// What the `PTR` row means, given how this instance sends mail.
+///
+/// A direct sender needs the record: its address is the one on the wire, and a receiver
+/// reverse-resolves it to decide whether to believe the connection. A relayed sender does not:
+/// the wire carries the relay's address, and this host's is only a place mail arrives. The row
+/// still reports what it found — an operator may want the record anyway, for the other things
+/// running on that address — but a relay turns "missing" from a defect into a note.
+fn ptr_verdict(
+    found: &[String],
+    mail_host: &str,
+    relay: Option<&str>,
+) -> (RecordStatus, &'static str) {
+    let matched = found.iter().any(|value| {
+        value
+            .to_ascii_lowercase()
+            .trim_end_matches('.')
+            .eq_ignore_ascii_case(mail_host)
+    });
+    match (matched, relay) {
+        (true, _) => (
+            RecordStatus::Ok,
+            "a matching PTR record keeps large receivers from deferring your mail",
+        ),
+        (false, Some(_)) => (
+            RecordStatus::Skip,
+            "outbound mail leaves through the configured relay, so this address does not need a matching PTR — the relay's own address is what receivers reverse-resolve. It is still worth having if this host also sends mail itself",
+        ),
+        (false, None) => (
+            RecordStatus::Warn,
+            "a matching PTR record keeps large receivers from deferring your mail",
+        ),
+    }
+}
+
+/// What the `SPF` row means, given how this instance sends mail.
+///
+/// The expected record is the one a *direct* sender publishes: it authorises the mail host. An
+/// instance that relays has to authorise the relay instead, and no panel can know which
+/// `include` that is — the provider decides the name. So a record that delegates sending counts
+/// for what it is, with a hint naming what has to be true, rather than a warning that accuses an
+/// operator of a mistake they did not make.
+fn spf_verdict(
+    published: &[String],
+    expected: &str,
+    relay: Option<&str>,
+) -> (RecordStatus, &'static str) {
+    if published.iter().any(|value| value.contains(expected)) {
+        return (
+            RecordStatus::Ok,
+            "this record authorises the mail host, which is what direct delivery needs",
+        );
+    }
+    let delegates = published
+        .iter()
+        .any(|value| value.to_ascii_lowercase().contains("include:"));
+    match relay {
+        Some(_) if delegates => (
+            RecordStatus::Ok,
+            "outbound mail leaves through the configured relay and this record delegates sending to a provider — check that the include names that provider's own domain",
+        ),
+        Some(_) => (
+            RecordStatus::Warn,
+            "outbound mail leaves through the configured relay, so this record has to include the relay's own domain (its provider decides that name); the expected value above is what a direct sender publishes",
+        ),
+        None => (
+            RecordStatus::Warn,
+            "this record does not authorise the mail host; point it at the mail host, or state the relay this instance sends through as [queue] relay_host and this row will say what it should be",
+        ),
+    }
 }
 
 /// Look one record type up through the platform resolver.
@@ -975,6 +1040,9 @@ pub async fn domain_dns(
             .unwrap_or_else(|| state.config.dkim.selector.clone()),
         dkim_public_key: domain.dkim_public_key.clone(),
         expected_dmarc: Some(DnsChecks::default_dmarc(&domain.name)),
+        // How outbound mail actually leaves, so the PTR and SPF rows can say what they mean
+        // instead of accusing a relayed deployment of publishing the wrong records.
+        relay: state.config.queue.relay_host.clone(),
     };
 
     let records = check_domain(&domain.name, &checks).await;
@@ -1344,6 +1412,73 @@ key.example\ttext = \"v=DKIM1; k=rsa; p=MIIB\" \"AABB\"\n";
         let address = "Server:\t\t127.0.0.53\nAddress:\t127.0.0.53#53\n\n\
 Non-authoritative answer:\nName:\tmail.example.com\nAddress: 203.0.113.10\n";
         assert_eq!(extract_records(address, "A"), vec!["203.0.113.10"]);
+
+    }
+
+    #[test]
+    fn a_relay_turns_a_missing_ptr_from_a_defect_into_a_note() {
+        let host = "mail.example.com";
+        // A direct sender needs the record: its address is the one on the wire.
+        assert_eq!(ptr_verdict(&[], host, None).0, RecordStatus::Warn);
+        // A relayed one does not, and saying "warn" would be an accusation about a record that
+        // no receiver of its mail will ever look up.
+        assert_eq!(
+            ptr_verdict(&[], host, Some("mail.relay.example")).0,
+            RecordStatus::Skip
+        );
+        // A matching record is good news either way, and the trailing dot is a detail.
+        assert_eq!(
+            ptr_verdict(&["mail.example.com.".into()], host, None).0,
+            RecordStatus::Ok
+        );
+        assert_eq!(
+            ptr_verdict(
+                &["mail.example.com.".into()],
+                host,
+                Some("mail.relay.example")
+            )
+            .0,
+            RecordStatus::Ok
+        );
+    }
+
+    #[test]
+    fn spf_knows_the_difference_between_direct_and_relayed() {
+        let expected = DnsChecks::default_spf("mail.example.com");
+        assert_eq!(expected, "v=spf1 mx a:mail.example.com -all");
+
+        // The record the expectation names is what direct delivery needs.
+        assert_eq!(
+            spf_verdict(&[expected.clone()], &expected, None).0,
+            RecordStatus::Ok
+        );
+        // A direct sender whose record authorises somebody else is warned: the mail host is what
+        // its own deliveries go out from.
+        assert_eq!(
+            spf_verdict(&["v=spf1 include:relay.example ~all".into()], &expected, None).0,
+            RecordStatus::Warn
+        );
+        // A relayed instance that delegates sending is not: which `include` its provider needs is
+        // the provider's name to choose, and the panel cannot know it.
+        assert_eq!(
+            spf_verdict(
+                &["v=spf1 include:spf.relay.example ~all".into()],
+                &expected,
+                Some("mail.relay.example")
+            )
+            .0,
+            RecordStatus::Ok
+        );
+        // Relayed and authorised by neither, which is still the case worth reporting.
+        assert_eq!(
+            spf_verdict(
+                &["v=spf1 ip4:203.0.113.10 ~all".into()],
+                &expected,
+                Some("mail.relay.example")
+            )
+            .0,
+            RecordStatus::Warn
+        );
     }
 
     #[test]

@@ -310,6 +310,14 @@ panel (specification §16):
 
 `status` is `ok`, `warn`, `fail` or `skip`.
 
+Two rows depend on how this instance sends mail. `PTR` is what a *direct* sender needs — the
+address on the wire is the one receivers reverse-resolve — so when `[queue] relay_host` is set,
+that row is reported as `skip` with what it found and a hint saying so, rather than a warning
+about a record no receiver of its mail will ever look up. `SPF` is the same shape: the `expected`
+value is the record a direct sender publishes, and a relayed instance has to `include` its
+provider's own domain instead — a name only that provider knows — so a published record that
+delegates sending is accepted, with a hint naming the condition, rather than warned about.
+
 `GET /api/v1/domains/:id/dkim` returns the DNS record to publish:
 
 ```json

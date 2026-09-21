@@ -56,17 +56,17 @@ docker compose logs -f ferroma
 每个发布版本都以 `wesukilaye/ferroma` 发布到 Docker Hub，覆盖 `linux/amd64` 与 `linux/arm64`。上面首次 `docker compose up -d` 会在容器里把整个 Rust 工作区编译一遍——10–30 分钟，外加数 GB 构建缓存——所以在服务器上直接拉取要快得多：
 
 ```bash
-docker pull wesukilaye/ferroma:0.1.6
+docker pull wesukilaye/ferroma:0.1.7
 ```
 
 `docker-compose.prod.yml` 与 `docker-compose.external-db.yml` 的默认仓库已经是它，在 `.env` 里锁定版本即可：
 
 ```bash
-FERROMA_VERSION=0.1.6                      # docker-compose.prod.yml：要拉取的标签
-# FERROMA_IMAGE=wesukilaye/ferroma:0.1.6   # docker-compose.external-db.yml：整串引用
+FERROMA_VERSION=0.1.7                      # docker-compose.prod.yml：要拉取的标签
+# FERROMA_IMAGE=wesukilaye/ferroma:0.1.7   # docker-compose.external-db.yml：整串引用
 ```
 
-可用标签只有 `0.1.6`（一个精确版本）与 `latest`（最新发布）——每次发布只产出这两个，所以一个标签永远只对应一个具体版本。要可复现的部署请锁定精确版本，不要用 `latest`。
+可用标签只有 `0.1.7`（一个精确版本）与 `latest`（最新发布）——每次发布只产出这两个，所以一个标签永远只对应一个具体版本。要可复现的部署请锁定精确版本，不要用 `latest`。
 
 ### 服务器上已经有 PostgreSQL 和反向代理？
 
@@ -178,7 +178,7 @@ cargo clippy --workspace  →  0 错误（clippy 1.98 下多 2 条 `manual_is_mu
 
 官方客户端目前交付的是「经过测试的共享核心 + 命令行」。项目书 §51 描述的三栏式图形界面，是唯一尚未构建的部分。
 
-### 带入 0.1.7 的待办
+### 带入 0.1.8 的待办
 
 发 0.1.3 时发现的两件事。两件都真实存在，但都不值得为它们推迟发版，也都不是一次机械替换就能了结的：
 
@@ -192,7 +192,7 @@ cargo clippy --workspace  →  0 错误（clippy 1.98 下多 2 条 `manual_is_mu
   重新声明 `ARG`，并在真正 `cargo build` 之前设置 `ENV FERROMA_GIT_SHA` /
   `FERROMA_BUILD_TIMESTAMP`，而且必须放在**依赖缓存层之后**，否则每次发版都会击穿那层缓存。
   之所以推迟：它需要再跑一次模拟下的 arm64 构建（约 70 分钟），而 0.1.3 已经发布——见
-  `Dockerfile` 里的 `TODO(0.1.7)` 注释。
+  `Dockerfile` 里的 `TODO(0.1.8)` 注释。
 * **八篇文档里还留着写于各 crate 尚不存在之时的 `_(planned)_` 断言。**
   其中五篇（`client.md`、`imap.md`、`security.md`、`smtp.md`、`sync.md`）开头仍挂着把已实现
   crate 称作未实现的状态横幅；`architecture.md` 的横幅与产品表已在 0.1.3 修正，其余没有。

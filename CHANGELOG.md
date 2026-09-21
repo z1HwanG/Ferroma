@@ -14,6 +14,8 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ## [Unreleased]
 
+## [0.1.7] — 2026-09-20
+
 ### Changed
 
 - **The first-run wizard ends at the sign-in page.** It used to reload into `/admin/`, and the
@@ -22,6 +24,13 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
   still come from the process on its way out, and landing in that gap is what put a blank shell on
   screen — then drops the session it created and opens the domain root, which is the Webmail's
   sign-in card, with the console one address away at `/admin/`.
+- **The DNS panel's `PTR` and `SPF` rows read the deployment's actual outbound path.** Both used
+  to assume this host sends its own mail. A `PTR` record is what a *direct* sender needs, so a
+  relay turns a missing one from a defect into a note; and an `SPF` record for a relayed instance
+  has to `include` the provider's own domain, a name nothing can guess from the relay's hostname —
+  so a record that delegates sending is accepted with a hint naming that condition instead of a
+  warning. Both rows now say what they mean, given `[queue] relay_host`.
+
 
 ### Fixed
 
@@ -562,13 +571,13 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
   indistinguishable from a server that never answered.
 
 
-### Known issues carried into 0.1.7
+### Known issues carried into 0.1.8
 
 Both items found while cutting 0.1.3 are still open: a published image cannot say which
 build it is, and eight documents still carry `_(planned)_` claims written before those
 crates existed. They are now tracked in [`TODO.md`](TODO.md) under "Next release
-(0.1.7)"; the fix for the first is described in
-[README — Carried into 0.1.6](README.md#carried-into-017).
+(0.1.8)"; the fix for the first is described in
+[README — Carried into 0.1.6](README.md#carried-into-018).
 
 ## [0.1.3] — 2026-09-19
 
