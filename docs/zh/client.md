@@ -725,10 +725,10 @@ after:2026-01-01
         ├── results ──► show them, marked "from this device's cache"
         │
         └── no results ──► GET /api/v1/client/search?q=…&mailbox_id=…&limit=50
-                                │
-                                ├── results ──► show them, marked "from the server"
-                                │                 (and offer to cache the bodies)
-                                └── offline ──► say so explicitly
+                          │
+                          ├── results ──► show them, marked "from the server"
+                          │               (and offer to cache the bodies)
+                          └── offline ──► say so explicitly
 ```
 
 让兜底保持诚实的两条规则：
