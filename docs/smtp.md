@@ -12,11 +12,12 @@ set, the session state machine, the reply codes for every failure, the limits an
 where each one is enforced, the `Received:` header Ferroma prepends, the retry
 schedule, the 4xx-versus-5xx classification rule, and bounce generation.
 
-> **Status:** design specification. The `ferroma-smtp` crate is implemented against this
-> document; sections marked _(planned)_ describe behaviour that is specified but not yet shipped.
-> Everything in this file is _(planned)_ as of now: `crates/ferroma-smtp/src/lib.rs`
-> is a skeleton declaring the server/client/MX/policy module boundaries. The
-> configuration keys, limit values and error variants it refers to **do** exist —
+> **Status:** implemented, and exercised by `cargo test --workspace` plus the
+> acceptance suite over real sockets. The command set, session state machine,
+> reply codes, limits, `Received:` header, retry schedule and classification rule
+> below describe what `ferroma-smtp` does today; a row that says "not
+> implemented" describes behaviour that is specified but not shipped. The
+> configuration keys, limit values and error variants it refers to exist —
 > `[smtp]` and `[limits]` in [`config/ferroma.toml`](../config/ferroma.toml),
 > `Limits` in `crates/ferroma-core/src/limits.rs`, `FerromaError` in
 > `crates/ferroma-core/src/error.rs`, and the `mail_queue` /
@@ -55,12 +56,12 @@ Additional commands the implementation accepts, with the RFC that defines them:
 
 | Command | RFC | Notes |
 |---|---|---|
-| `VRFY` | 5321 §4.1.1.6 | _(planned)_ answered `252 2.5.2 Cannot VRFY user` — never confirms whether an address exists |
-| `HELP` | 5321 §4.1.1.4 | _(planned)_ `214 2.0.0` plus a one-line summary |
-| `EXPN` | 5321 §4.1.1.7 | _(planned)_ `502 5.5.1 Command not implemented` |
+| `VRFY` | 5321 §4.1.1.6 | answered `252 2.1.5 Cannot VRFY user, but will accept message` — never confirms whether an address exists |
+| `HELP` | 5321 §4.1.1.4 | `214 2.0.0` plus a one-line summary |
+| `EXPN` | 5321 §4.1.1.7 | not accepted; it falls through to `500 5.5.2 Command unrecognized` |
 | `STARTTLS` | 3207 | available only when `tls.enabled` and not already encrypted |
 | `AUTH` | 4954 | `PLAIN` and `LOGIN` only |
-| `BDAT` | 3030 | _(planned)_ `502` — `CHUNKING` is not advertised |
+| `BDAT` | 3030 | recognised so the refusal is a precise `502 5.5.1` — `CHUNKING` is not advertised |
 
 Anything else is `500 5.5.2 Command unrecognized`.
 
@@ -206,10 +207,10 @@ chokes on extensions needs.
 | `250-8BITMIME` | `smtp.advertise_extensions` | `BODY=8BITMIME` is accepted |
 | `250-ENHANCEDSTATUSCODES` | `smtp.advertise_extensions` | replies carry `x.y.z` status codes (see §11) |
 | `250-SMTPUTF8` | `smtp.advertise_extensions` | UTF-8 local parts are accepted |
-| `250-DSN` | _(planned)_ `policy` | `RET`/`ENVID` parameters honoured on `MAIL FROM` and `RCPT TO` |
+| `250-DSN` | never | `RET`/`ENVID` are not honoured; DSN (RFC 3461) is not implemented |
 | `250-STARTTLS` | `tls.enabled` and not yet encrypted | the client may upgrade in place |
 | `250-AUTH PLAIN LOGIN` | `tls.enabled` or `smtp.require_tls_for_auth = false` | SASL mechanisms |
-| `250-HELP` | _(planned)_ | `HELP` is implemented |
+| `250-HELP` | always | `HELP` is implemented |
 | `250 CHUNKING` | never | `BDAT` is not implemented; do not advertise it |
 
 `AUTH` is withheld entirely on a connection that is not encrypted when
@@ -253,10 +254,12 @@ Two adjacent policy decisions that fall out of the same reasoning:
 * **Local delivery does not require authentication.** Otherwise no other MTA
   could deliver mail to your users at all, which is the whole point of running an
   MX.
-* **AUTH does not make you trustworthy for arbitrary `MAIL FROM`.** An
-  authenticated user may set any local `From` address they own
-  (`mailboxes` rows with `user_id` = theirs); a foreign `From` on their own
-  submission is `550 5.7.1 Sender address rejected: not owned by user`.
+* **AUTH does not make you trustworthy for arbitrary `MAIL FROM`.** The From
+  header must name an address the user owns — a `mailboxes` row with their
+  `user_id`. That check lives in the API's send path
+  (`resolve_sender` in `crates/ferroma-api/src/routes/mail/store.rs`), which is
+  the only way a client of this server sends; the SMTP submission listener
+  itself does not re-verify `MAIL FROM` against the authenticated user today.
 
 ---
 
@@ -280,9 +283,9 @@ source of values.
 | Mailbox quota | `users.quota_bytes`, `mailboxes.quota_bytes`, `limits.mailbox_quota` | 1 GiB | `MailboxesRepository::check_quota(mailbox_id, needed)` before the Maildir write | `452 4.2.2 Mailbox full` — temporary, so the sender retries after the user frees space |
 | Command timeout | `smtp.command_timeout_secs` | 300 | command loop, per read | `421 4.4.2 Timeout waiting for command`, then close |
 | `DATA` timeout | `smtp.data_timeout_secs` | 600 | body reader | `421 4.4.2 Timeout waiting for data`, then close |
-| MIME nesting depth | `limits.max_mime_depth` | 20 | MIME parser (`ParseLimits` in `ferroma-mail`) | message accepted into `Junk` rather than rejected _(planned)_ |
-| Attachments per message | `limits.max_attachments` | 50 | attachment extraction | `552 5.3.4 Too many message parts` _(planned)_ |
-| Single attachment size | `limits.max_attachment_size` | 26214400 | attachment extraction | `552 5.3.4 Attachment too large` _(planned)_ |
+| MIME nesting depth | `limits.max_mime_depth` | 20 | MIME parser (`ParseLimits` in `ferroma-mail`) | `552 5.3.4 MIME nesting deeper than 20 levels` — the message is refused, not filed into `Junk` |
+| Attachments per message | `limits.max_attachments` | 50 | the API send path (`crates/ferroma-api/src/service.rs`); inbound delivery is bounded by `max_message_size` and the part budget | `422`/`LimitExceeded` on the API; the part budget maps to `552 5.3.4` |
+| Single attachment size | `limits.max_attachment_size` | 26214400 | attachment extraction | `552 5.3.4` via `LimitExceeded` |
 
 `Limits::validate()` refuses to boot when `max_connections_per_ip >
 max_connections`, when `max_attachment_size > max_message_size`, when
@@ -493,7 +496,7 @@ state.
 
 ### 11.2 MX resolution
 
-_(planned)_ `ferroma-smtp::mx::MxResolver` uses `hickory-resolver` (configured
+`ferroma-smtp::mx::MxResolver` uses `hickory-resolver` (configured
 from `[dns]`).
 
 1. Look up `MX` for the recipient domain.
@@ -656,9 +659,9 @@ errors itself by string-matching a message is a bug; add a variant or fix
 | Disk full on the mail root | `452 4.3.1 Insufficient system storage` | 4xx |
 | Internal error while storing | `451 4.3.0 Temporary local problem` | 4xx — `FerromaError::Internal` |
 | Rate limit exceeded | `421 4.7.0 Too many commands, slow down` | 4xx, then close |
-| SPF hard fail (`-all`) _(planned)_ | `550 5.7.23 SPF validation failed` | 5xx |
-| DMARC failure with `p=reject` _(planned)_ | `550 5.7.1 DMARC policy violation` | 5xx |
-| DKIM verification failure with `dkim.verify_inbound` _(planned)_ | `550 5.7.20 DKIM signature validation failed` | 5xx |
+| SPF hard fail (`-all`) | no rejection on its own — the verdict goes into `Authentication-Results` and feeds DMARC | — |
+| DMARC failure with `p=reject` | `550 5.7.1 Message rejected by the DMARC policy of <domain>` | 5xx |
+| DKIM verification failure | no rejection on its own — the verdict feeds DMARC alignment | — |
 
 Two corrections to the intuition above, both deliberate:
 
@@ -714,23 +717,19 @@ Two corrections to the intuition above, both deliberate:
 | `5.5.2` | syntax error | unparseable command line |
 | `5.5.4` | invalid command arguments | bad base64, bad parameter |
 | `5.7.0` | security policy, permanent | authentication required |
-| `5.7.1` | delivery not authorised | relaying denied, sender not owned by user |
+| `5.7.1` | delivery not authorised | relaying denied, DMARC policy refusal |
 | `5.7.8` | authentication credentials invalid | bad password |
 | `5.7.11` | encryption required | cleartext `AUTH` refused |
-| `5.7.20` | DKIM signature validation failed _(planned)_ | inbound DKIM |
-| `5.7.23` | SPF validation failed _(planned)_ | inbound SPF |
 
 When `smtp.advertise_extensions = false` the enhanced code is omitted and the
 reply is the bare three-digit code plus the class-less text.
 
 ### 12.4 DSN
 
-`DSN` (RFC 3461) is advertised _(planned)_ and the parameters on `MAIL FROM`
-(`RET=FULL|HDRS`, `ENVID=`) and `RCPT TO` (`NOTIFY=`, `ORCPT=`) are recorded on
-the queue row. `NOTIFY=NEVER` on a recipient suppresses the bounce for that
-recipient. Until it is implemented, `DSN` is **not** advertised and those
-parameters are ignored, which is the behaviour RFC 5321 §4.1.1.11 requires of a
-server that does not support them.
+`DSN` (RFC 3461) is **not** implemented: it is not advertised, and the parameters
+on `MAIL FROM` (`RET=FULL|HDRS`, `ENVID=`) and `RCPT TO` (`NOTIFY=`, `ORCPT=`)
+are ignored, which is the behaviour RFC 5321 §4.1.1.11 requires of a server that
+does not support them.
 
 ### 12.5 The complete inbound reply table
 
@@ -752,7 +751,7 @@ server that does not support them.
 | `421` | `4.4.2 Timeout waiting for command` | `smtp.command_timeout_secs` |
 | `421` | `4.4.2 Timeout waiting for data` | `smtp.data_timeout_secs` |
 | `421` | `4.7.0 Too many commands, slow down` | `limits.smtp_rate_limit` |
-| `450` | `4.2.0 Mailbox busy, try again later` | transient lock contention _(planned)_ |
+| `450` | `4.2.0 Mailbox busy, try again later` | not implemented — lock contention surfaces as a storage failure `451 4.3.0` instead |
 | `451` | `4.3.0 Temporary local problem` | `FerromaError::Storage` / `Internal` |
 | `452` | `4.2.2 Mailbox full` | quota |
 | `452` | `4.3.1 Insufficient system storage` | disk full |
@@ -778,14 +777,11 @@ server that does not support them.
 | `550` | `5.1.1 No such user here` | unknown local address |
 | `550` | `5.1.2 Relay access denied` | unknown local domain |
 | `550` | `5.7.1 Relaying denied` | unauthenticated relay attempt |
-| `550` | `5.7.1 Sender address rejected: not owned by user` | foreign `MAIL FROM` |
-| `550` | `5.7.23 SPF validation failed` _(planned)_ | SPF |
-| `550` | `5.7.1 DMARC policy violation` _(planned)_ | DMARC |
-| `550` | `5.7.20 DKIM signature validation failed` _(planned)_ | DKIM |
+| `550` | `5.7.1 Message rejected by the DMARC policy of <domain>` | DMARC, effective policy `reject` — SPF and DKIM verdicts feed DMARC instead of rejecting on their own |
 | `552` | `5.3.4 Message size exceeds fixed maximum message size` | size limit |
-| `552` | `5.3.4 Too many message parts` _(planned)_ | `limits.max_attachments` |
+| `552` | `5.3.4 <reason>` (`LimitExceeded`) | MIME depth / part budget over the limits |
 | `554` | `5.5.1 Pipelining violated` | command pipelined across `STARTTLS` |
-| `554` | `5.7.1 Message rejected` | catch-all policy refusal _(planned)_ |
+| `554` | `5.7.1 <reason>` (`Forbidden`) | delivery policy refusal |
 
 ---
 

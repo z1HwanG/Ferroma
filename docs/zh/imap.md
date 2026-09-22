@@ -9,10 +9,11 @@ Apple Mail、Outlook、iPhone Mail 与 Android 客户端都是一等公民，不
 特例与 Maildir++ 映射）、UID 与 UIDVALIDITY 语义、标志词汇表及其 Maildir 编码、
 支持的 `FETCH` 数据项与 `SEARCH` 键、`IDLE`、`APPEND` 限制，以及兼容性目标清单。
 
-> **状态：** 设计规范。`ferroma-imap` crate 是按本文档实现的；标有 _(计划中)_ 的章节描述
-> 已被规定但尚未发布的行为。截至现在，本文件中的一切都属于 _(计划中)_：
-> `crates/ferroma-imap/src/lib.rs` 还是一个骨架。它所依赖的文件夹、标志、Maildir
-> 与搜索行为**已经**实现，位于 `crates/ferroma-storage/src/maildir.rs`、
+> **状态：** 已实现，并由 `cargo test --workspace` 与走真实 socket 的验收测试覆盖。
+> 下文描述的命令、会话状态机、文件夹模型、UID 语义、标志词汇表、`FETCH` 数据项与
+> `SEARCH` 键，都是 `ferroma-imap` 今天的行为；标为「未实现」的行描述的是已规定但
+> 尚未交付的行为。它所依赖的文件夹、标志、Maildir 与搜索行为位于
+> `crates/ferroma-storage/src/maildir.rs`、
 > `crates/ferroma-storage/src/repository/mailboxes.rs`、
 > `crates/ferroma-storage/src/repository/messages.rs` 与
 > `crates/ferroma-mail/src/flags.rs`。
@@ -29,7 +30,7 @@ Apple Mail、Outlook、iPhone Mail 与 Android 客户端都是一等公民，不
 | 隐式 TLS 端口 | `imap.imaps_port`，993，`0` 表示禁用 |
 | 行终止符 | `CRLF` |
 | 字面量 | `{n}` 同步字面量；也接受 `{n+}` 非同步字面量，因此 `APPEND` 可以流水线发送 |
-| 认证 | `LOGIN`（用户名 + 密码）、`AUTHENTICATE PLAIN`、`AUTHENTICATE LOGIN` |
+| 认证 | `LOGIN`（用户名 + 密码）、`AUTHENTICATE PLAIN` |
 | 加密 | 只用 rustls，见 [architecture.md](architecture.md) §8 |
 
 `imap.require_tls_for_login`（默认 `false`）会在未加密的连接上以 `NO [PRIVACYREQUIRED]`
@@ -43,50 +44,49 @@ Apple Mail、Outlook、iPhone Mail 与 Android 客户端都是一等公民，不
 
 ---
 
-## 2. 命令：首版与计划中
+## 2. 命令：实现与未实现
 
 项目书 §12 把命令集一分为二。
 
-### 2.1 首版
+### 2.1 已实现
 
 ```text
 CAPABILITY   LOGIN    LOGOUT   NOOP
-LIST         LSUB
-SELECT       EXAMINE  STATUS
-FETCH        STORE
-SEARCH       UID
+LIST         LSUB     STATUS   SUBSCRIBE
+SELECT       EXAMINE  CLOSE    CHECK
+FETCH        STORE    SEARCH   UID
+APPEND       COPY     MOVE     EXPUNGE
+IDLE         STARTTLS AUTHENTICATE
+NAMESPACE    UNSELECT
 ```
 
-再加上任何客户端要能用就离不开的几条：
+再加上任何客户端要能用就离不开的几条，以及 §12 划为后续版本、此后已交付的那批：
 
-| 命令 | 进入首版的原因 |
+| 命令 | 进入原因 / 门控 |
 |---|---|
 | `AUTHENTICATE` | Thunderbird 与 Apple Mail 默认用 `AUTHENTICATE PLAIN`，而不是 `LOGIN` |
 | `STARTTLS` | 在 143 端口上加密通信的唯一途径 |
 | `CLOSE` | 若干客户端在 `LOGOUT` 之前会发送它；没有它它们会记一条错误 |
 | `CHECK` | 一个空操作的检查点，但它缺失会在某些客户端表现为协议错误 |
+| `APPEND` | `imap.max_append_size` |
+| `COPY` | — |
+| `MOVE` | `imap.enable_move`，RFC 6851 |
+| `EXPUNGE` | `storage.soft_delete` |
+| `IDLE` | `imap.enable_idle`、`imap.max_idle_secs`，RFC 2177 |
+| `UIDPLUS`（`UID EXPUNGE`） | RFC 4315，始终通告 |
+| `NAMESPACE` | RFC 2342；Thunderbird 会请求它 |
+| `UNSELECT` | RFC 3691；让客户端不必付出 `CLOSE` 的副作用就能退出选中的邮箱 |
 
-### 2.2 计划中
+### 2.2 v1 不做
 
-```text
-APPEND       COPY         MOVE         EXPUNGE      IDLE
-```
-
-| 命令 | 门控 | 状态 |
-|---|---|---|
-| `APPEND` | `imap.max_append_size` | _(计划中)_ |
-| `COPY` | — | _(计划中)_ |
-| `MOVE` | `imap.enable_move` | _(计划中)_，RFC 6851 |
-| `EXPUNGE` | `storage.soft_delete` | _(计划中)_ |
-| `IDLE` | `imap.enable_idle`、`imap.max_idle_secs` | _(计划中)_，RFC 2177 |
-| `UIDPLUS`（`UID EXPUNGE`） | 随 `EXPUNGE` _(计划中)_ | RFC 4315 |
-| `NAMESPACE` | _(计划中)_ | RFC 2342；Thunderbird 会请求它，并能容忍 `NO` |
-| `SORT` / `THREAD` | 不在 v1 计划内 | Thunderbird 会优雅回退 |
-| `CONDSTORE` / `QRESYNC` | 表结构已就绪（`folders.highest_modseq`、`messages.modseq`），协议未实现 | _(计划中)_ |
-| `COMPRESS=DEFLATE` | 不在 v1 计划内 | |
-| `NOTIFY` | 不在 v1 计划内 | `IDLE` 一次一个文件夹地覆盖同样的需求 |
-| `ACL`、`QUOTA`、`METADATA` | 不在 v1 计划内 | 配额在服务端强制执行，不需要 IMAP 扩展 |
-| `CATENATE`、`BINARY`、`MULTIAPPEND` | 不在 v1 计划内 | |
+| 命令 | 状态 |
+|---|---|
+| `SORT` / `THREAD` | 不在 v1 计划内；Thunderbird 会优雅回退 |
+| `CONDSTORE` / `QRESYNC` | 存储侧已就绪（`folders.highest_modseq`、`messages.modseq`、`bump_modseq`），`HIGHESTMODSEQ` 应答码也存在，但没有任何命令发出它，也没有 `FETCH` 数据项返回 `MODSEQ` —— 未实现 |
+| `COMPRESS=DEFLATE` | 不在 v1 计划内 |
+| `NOTIFY` | 不在 v1 计划内；`IDLE` 一次一个文件夹地覆盖同样的需求 |
+| `ACL`、`QUOTA`、`METADATA` | 不在 v1 计划内；配额在服务端强制执行，不需要 IMAP 扩展 |
+| `CATENATE`、`BINARY`、`MULTIAPPEND` | 不在 v1 计划内 |
 
 这些门控是真实的配置键，并在启动时校验：
 `crates/ferroma-core/src/config.rs` 中的 `ImapConfig::enable_idle`、
@@ -101,12 +101,13 @@ APPEND       COPY         MOVE         EXPUNGE      IDLE
 * CAPABILITY IMAP4rev1
              LOGINDISABLED        （仅当 imap.require_tls_for_login 且未加密）
              STARTTLS             （仅当 tls.enabled 且尚未加密）
-             AUTH=PLAIN AUTH=LOGIN
+             AUTH=PLAIN
              IDLE                 （仅当 imap.enable_idle）
-             MOVE UIDPLUS         （仅当 imap.enable_move）
+             UIDPLUS              （始终通告——见 §2.1）
+             MOVE                 （仅当 imap.enable_move）
              UNSELECT
+             NAMESPACE
              LITERAL+
-             UIDPLUS              （`EXPUNGE` 发布之后）
              CHILDREN             （Maildir++ 有真实的层级）
 ```
 
@@ -152,24 +153,24 @@ APPEND       COPY         MOVE         EXPUNGE      IDLE
 | 标签回显 | 每个带标签的应答都逐字重复客户端的标签，而 `*` 不会 |
 | `imap.idle_timeout_secs` | 会话在此期间什么都没发就会收到 `* BYE Autologout; idle for too long`，随后套接字关闭。默认 1800。 |
 
-会话结构体 _(计划中)_：
+会话结构体（`crates/ferroma-imap/src/session.rs`）：
 
 ```rust
-/// crates/ferroma-imap/src/session.rs
 pub struct ImapSession {
-    pub connection_id: Uuid,
-    pub remote_addr: SocketAddr,
-    pub state: ImapState,               // NotAuthenticated | Authenticated | Selected | Logout
-    pub encrypted: bool,
-    pub authenticated_user: Option<UserId>,
-    pub session_id: Option<SessionId>,
-    pub mailbox_id: Option<MailboxId>,  // 当前打开的地址
-    pub folder_id: Option<MailboxId>,   // 当前选中的文件夹
-    pub read_only: bool,
-    /// 会话已标记 \Deleted 但尚未清除的 UID。即使有 UIDPLUS 也需要它，
-    /// 因为未请求 UIDPLUS 的客户端仍然期望 EXPUNGE 恰好移除
-    /// 它标记过的那些邮件。
-    pub deleted_uids: BTreeSet<i64>,
+    context: SessionContext,       // 跨会话存活的共享状态
+    parser: CommandParser,         // 解析器状态，包括在途的字面量
+    config: SessionConfig,         // banner、tls、require_tls_for_login、enable_idle、
+                                   // enable_move、max_append_size、max_literal_size、
+                                   // max_idle_secs、starttls_available
+    state: SessionState,           // NotAuthenticated | Authenticated | Selected | Logout
+    user: Option<UserId>,          // 已认证的账号
+    address: Option<String>,       // 该账号的主地址，local@domain
+    local_part: Option<String>,    // 该地址对应的 Maildir 路径组件
+    domain: Option<String>,
+    selected: Option<Selected>,    // 文件夹行、邮箱 id、按 UID 排序的邮件列表，
+                                   // 以及只读标志
+    idle: Option<ferroma_events::Subscription>,   // 在 IDLE 被接受时创建
+    pending: std::collections::VecDeque<Vec<u8>>, // 字面量的尾部，先于 socket 读取
 }
 ```
 
@@ -190,7 +191,7 @@ pub struct ImapSession {
 | `folders.special_use` | `\Sent`、`\Drafts`、`\Trash`、`\Junk`、`\Archive`、`\All`、`\Flagged` 或 `NULL` |
 | `folders.subscribed` | `LSUB` 与 `LIST` 之别 |
 | `folders.uid_validity`、`folders.uid_next` | 见 §5 |
-| `folders.highest_modseq` | 为 `CONDSTORE` 预留 _(计划中)_ |
+| `folders.highest_modseq` | 由 `bump_modseq`（`crates/ferroma-storage/src/repository/mailboxes.rs`）为 `CONDSTORE` 递增；`HIGHESTMODSEQ` 应答码已存在，但还没有命令发出它 |
 | `folders.message_count`、`unseen_count`、`total_bytes` | 由 `FoldersRepository::recount` 保持最新的计数 |
 
 索引：`folders_name_key (mailbox_id, name)` 唯一：同一地址的两个文件夹不能重名；
@@ -283,7 +284,7 @@ fn maildir_folder_name(folder: &str) -> Result<String> {
 | 命令 | 行为 |
 |---|---|
 | `LIST "" "*"` | 所有文件夹，`INBOX` 在最前，其余按不区分大小写的字母序。`\HasChildren` / `\HasNoChildren` 来自 `parent_id` |
-| `LIST` 属性 | 对自身没有邮件的父文件夹给出 `\HasChildren`、`\HasNoChildren`、`\Noselect` _(计划中)_ |
+| `LIST` 属性 | 由 `parent_id` 推导出 `\HasChildren` / `\HasNoChildren`；根 `LIST "" ""` 应答给出 `\Noselect` |
 | `LIST "" "Archive/%"` | `%` 匹配一层，`*` 匹配任意深度，依据 RFC 3501 §6.3.8 |
 | `LSUB` | 满足 `folders.subscribed = true` 的文件夹。默认即为已订阅 |
 | `SUBSCRIBE` / `UNSUBSCRIBE` | `FoldersRepository::set_subscribed`。绝不影响文件夹是否存在 |
@@ -502,9 +503,9 @@ Maildir 文件名，而自定义关键字没有字母。它们留在 `messages.f
 | `BODY[TEXT]` | 是 | 空行之后的一切 |
 | `BODY[<section>]` / `BODY[<section>]<partial>` | 是 | MIME 部件寻址，以及用于可续传下载的 `BODY[]<0.1024>` 部分获取 |
 | `BODY.PEEK[…]` | 是 | 同上，但不设置 `\Seen` |
-| `BODYSTRUCTURE` | 是 | 先支持不可扩展形式；扩展数据（`BODYSTRUCTURE`）为 _(计划中)_ |
+| `BODYSTRUCTURE` | 是 | 可扩展形式：每个部分都携带 `md5`、`disposition`、`language` 与 `location` 扩展字段（`crates/ferroma-imap/src/fetch.rs` 中的 `bodystructure`） |
 | `BODY`（不可扩展的 `BODYSTRUCTURE`） | 是 | |
-| `MODSEQ` | _(计划中)_ | `messages.modseq` 已存储并建立索引，供 `CONDSTORE` 使用 |
+| `MODSEQ` | 否 | `messages.modseq` 已存储并建立索引供 `CONDSTORE` 使用，`HIGHESTMODSEQ` 应答码也存在，但没有任何 `FETCH` 数据项返回 `MODSEQ` |
 | `BINARY[…]` | 否 | 不通告 `BINARY` |
 | `X-GM-*` | 否 | 不模拟 Gmail 扩展 |
 
@@ -546,9 +547,9 @@ Maildir 文件名，而自定义关键字没有字母。它们留在 `messages.f
 | `FROM <s>` | `messages.sender` / `message_recipients`，要求 `kind = 'sender'` |
 | `TO <s>`、`CC <s>`、`BCC <s>` | `message_recipients.address`，要求 `kind` 匹配 |
 | `SUBJECT <s>` | `messages_subject_fts_idx`，一个建立在 `to_tsvector('simple', coalesce(subject, ''))` 上的 GIN 索引 |
-| `BODY <s>` | _(计划中)_，需要正文索引；Maildir 对邮件正文没有索引 |
-| `TEXT <s>` | _(计划中)_，头字段加正文 |
-| `HEADER <name> <s>` | _(计划中)_，头字段没有以关系形式存储；`messages` 只保留一个反规范化的子集 |
+| `BODY <s>` | 是——直接来自 Maildir 的原始邮件字节，仅在有键需要时读取 |
+| `TEXT <s>` | 是——头字段加正文 |
+| `HEADER <name> <s>` | 是——每个顶层头字段，展开后匹配；`messages` 也保留一个反规范化的子集 |
 | `LARGER <n>` / `SMALLER <n>` | `messages.size_bytes` |
 | `BEFORE <date>` / `ON <date>` / `SINCE <date>` | `messages.internal_date` |
 | `SENTBEFORE` / `SENTON` / `SENTSINCE` | `messages.sent_at` |
@@ -563,9 +564,10 @@ Maildir 文件名，而自定义关键字没有字母。它们留在 `messages.f
 `SEARCH` 与一次 API 查询返回相同的邮件。这就是分层规则在真正起作用：IMAP 层只贡献
 解析器。
 
-实现 `BODY`/`TEXT` 搜索意味着要么在 PostgreSQL 中索引邮件正文，要么每次查询都遍历
-Maildir。两者对 v1 都不可接受，因此它被明确列为 _(计划中)_，使用它的客户端会得到
-`NO [CANNOT] BODY search is not supported`，而不是错误的结果。Admin/API 一侧提供了
+`BODY`/`TEXT` 搜索会从 Maildir 读取邮件字节，但只对真正需要字节的键这样做——
+`crates/ferroma-imap/src/search.rs` 中的 `SearchKey::needs_body` 让纯元数据搜索
+（`UNSEEN`、`SINCE`、`FROM`……）完全跳过磁盘读取，而同一条命令里二十个 `BODY` 键
+命中同一封邮件时，正文只解码一次而不是二十次。Admin/API 一侧在同样的仓储之上提供了
 一个确实可用的主题与头字段搜索。
 
 ---

@@ -1,8 +1,8 @@
 # Synchronisation
 
 **Who should read this:** anyone implementing or debugging the sync path — the
-server side in `ferroma-sync` / `ferroma-storage::repository::sync`, or the client
-side in `client/src/sync/`.
+server side in `ferroma-sync` / `ferroma-storage::repository::sync`, or the
+official client, which lives in a separate repository.
 
 This document explains how a Ferroma client stays in step with the server: why
 FCP exists next to IMAP, what "the server is the source of truth" constrains, how
@@ -14,14 +14,12 @@ how conflicts are resolved, what the offline Outbox is, and what happens on each
 class of failure. The **wire format** — request and response shapes, headers,
 WebSocket framing — is frozen in [fcp.md](fcp.md) and is not repeated here.
 
-> **Status:** mixed. The server-side primitives are implemented:
-> `change_log`, `client_sync_states` and `operations` in
-> `migrations/0001_initial.sql`; `ChangeLogRepository`, `SyncStatesRepository`,
-> `OperationsRepository` and `OperationOutcome` in
-> `crates/ferroma-storage/src/repository/sync.rs`. The service that turns those
-> into `GET /api/v1/client/sync` lives in `ferroma-sync` and is _(planned)_ —
-> `crates/ferroma-sync/src/lib.rs` is a skeleton. The client's sync engine
-> (`client/src/sync/`) is _(planned)_.
+> **Status:** implemented. The server-side primitives are `change_log`,
+> `client_sync_states` and `operations` in `migrations/0001_initial.sql` and
+> `ChangeLogRepository`, `SyncStatesRepository`, `OperationsRepository` and
+> `OperationOutcome` in `crates/ferroma-storage/src/repository/sync.rs`;
+> `SyncService` in `crates/ferroma-sync/src/service.rs` turns them into
+> `GET /api/v1/client/sync` and the idempotent `with_operation` wrapper.
 
 ---
 

@@ -45,8 +45,8 @@ diagnoses each one.
                   ┌────────▼──────────────────────────────────▼────────┐
                   │                  ferroma container                 │
                   │  one process: SMTP, IMAP, HTTP API, queue workers, │
-                  │  sync service, event bus                          │
-                  └────────┬───────────────────────────────┬──────────┘
+                  │  sync service, event bus                           │
+                  └────────┬───────────────────────────────┬───────────┘
                            │                               │
                   ┌────────▼────────┐            ┌─────────▼──────────┐
                   │ postgres:16     │            │ volume ferroma-data│
@@ -73,7 +73,7 @@ Requirements before you start:
 | Port 25 reachable **outbound** | delivering mail. Some providers block outbound 25 to force you through a relay |
 | A domain you control | `example.com` below |
 | Docker Engine 24+ with the Compose plugin | `docker compose`, not `docker-compose` |
-| ~4 GB RAM, 2 vCPU, 20 GB disk | enough for a small deployment; the mail store grows |
+| 1 vCPU, 1 GB RAM, 20 GB disk | a small deployment. Ferroma itself stays in the tens of megabytes — the memory belongs to PostgreSQL and the page cache — and the mail store grows |
 
 ---
 
@@ -165,6 +165,17 @@ address. The round trip is what a receiver checks:
 dig +short mail.example.com        # -> 203.0.113.10
 dig +short -x 203.0.113.10         # -> mail.example.com.
 ```
+
+**If your provider will not set one**, do not try to deliver directly from that address:
+relay the outbound path instead. `[queue] relay_host` in `ferroma.toml` — or
+`FERROMA__QUEUE__RELAY_HOST` in a container — hands every outbound message to a smarthost
+that already has its PTR right. Only the outbound path is affected: an address with no
+reverse DNS still receives mail normally, because receiving depends on the MX and not on the
+PTR. Two DNS records move with it. The `SPF` record has to `include` the relay provider's own
+domain, because the delivering address is now theirs and nothing can guess that name from the
+relay's hostname. The `PTR` record stops mattering, because the reverse lookup a receiver
+performs is on the relay's address rather than on yours. §4 lists the relay variables, and
+`config/ferroma.toml` documents each one beside the others.
 
 ### 2.4 MX priority and a backup MX
 
@@ -1670,12 +1681,10 @@ Log rotation is bounded in the compose files (`max-size: 20m`, `max-file: 10` in
 prod), so a log flood cannot fill the disk. Do not raise
 `database.log_statements` in production: it prints message subjects.
 
-### 10.4 Metrics and alerting are _(planned)_
+### 10.4 Metrics and alerting are not implemented
 
-Specification §40 lists Prometheus metrics (`smtp_connections_total`,
-`smtp_messages_received_total`, `queue_pending_messages`, `mail_storage_bytes`,
-`sync_operations_total`, …) and §41 places Prometheus and Grafana in a later
-version. Neither exists yet: there is no `/metrics` endpoint. Until there is,
+There is no `/metrics` endpoint and no Prometheus or Grafana integration; both
+are intended for a later version. Until there is,
 monitor with the health endpoint and the `psql` queries above, and alert on:
 
 * container health failing,

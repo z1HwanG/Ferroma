@@ -441,7 +441,7 @@ Admin 面板可以修改而无需重启。它们**不**覆盖 `ferroma.toml`：�
 
 新增索引之前要知道两件事：`messages.flags` 上没有索引，因此 `SEARCH UNSEEN` 是文件夹内
 的过滤扫描，对邮箱规模的文件夹没问题，对百万行的文件夹不行；正文也没有索引，所以
-`SEARCH BODY` 是 _(计划中)_（[imap.md](imap.md) §8）。
+`SEARCH BODY` 不受支持（[imap.md](imap.md) §8）。
 
 ---
 

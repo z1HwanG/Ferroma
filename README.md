@@ -212,29 +212,23 @@ no records (`.test`, `.invalid`, `.localhost`).
 
 Everything above the last line is verified by the suite below, including an acceptance
 run that starts the real server, delivers a message over SMTP, reads it back over IMAP,
-finds it through the API, and syncs it with the real desktop client.
+finds it through the API, follows the sync cursor, and drives the bootstrap setup page
+— server with no database, code, wizard POST, healthy API — over real sockets.
 
 ```text
-cargo test --workspace    →  2437 passed, 0 failed, 0 skipped
+cargo test --workspace    →  2136 passed, 0 failed, 0 skipped
 cargo clippy --workspace  →  0 errors (2 `manual_is_multiple_of` notes with clippy 1.98;
                               that lint is newer than the pinned 1.88 toolchain)
 ```
 
-The official client ships as a tested shared core plus a CLI. The three-pane GUI
-described in specification §51 is the one piece that is not built.
-
 ### Carried into 0.1.9
 
-One thing found while cutting 0.1.3. It is real, it was not worth stalling the
-release for, and it is not fixed by a mechanical edit:
-
-* **Seven documents still carry `_(planned)_` claims from before the crates existed.**
-  Four of them (`imap.md`, `security.md`, `smtp.md`, `sync.md`) still open
-  with a status banner calling implemented crates unimplemented; `architecture.md`'s
-  banner and product table were corrected in 0.1.3, the rest were not. Every marker is
-  a claim about behaviour that has to be checked against the code, so this is a read of
-  its own rather than a search-and-replace. [`TODO.md`](TODO.md) counts the markers per
-  document, so the numbers live in one place instead of going stale here.
+The 0.1.3 finding is closed. Seven documents carried `_(planned)_` claims written
+before the crates existed; every one has now been checked against the code and
+rewritten as a statement about what the server does, and the four status banners
+that called implemented crates skeletons are gone. The bootstrap setup page also
+gained the acceptance test it lacked ([`TODO.md`](TODO.md) records what is still
+open, and why).
 
 [`AGENTS.md`](AGENTS.md) explains the repository conventions.
 A Chinese translation of this file is at [`README_zh.md`](README_zh.md).
@@ -299,7 +293,6 @@ crates/
   ferroma-sync/      change log, cursors, idempotent client operations
   ferroma-api/       REST API, Ferroma Client Protocol, WebSocket, frontends
 server/              the `ferroma` binary
-client/              the official desktop client
 web/, admin/         Webmail and Admin single-page apps (no build step)
 shared/              the ES modules both apps import; the server mounts it at /shared
 migrations/          PostgreSQL DDL, embedded into the binary

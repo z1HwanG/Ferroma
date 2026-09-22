@@ -9,10 +9,10 @@
 各项限制以及每项限制在哪一层强制执行、Ferroma 前置的 `Received:` 头字段、重试计划、
 4xx 与 5xx 的分类规则，以及退信生成。
 
-> **状态：** 设计规范。`ferroma-smtp` crate 是照着本文档实现的；标注 _(计划中)_ 的
-> 小节描述的是已经规定但尚未交付的行为。就目前而言，本文件的全部内容都是 _(计划中)_：
-> `crates/ferroma-smtp/src/lib.rs` 只是一个骨架，声明了 server/client/MX/policy 的
-> 模块边界。它提到的配置键、限制值和错误变体**确实**已经存在——
+> **状态：** 已实现，并由 `cargo test --workspace` 与走真实 socket 的验收测试覆盖。
+> 下文描述的命令集、会话状态机、应答码、限制、`Received:` 头、重试计划与分类规则，
+> 都是 `ferroma-smtp` 今天的行为；标为「未实现」的行描述的是已规定但尚未交付的行为。
+> 它提到的配置键、限制值和错误变体确实存在——
 > [`config/ferroma.toml`](../../config/ferroma.toml) 中的 `[smtp]` 与 `[limits]`、
 > `crates/ferroma-core/src/limits.rs` 中的 `Limits`、
 > `crates/ferroma-core/src/error.rs` 中的 `FerromaError`，以及
@@ -50,12 +50,12 @@
 
 | 命令 | RFC | 说明 |
 |---|---|---|
-| `VRFY` | 5321 §4.1.1.6 | _(计划中)_ 应答 `252 2.5.2 Cannot VRFY user`——绝不确认某个地址是否存在 |
-| `HELP` | 5321 §4.1.1.4 | _(计划中)_ `214 2.0.0` 加一行摘要 |
-| `EXPN` | 5321 §4.1.1.7 | _(计划中)_ `502 5.5.1 Command not implemented` |
+| `VRFY` | 5321 §4.1.1.6 | 应答 `252 2.1.5 Cannot VRFY user, but will accept message`——绝不确认某个地址是否存在 |
+| `HELP` | 5321 §4.1.1.4 | `214 2.0.0` 加一行摘要 |
+| `EXPN` | 5321 §4.1.1.7 | 不接受；落入 `500 5.5.2 Command unrecognized` |
 | `STARTTLS` | 3207 | 仅在 `tls.enabled` 且尚未加密时可用 |
 | `AUTH` | 4954 | 只支持 `PLAIN` 与 `LOGIN` |
-| `BDAT` | 3030 | _(计划中)_ `502`——不宣告 `CHUNKING` |
+| `BDAT` | 3030 | 被识别，因此拒绝是精确的 `502 5.5.1`——不宣告 `CHUNKING` |
 
 其它任何输入都得到 `500 5.5.2 Command unrecognized`。
 
@@ -194,10 +194,10 @@ pub struct SmtpSession {
 | `250-8BITMIME` | `smtp.advertise_extensions` | 接受 `BODY=8BITMIME` |
 | `250-ENHANCEDSTATUSCODES` | `smtp.advertise_extensions` | 应答携带 `x.y.z` 状态码（见 §11） |
 | `250-SMTPUTF8` | `smtp.advertise_extensions` | 接受 UTF-8 的本地部分 |
-| `250-DSN` | _(计划中)_ `policy` | 在 `MAIL FROM` 与 `RCPT TO` 上处理 `RET`/`ENVID` 参数 |
+| `250-DSN` | 从不 | 不处理 `RET`/`ENVID`；DSN（RFC 3461）未实现 |
 | `250-STARTTLS` | `tls.enabled` 且尚未加密 | 客户端可以原地升级 |
 | `250-AUTH PLAIN LOGIN` | `tls.enabled` 或 `smtp.require_tls_for_auth = false` | SASL 机制 |
-| `250-HELP` | _(计划中)_ | 已实现 `HELP` |
+| `250-HELP` | 总是 | 已实现 `HELP` |
 | `250 CHUNKING` | 从不 | 未实现 `BDAT`；不要宣告它 |
 
 当 `smtp.require_tls_for_auth = true` 时，在未加密的连接上完全不给 `AUTH`。宣告一个
@@ -236,9 +236,11 @@ recipient domain is anything else    →  require a successful AUTH first
 
 * **本地投递不要求认证。** 否则任何其它 MTA 都无法向你用户投递邮件，而运行一台 MX
   的全部意义正在于此。
-* **AUTH 不会让你对任意 `MAIL FROM` 变得可信。** 已认证用户只能设置自己拥有的本地
-  `From` 地址（`mailboxes` 表中 `user_id` 等于他的那些行）；在自己的提交中使用
-  外来 `From` 会得到 `550 5.7.1 Sender address rejected: not owned by user`。
+* **AUTH 不会让你对任意 `MAIL FROM` 变得可信。** From 头必须指向该用户拥有的地址
+  ——一条 `user_id` 等于他的 `mailboxes` 行。这项检查位于 API 的发送路径
+  （`crates/ferroma-api/src/routes/mail/store.rs` 中的 `resolve_sender`），
+  那是本服务器的客户端发信的唯一通道；SMTP 提交监听器本身今天不会把 `MAIL FROM`
+  与已认证用户再核对一遍。
 
 ---
 
@@ -261,9 +263,9 @@ recipient domain is anything else    →  require a successful AUTH first
 | 邮箱配额 | `users.quota_bytes`、`mailboxes.quota_bytes`、`limits.mailbox_quota` | 1 GiB | Maildir 写入前的 `MailboxesRepository::check_quota(mailbox_id, needed)` | `452 4.2.2 Mailbox full`——临时性错误，因此发件人在用户腾出空间后会重试 |
 | 命令超时 | `smtp.command_timeout_secs` | 300 | 命令循环，每次读取 | `421 4.4.2 Timeout waiting for command`，随后关闭 |
 | `DATA` 超时 | `smtp.data_timeout_secs` | 600 | 正文读取器 | `421 4.4.2 Timeout waiting for data`，随后关闭 |
-| MIME 嵌套深度 | `limits.max_mime_depth` | 20 | MIME 解析器（`ferroma-mail` 中的 `ParseLimits`） | 邮件被接受进 `Junk` 而非被拒绝 _(计划中)_ |
-| 每封邮件附件数 | `limits.max_attachments` | 50 | 附件提取 | `552 5.3.4 Too many message parts` _(计划中)_ |
-| 单个附件大小 | `limits.max_attachment_size` | 26214400 | 附件提取 | `552 5.3.4 Attachment too large` _(计划中)_ |
+| MIME 嵌套深度 | `limits.max_mime_depth` | 20 | MIME 解析器（`ferroma-mail` 中的 `ParseLimits`） | `552 5.3.4 MIME nesting deeper than 20 levels`——邮件被拒绝，而不是投进 `Junk` |
+| 每封邮件附件数 | `limits.max_attachments` | 50 | API 发送路径（`crates/ferroma-api/src/service.rs`）；收信投递由 `max_message_size` 与部分预算约束 | API 上返回 `LimitExceeded`；部分预算映射为 `552 5.3.4` |
+| 单个附件大小 | `limits.max_attachment_size` | 26214400 | 附件提取 | 经 `LimitExceeded` 变为 `552 5.3.4` |
 
 当 `max_connections_per_ip > max_connections` 时，当 `max_attachment_size >
 max_message_size` 时，当 `max_message_size` 为 `0` 时，或者当 `max_mime_depth` 落在
@@ -460,7 +462,7 @@ Received: from mail.example.net (mail.example.net [203.0.113.25])
 
 ### 11.2 MX 解析
 
-_(计划中)_ `ferroma-smtp::mx::MxResolver` 使用 `hickory-resolver`（由 `[dns]`
+`ferroma-smtp::mx::MxResolver` 使用 `hickory-resolver`（由 `[dns]`
 配置）。
 
 1. 查询收件域的 `MX`。
@@ -602,9 +604,9 @@ pub fn is_temporary(&self) -> bool {
 | 邮件根目录所在磁盘写满 | `452 4.3.1 Insufficient system storage` | 4xx |
 | 存储时发生内部错误 | `451 4.3.0 Temporary local problem` | 4xx——`FerromaError::Internal` |
 | 超出速率限制 | `421 4.7.0 Too many commands, slow down` | 4xx，随后关闭 |
-| SPF 硬失败（`-all`）_(计划中)_ | `550 5.7.23 SPF validation failed` | 5xx |
-| DMARC 失败且 `p=reject` _(计划中)_ | `550 5.7.1 DMARC policy violation` | 5xx |
-| DKIM 校验失败且 `dkim.verify_inbound` _(计划中)_ | `550 5.7.20 DKIM signature validation failed` | 5xx |
+| SPF 硬失败（`-all`） | 本身不拒绝——判定结果写入 `Authentication-Results` 并汇入 DMARC | — |
+| DMARC 失败且 `p=reject` | `550 5.7.1 Message rejected by the DMARC policy of <domain>` | 5xx |
+| DKIM 校验失败 | 本身不拒绝——判定结果汇入 DMARC 对齐检查 | — |
 
 对上文直觉的两处更正，都是刻意的：
 
@@ -656,22 +658,18 @@ pub fn is_temporary(&self) -> bool {
 | `5.5.2` | 语法错误 | 无法解析的命令行 |
 | `5.5.4` | 无效的命令参数 | base64 错误、参数错误 |
 | `5.7.0` | 安全策略，永久性 | 要求认证 |
-| `5.7.1` | 投递未获授权 | 中继被拒、发件人不属于该用户 |
+| `5.7.1` | 投递未获授权 | 中继被拒、DMARC 策略拒绝 |
 | `5.7.8` | 认证凭据无效 | 口令错误 |
 | `5.7.11` | 要求加密 | 明文 `AUTH` 被拒 |
-| `5.7.20` | DKIM 签名校验失败 _(计划中)_ | 收信 DKIM |
-| `5.7.23` | SPF 校验失败 _(计划中)_ | 收信 SPF |
 
 当 `smtp.advertise_extensions = false` 时，增强码被省略，应答是光秃秃的三位数字码
 加上没有类别的文本。
 
 ### 12.4 DSN
 
-`DSN`（RFC 3461）会被宣告 _(计划中)_，并且 `MAIL FROM` 上的参数
-（`RET=FULL|HDRS`、`ENVID=`）与 `RCPT TO` 上的参数（`NOTIFY=`、`ORCPT=`）会记录到
-队列行上。对某个收件人设置 `NOTIFY=NEVER` 会抑制该收件人的退信。在它实现之前，
-`DSN` **不会**被宣告，那些参数也会被忽略，这正是 RFC 5321 §4.1.1.11 对不支持它们的
-服务器所要求的做法。
+`DSN`（RFC 3461）**未**实现：不被宣告，`MAIL FROM` 上的参数
+（`RET=FULL|HDRS`、`ENVID=`）与 `RCPT TO` 上的参数（`NOTIFY=`、`ORCPT=`）会被忽略，
+这正是 RFC 5321 §4.1.1.11 对不支持它们的服务器所要求的做法。
 
 ### 12.5 完整的收信应答表
 
@@ -693,7 +691,7 @@ pub fn is_temporary(&self) -> bool {
 | `421` | `4.4.2 Timeout waiting for command` | `smtp.command_timeout_secs` |
 | `421` | `4.4.2 Timeout waiting for data` | `smtp.data_timeout_secs` |
 | `421` | `4.7.0 Too many commands, slow down` | `limits.smtp_rate_limit` |
-| `450` | `4.2.0 Mailbox busy, try again later` | 临时锁竞争 _(计划中)_ |
+| `450` | `4.2.0 Mailbox busy, try again later` | 未实现——锁竞争以存储失败 `451 4.3.0` 的面目出现 |
 | `451` | `4.3.0 Temporary local problem` | `FerromaError::Storage` / `Internal` |
 | `452` | `4.2.2 Mailbox full` | 配额 |
 | `452` | `4.3.1 Insufficient system storage` | 磁盘写满 |
@@ -719,14 +717,11 @@ pub fn is_temporary(&self) -> bool {
 | `550` | `5.1.1 No such user here` | 未知本地地址 |
 | `550` | `5.1.2 Relay access denied` | 未知本地域 |
 | `550` | `5.7.1 Relaying denied` | 未认证的中继尝试 |
-| `550` | `5.7.1 Sender address rejected: not owned by user` | 外来 `MAIL FROM` |
-| `550` | `5.7.23 SPF validation failed` _(计划中)_ | SPF |
-| `550` | `5.7.1 DMARC policy violation` _(计划中)_ | DMARC |
-| `550` | `5.7.20 DKIM signature validation failed` _(计划中)_ | DKIM |
+| `550` | `5.7.1 Message rejected by the DMARC policy of <domain>` | DMARC，生效策略为 `reject`——SPF 与 DKIM 判定汇入 DMARC，而不单独拒绝 |
 | `552` | `5.3.4 Message size exceeds fixed maximum message size` | 大小限制 |
-| `552` | `5.3.4 Too many message parts` _(计划中)_ | `limits.max_attachments` |
+| `552` | `5.3.4 <reason>`（`LimitExceeded`） | MIME 深度 / 部分预算超出限制 |
 | `554` | `5.5.1 Pipelining violated` | 命令跨 `STARTTLS` 流水线化 |
-| `554` | `5.7.1 Message rejected` | catch-all 策略拒绝 _(计划中)_ |
+| `554` | `5.7.1 <reason>`（`Forbidden`） | 投递策略拒绝 |
 
 ---
 

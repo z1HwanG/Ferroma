@@ -13,11 +13,12 @@ UIDVALIDITY semantics, the flag vocabulary and its Maildir encoding, the `FETCH`
 items and `SEARCH` keys supported, `IDLE`, `APPEND` limits, and the compatibility
 target list.
 
-> **Status:** design specification. The `ferroma-imap` crate is implemented against this
-> document; sections marked _(planned)_ describe behaviour that is specified but not yet shipped.
-> Everything in this file is _(planned)_ as of now: `crates/ferroma-imap/src/lib.rs`
-> is a skeleton. The folder, flag, Maildir and search behaviour it relies on **is**
-> implemented, in `crates/ferroma-storage/src/maildir.rs`,
+> **Status:** implemented, and exercised by `cargo test --workspace` plus the
+> acceptance suite over real sockets. The commands, session state machine, folder
+> model, UID semantics, flag vocabulary, `FETCH` items and `SEARCH` keys below
+> describe what `ferroma-imap` does today; a row that says "not implemented"
+> describes behaviour that is specified but not shipped. The folder, flag, Maildir
+> and search behaviour it relies on lives in `crates/ferroma-storage/src/maildir.rs`,
 > `crates/ferroma-storage/src/repository/mailboxes.rs`,
 > `crates/ferroma-storage/src/repository/messages.rs` and
 > `crates/ferroma-mail/src/flags.rs`.
@@ -34,7 +35,7 @@ target list.
 | Implicit TLS port | `imap.imaps_port`, 993, `0` disables it |
 | Line terminator | `CRLF` |
 | Literals | `{n}` synchronising literals; `{n+}` non-synchronising literals are accepted, so `APPEND` can be pipelined |
-| Authentication | `LOGIN` (user + password), `AUTHENTICATE PLAIN`, `AUTHENTICATE LOGIN` |
+| Authentication | `LOGIN` (user + password), `AUTHENTICATE PLAIN` |
 | Encryption | rustls only — see [architecture.md](architecture.md) §8 |
 
 `imap.require_tls_for_login` (default `false`) refuses `LOGIN` and `AUTHENTICATE`
@@ -49,50 +50,50 @@ cleartext; the client sees `STARTTLS` in `CAPABILITY` and is expected to use it.
 
 ---
 
-## 2. Commands: first release and planned
+## 2. Commands: what ships and what does not
 
 Specification §12 splits the command set in two.
 
-### 2.1 First release
+### 2.1 Implemented
 
 ```text
 CAPABILITY   LOGIN    LOGOUT   NOOP
-LIST         LSUB
-SELECT       EXAMINE  STATUS
-FETCH        STORE
-SEARCH       UID
+LIST         LSUB     STATUS   SUBSCRIBE
+SELECT       EXAMINE  CLOSE    CHECK
+FETCH        STORE    SEARCH   UID
+APPEND       COPY     MOVE     EXPUNGE
+IDLE         STARTTLS AUTHENTICATE
+NAMESPACE    UNSELECT
 ```
 
-Plus the ones any client needs to work at all:
+Plus the ones any client needs to work at all, and the ones §12 listed as a later
+release that have since shipped:
 
-| Command | Why it is in the first release |
+| Command | Why it is here / gate |
 |---|---|
 | `AUTHENTICATE` | Thunderbird and Apple Mail default to `AUTHENTICATE PLAIN` rather than `LOGIN` |
 | `STARTTLS` | the only way to reach 143 encrypted |
 | `CLOSE` | sent by several clients before `LOGOUT`; without it they log an error |
 | `CHECK` | a no-op checkpoint, but its absence shows up as a protocol error in some clients |
+| `APPEND` | `imap.max_append_size` |
+| `COPY` | — |
+| `MOVE` | `imap.enable_move` — RFC 6851 |
+| `EXPUNGE` | `storage.soft_delete` |
+| `IDLE` | `imap.enable_idle`, `imap.max_idle_secs` — RFC 2177 |
+| `UIDPLUS` (`UID EXPUNGE`) | RFC 4315, always advertised |
+| `NAMESPACE` | RFC 2342; Thunderbird asks for it |
+| `UNSELECT` | RFC 3691; lets a client drop the selected mailbox without `CLOSE` side effects |
 
-### 2.2 Planned
+### 2.2 Not planned for v1
 
-```text
-APPEND       COPY         MOVE         EXPUNGE      IDLE
-```
-
-| Command | Gate | Status |
-|---|---|---|
-| `APPEND` | `imap.max_append_size` | _(planned)_ |
-| `COPY` | — | _(planned)_ |
-| `MOVE` | `imap.enable_move` | _(planned)_ — RFC 6851 |
-| `EXPUNGE` | `storage.soft_delete` | _(planned)_ |
-| `IDLE` | `imap.enable_idle`, `imap.max_idle_secs` | _(planned)_ — RFC 2177 |
-| `UIDPLUS` (`UID EXPUNGE`) | _(planned)_ with `EXPUNGE` | RFC 4315 |
-| `NAMESPACE` | _(planned)_ | RFC 2342; Thunderbird asks for it and copes with `NO` |
-| `SORT` / `THREAD` | not planned for v1 | Thunderbird falls back gracefully |
-| `CONDSTORE` / `QRESYNC` | schema is ready (`folders.highest_modseq`, `messages.modseq`), protocol not implemented | _(planned)_ |
-| `COMPRESS=DEFLATE` | not planned for v1 | |
-| `NOTIFY` | not planned for v1 | `IDLE` covers the same need for one folder at a time |
-| `ACL`, `QUOTA`, `METADATA` | not planned for v1 | quota is enforced server-side without an IMAP extension |
-| `CATENATE`, `BINARY`, `MULTIAPPEND` | not planned for v1 | |
+| Command | Status |
+|---|---|
+| `SORT` / `THREAD` | not planned for v1; Thunderbird falls back gracefully |
+| `CONDSTORE` / `QRESYNC` | the storage side is ready (`folders.highest_modseq`, `messages.modseq`, `bump_modseq`) and the `HIGHESTMODSEQ` response code exists, but no command emits it and no `FETCH` item returns `MODSEQ` — not implemented |
+| `COMPRESS=DEFLATE` | not planned for v1 |
+| `NOTIFY` | not planned for v1; `IDLE` covers the same need for one folder at a time |
+| `ACL`, `QUOTA`, `METADATA` | not planned for v1; quota is enforced server-side without an IMAP extension |
+| `CATENATE`, `BINARY`, `MULTIAPPEND` | not planned for v1 |
 
 The gates are real config keys and are validated at boot:
 `ImapConfig::enable_idle`, `ImapConfig::enable_move`, `ImapConfig::max_idle_secs`,
@@ -106,12 +107,13 @@ The advertised list is built from the configuration, never hard-coded:
 * CAPABILITY IMAP4rev1
              LOGINDISABLED        (only when imap.require_tls_for_login and not encrypted)
              STARTTLS             (only when tls.enabled and not already encrypted)
-             AUTH=PLAIN AUTH=LOGIN
+             AUTH=PLAIN
              IDLE                 (only when imap.enable_idle)
-             MOVE UIDPLUS         (only when imap.enable_move)
+             UIDPLUS              (always — see §2.1)
+             MOVE                 (only when imap.enable_move)
              UNSELECT
+             NAMESPACE
              LITERAL+
-             UIDPLUS              (once EXPUNGE ships)
              CHILDREN             (Maildir++ has real hierarchies)
 ```
 
@@ -158,24 +160,24 @@ Rules the implementation must respect:
 | Tag echo | every tagged reply repeats the client's tag verbatim, including `*` does not |
 | `imap.idle_timeout_secs` | a session that has sent nothing for this long gets `* BYE Autologout; idle for too long` and the socket closes. Default 1800. |
 
-Session struct _(planned)_:
+Session struct (`crates/ferroma-imap/src/session.rs`):
 
 ```rust
-/// crates/ferroma-imap/src/session.rs
 pub struct ImapSession {
-    pub connection_id: Uuid,
-    pub remote_addr: SocketAddr,
-    pub state: ImapState,               // NotAuthenticated | Authenticated | Selected | Logout
-    pub encrypted: bool,
-    pub authenticated_user: Option<UserId>,
-    pub session_id: Option<SessionId>,
-    pub mailbox_id: Option<MailboxId>,  // the address currently open
-    pub folder_id: Option<MailboxId>,   // the folder currently selected
-    pub read_only: bool,
-    /// UIDs the session has marked \Deleted but not expunged. Needed even with
-    /// UIDPLUS, because a client that did not request UIDPLUS still expects
-    /// EXPUNGE to remove exactly the messages it flagged.
-    pub deleted_uids: BTreeSet<i64>,
+    context: SessionContext,       // shared, outliving state
+    parser: CommandParser,         // parser state, including a literal in flight
+    config: SessionConfig,         // banner, tls, require_tls_for_login, enable_idle,
+                                   // enable_move, max_append_size, max_literal_size,
+                                   // max_idle_secs, starttls_available
+    state: SessionState,           // NotAuthenticated | Authenticated | Selected | Logout
+    user: Option<UserId>,          // the authenticated account
+    address: Option<String>,       // the account's primary address, local@domain
+    local_part: Option<String>,    // Maildir path components for that address
+    domain: Option<String>,
+    selected: Option<Selected>,    // folder row, mailbox id, the messages in UID
+                                   // order, and the read_only flag
+    idle: Option<ferroma_events::Subscription>,   // created when IDLE is accepted
+    pending: std::collections::VecDeque<Vec<u8>>, // a literal's tail, read before the socket
 }
 ```
 
@@ -196,7 +198,7 @@ Folders are rows in `folders`, not directories walked at request time
 | `folders.special_use` | `\Sent`, `\Drafts`, `\Trash`, `\Junk`, `\Archive`, `\All`, `\Flagged`, or `NULL` |
 | `folders.subscribed` | `LSUB` vs `LIST` |
 | `folders.uid_validity`, `folders.uid_next` | see §5 |
-| `folders.highest_modseq` | reserved for `CONDSTORE` _(planned)_ |
+| `folders.highest_modseq` | bumped by `bump_modseq` (`crates/ferroma-storage/src/repository/mailboxes.rs`) for `CONDSTORE`; the `HIGHESTMODSEQ` response code exists but no command emits it yet |
 | `folders.message_count`, `unseen_count`, `total_bytes` | counters kept current by `FoldersRepository::recount` |
 
 Indexes: `folders_name_key (mailbox_id, name)` unique — two folders of one
@@ -294,7 +296,7 @@ fn maildir_folder_name(folder: &str) -> Result<String> {
 | Command | Behaviour |
 |---|---|
 | `LIST "" "*"` | every folder, `INBOX` first, then case-insensitive alphabetical. `\HasChildren` / `\HasNoChildren` from `parent_id` |
-| `LIST` attributes | `\HasChildren`, `\HasNoChildren`, `\Noselect` for a parent with no messages of its own _(planned)_ |
+| `LIST` attributes | `\HasChildren` / `\HasNoChildren` derived from `parent_id`; `\Noselect` on the root `LIST "" ""` response |
 | `LIST "" "Archive/%"` | `%` matches one level, `*` matches any depth, per RFC 3501 §6.3.8 |
 | `LSUB` | folders with `folders.subscribed = true`. Default is subscribed |
 | `SUBSCRIBE` / `UNSUBSCRIBE` | `FoldersRepository::set_subscribed`. Never affects whether a folder exists |
@@ -529,9 +531,9 @@ peek — every mail client rendering a list — send `BODY.PEEK[]`.
 | `BODY[TEXT]` | yes | everything after the blank line |
 | `BODY[<section>]` / `BODY[<section>]<partial>` | yes | MIME part addressing, and `BODY[]<0.1024>` partial fetches for resumable downloads |
 | `BODY.PEEK[…]` | yes | same, without setting `\Seen` |
-| `BODYSTRUCTURE` | yes | non-extensible form first; the extension data (`BODYSTRUCTURE`) is _(planned)_ |
+| `BODYSTRUCTURE` | yes | the extensible form: every part carries the `md5`, `disposition`, `language` and `location` extension fields (`bodystructure` in `crates/ferroma-imap/src/fetch.rs`) |
 | `BODY` (non-extensible `BODYSTRUCTURE`) | yes | |
-| `MODSEQ` | _(planned)_ | `messages.modseq` is stored and indexed for `CONDSTORE` |
+| `MODSEQ` | no | `messages.modseq` is stored and indexed for `CONDSTORE`, and the `HIGHESTMODSEQ` response code exists, but no `FETCH` item returns `MODSEQ` |
 | `BINARY[…]` | no | `BINARY` is not advertised |
 | `X-GM-*` | no | Gmail extensions are not emulated |
 
@@ -575,9 +577,9 @@ the translation is explicit:
 | `FROM <s>` | `messages.sender` / `message_recipients` where `kind = 'sender'` |
 | `TO <s>`, `CC <s>`, `BCC <s>` | `message_recipients.address` where `kind` matches |
 | `SUBJECT <s>` | `messages_subject_fts_idx`, a GIN index on `to_tsvector('simple', coalesce(subject, ''))` |
-| `BODY <s>` | _(planned)_ — needs a body index; the Maildir has no index over message text |
-| `TEXT <s>` | _(planned)_ — headers plus body |
-| `HEADER <name> <s>` | _(planned)_ — headers are not stored relationally; `messages` keeps a denormalised subset |
+| `BODY <s>` | yes — the raw message bytes from the Maildir, read when a key needs them |
+| `TEXT <s>` | yes — headers plus body |
+| `HEADER <name> <s>` | yes — every top-level header, unfolded; `messages` also keeps a denormalised subset |
 | `LARGER <n>` / `SMALLER <n>` | `messages.size_bytes` |
 | `BEFORE <date>` / `ON <date>` / `SINCE <date>` | `messages.internal_date` |
 | `SENTBEFORE` / `SENTON` / `SENTSINCE` | `messages.sent_at` |
@@ -593,11 +595,12 @@ function, so a `SEARCH` and an API query over the same fields return the same
 messages. That is the layering rule doing real work: the IMAP layer contributes
 only the parser.
 
-Implementing `BODY`/`TEXT` search would mean either indexing message text in
-PostgreSQL or walking the Maildir per query. Neither is acceptable for v1, so it
-is explicitly _(planned)_ and clients that use it get `NO [CANNOT] BODY search is
-not supported` rather than wrong results. The Admin/API side offers a
-subject-and-header search that does work.
+`BODY`/`TEXT` search reads the message bytes from the Maildir, but only for the
+keys that need them — `SearchKey::needs_body` in `crates/ferroma-imap/src/search.rs`
+lets a purely metadata search (`UNSEEN`, `SINCE`, `FROM`…) skip the disk read, and a
+command with twenty `BODY` keys over one message decodes the body once, not twenty
+times. The Admin/API side offers a subject-and-header search over the same
+repositories.
 
 ---
 

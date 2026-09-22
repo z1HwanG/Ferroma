@@ -41,7 +41,8 @@ services:
       POSTGRES_INITDB_ARGS: '--encoding=UTF8 --locale=C'
     command:
       # Mail metadata is small and hot; the message bodies are on the filesystem.
-      # These settings suit a 4 GB host; scale shared_buffers to ~25% of RAM.
+      # These settings suit a 2 GB host: shared_buffers is 25% of RAM, the usual rule
+      # of thumb. Keep that ratio on a bigger host rather than copying the number.
       - postgres
       - -c
       - max_connections=100

@@ -14,6 +14,39 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The documents no longer describe skeletons.** Seven documents — `architecture.md`, `deployment.md`,
+  `imap.md`, `security.md`, `smtp.md`, `storage.md` and `sync.md`, each with its Chinese pair — carried
+  `_(planned)_` claims written before the crates existed, and four of them opened with a status banner
+  calling implemented crates unimplemented skeletons. Every marker was checked against the code and
+  rewritten as a statement about what the server actually does; where a claim was stale the correction
+  is substantive, not cosmetic. What the read found, among the rest: `SEARCH BODY`/`TEXT`/`HEADER` are
+  implemented (reading the Maildir only when a key needs it), `BODYSTRUCTURE` returns the extensible
+  form, `NAMESPACE`/`UIDPLUS`/`UNSELECT` are always advertised, `AUTH=LOGIN` never was, SPF and DKIM
+  verdicts feed DMARC rather than rejecting on their own, MIME depth and part budgets map to
+  `552 5.3.4`, and HTML sanitisation exists behind `security.sanitize_html`. CONDSTORE stays honestly
+  marked not implemented — the storage side is ready and the protocol is not wired.
+
+- **A test that only passed on machines with stale artifacts.** The acceptance run still contained
+  `the_official_client_syncs_and_reads_from_the_server`, which locates a `ferroma-client` binary and
+  builds the removed crate if it is missing. The desktop client left this repository in 0.1.8, so on
+  a clean checkout the build fails; on machines holding an older `target/` the test passed against a
+  binary nothing in the tree produced. It is gone; the FCP sync path it covered runs against the API
+  directly in `the_sync_cursor_sees_the_delivery`, and a client speaking FCP end to end belongs to the
+  client's own repository.
+
+### Added
+
+- **The bootstrap setup page has the acceptance test it lacked.** A new e2e run starts a real server
+  with no database configured and walks the whole first-run path over real sockets: the setup code is
+  printed and then enforced (`403` on a wrong one), `/` serves the wizard as HTML, an unknown API path
+  is the JSON envelope rather than the front-end fallback, health answers `503 setup` honestly, a
+  wrong code, a non-postgres address and an unreachable database are each refused with `invalid_input`,
+  an accepted POST migrates the database it is given, writes `database.json` into the data directory,
+  and the same process comes up as a healthy `ferroma serve` on the same port — where the bootstrap
+  endpoint no longer exists. Previously this mode was held only by in-memory unit tests of the router.
+
 ## [0.1.8] — 2026-09-21
 
 ### Changed
@@ -38,6 +71,94 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
   to others as a network service has to come with its source. `LICENSE` carries the verbatim
   text, `Cargo.toml` and the image's OCI label carry the SPDX id, and the image now contains the
   licence file itself.
+
+- **The documentation site is rebuilt on Beautiful UI's design language, and it now carries the
+  deployment path end to end.** `tools/build-site.mjs` and `tools/site-src/` were rewritten
+  around the oklch token set, the ring-first elevation model, the dashed section rules and the
+  Inter + JetBrains Mono pairing that [beautifului.dev](https://www.beautifului.dev) publishes,
+  in both themes. The home page states what the project is, then how to get at it: the
+  four-command path that ends at the setup wizard — `docker compose up -d`, then the root path,
+  which is where the wizard lives until the instance has its first administrator — and the three
+  supported ways to put it on the internet (Compose with its own PostgreSQL, Compose on a host
+  that already runs one, plain `docker run`), each with the commands that exist in this tree
+  rather than a sketch of them. A new page, `deploy.html` / `部署指南`, walks all four, down to
+  the environment variables and what the wizard's answers actually govern; `docs/deployment.md`
+  stays the reference it was, and the two now link to each other.
+
+  The site also covers what lives outside `docs/`: the root `CONTRIBUTING.md` /
+  `CONTRIBUTING_zh.md` pair is a page of its own, and a link to a file the site does not render
+  (`AGENTS.md`, `LICENSE`, `TODO.md`, `config/ferroma.toml`) resolves to GitHub rather than
+  degrading to plain text — which is what those twenty-odd links used to do.
+
+  The home page is now two pages — `/` is English and `/zh/` is Chinese, so switching language
+  from the front door lands on the other front door instead of on a document — and it carries
+  three things rather than five: the positioning, the fastest path, and the document index. The
+  capability grid and the three-path deployment summary were saying at length what
+  `docs/architecture.md` and the deployment guide already say.
+
+- **The documented memory requirement was four times what it needs to be.** Every "~4 GB RAM"
+  traced back to one line in `docker-compose.prod.yml` claiming its PostgreSQL tuning "suits a
+  4 GB host" — but `shared_buffers=512MB` is 25% of 2 GB, which is the usual rule of thumb, so
+  those numbers describe a 2 GB host and were only ever conservative on a bigger one. The
+  process itself is far smaller than either figure: it stays in the tens of megabytes, and what
+  a deployment spends memory on is PostgreSQL and the page cache. The requirement now reads
+  1 vCPU / 1 GB, and the compose comment says 2 GB.
+
+- **The search index now covers code blocks.** A variable name like
+  `FERROMA__QUEUE__RELAY_HOST` appears only inside a YAML snippet, so searching for it returned
+  nothing — which is how it was reported. Each section's code is indexed separately from its
+  prose, so a hit that occurs only in code ranks below one in the text instead of competing with
+  it. The relay variables are also in the environment-variable table now, where they belong.
+
+  Site assets now carry a content hash in their URL. The host serves
+  `Cache-Control: max-age=14400` on `.js` and `.css`, and Cloudflare caches them by extension,
+  so an asset whose contents changed but whose URL did not stayed stale for up to four hours —
+  which is what happened to the search-box fix below: it was pushed, and the browser went on
+  running the previous script. A hash of the contents now goes into the query string, so a
+  changed file is a different URL and both caches fetch it. (`site-check.mjs` strips the query
+  string before resolving a link, so the fingerprint does not read as a broken path.)
+
+  A reader-reported interaction bug: pressing the mouse in the search box and moving it dragged
+  the page upward. The search box sits in the fixed top bar, so a press that leaves the box
+  turns into a cross-document selection, and the browser auto-scrolls toward wherever the
+  pointer went — all the way to the top. Two changes: the interface shell (top bar, sidebar,
+  table of contents, pager, chips) no longer takes part in text selection, which is what it
+  should have been from the start, and while the mouse is held down inside the search box the
+  scroll position is pinned, so dragging still selects text and places the caret but no longer
+  moves the page. `user-select: none` does not reach an `<input>` — it has its own selection
+  model — and `preventDefault` would have taken caret placement with it.
+
+  One deployment gap the site was missing: what to do when the provider will not set a PTR.
+  `[queue] relay_host` has been in `config/ferroma.toml` from the start — it hands the outbound
+  path to a smarthost that already has its reverse DNS right, and leaves receiving untouched —
+  but neither the deployment guide nor §2.3 of the reference mentioned it, which leaves the
+  reader stuck at the one precondition they cannot satisfy. Both say it now, together with the
+  two DNS records that move with it: `SPF` has to `include` the relay provider's own domain,
+  and `PTR` stops mattering.
+
+  Two rendering fixes came out of reading the Chinese pages. Every diagram on the site was
+  drawn with U+2500 box characters, which are *ambiguous width* — one column in a Latin
+  monospace face, two in a CJK one — so a reader whose monospace falls back to a CJK font saw
+  every diagram misaligned (measured here: `─` at 9.36px against `|` at 4.61px, and identical
+  under both `lang` values, because the font decides it, not the language). Diagrams are now
+  emitted as their ASCII equivalents, which makes alignment a property of the characters
+  instead of a property of the reader's font stack. The home page's diagram was also redrawn
+  on a strict column grid and centred in its panel, and code-block comments are now
+  per-language: a Chinese page no longer explains itself in English.
+
+  The fastest path itself was wrong in the first cut of this page. It cloned the repository and
+  built the workspace in the container — ten to thirty minutes — and asked for a database
+  password up front. It does not need any of that: with no database *stated*, the server binds
+  its web port anyway and asks for the connection in the browser, alongside a setup code it
+  prints to the log, and then continues booting in the same process. One released image, one
+  data volume, no `.env`, no build — `docker compose up -d` or a single `docker run`, then the
+  wizard. `docs/deployment.md` §3.5 had this right all along; the site now says it too, in both
+  forms.
+
+  Two things this fixes along the way: the quick-start block on the home page cloned a
+  repository URL that does not exist, and the site carried a second, unreferenced generator
+  (`scripts/build-static-site.mjs`) that wrote the same directory with a partial document list
+  and no glossary — it now says at the top that it is not the one CI runs.
 
 ## [0.1.7] — 2026-09-20
 

@@ -6,24 +6,24 @@
 Ferroma 是一个单一的 Rust 进程，它讲 SMTP、IMAP 和 HTTPS，把
 邮件元数据存进 PostgreSQL，把邮件字节存进同一台主机上的一个 Maildir。
 所有不是协议解析器的东西都经过同一个邮件核心和同一套仓储层。这份文档
-描述四个产品、crate 依赖图、分层规则，以及一封邮件从远端 MX 打开一条
+描述本仓库中的三个产品、crate 依赖图、分层规则，以及一封邮件从远端 MX 打开一条
 TCP 连接的那一刻，到客户端的 socket 收到一个 `mail.received` 帧的那一刻，
 中间会发生什么。
 
 > **状态：**对当前仓库的架构描述。下文提到的每个 crate 都已实现，并由
-> `cargo test --workspace` 覆盖。凡是描述"规格要求、但本构建尚未具备"的行为，都标记为
-> _(计划中)_，那是设计注记，不是观察结论。HTTP 与 FCP 的线上契约另行冻结在
-> [api.md](api.md) 和 [fcp.md](fcp.md) 中，本文档从不重述它们。
+> `cargo test --workspace` 覆盖；生命周期各节中的每一步都已实现。HTTP 与 FCP
+> 的线上契约另行冻结在 [api.md](api.md) 和 [fcp.md](fcp.md) 中，本文档从不重述
+> 它们。
 
 ---
 
-## 1. 四个产品
+## 1. 本仓库中的三个产品
 
 | 产品 | 所在位置 | 它是什么 | 状态 |
 |---|---|---|---|
-| **Ferroma Server** | `server/`（二进制 `ferroma`）、`crates/*` | 守护进程：SMTP、IMAP、HTTP API、队列工作进程、同步服务、事件总线 | 二进制是桩；库部分实现 |
-| **Ferroma Webmail** | `web/` | 浏览器邮件客户端，一个由 API 提供服务的静态 SPA | SPA 源码已存在；尚未被服务 _(计划中)_ |
-| **Ferroma Admin** | `admin/` | 域名/用户/队列/DNS/存储管理 SPA | SPA 源码已存在；尚未被服务 _(计划中)_ |
+| **Ferroma Server** | `server/`（二进制 `ferroma`）、`crates/*` | 守护进程：SMTP、IMAP、HTTP API、队列工作进程、同步服务、事件总线 | 已实现；`ferroma serve` 绑定所有监听端口 |
+| **Ferroma Webmail** | `web/`、`shared/` | 浏览器邮件客户端，一个由 API 提供服务的静态 SPA | 由 `api.serve_frontend` 服务于 `/`，支持英文与简体中文 |
+| **Ferroma Admin** | `admin/`、`shared/` | 域名/用户/队列/DNS/存储管理 SPA | 服务于 `/admin/`，受 `is_admin` 门控，支持英文与简体中文 |
 
 Webmail 和 Admin 不是独立进程。它们是由 `ferroma-api` 在与
 `/api/v1` 同源之下提供的静态资源，受 `api.serve_frontend` 门控，
@@ -102,10 +102,9 @@ API、事件总线和认证。这样服务端上「把这封邮件标为已读�
    把 `sqlx::Error` 翻译成自己的 `StorageError`，然后才翻译成
    `FerromaError`（`crates/ferroma-storage/src/error.rs`），从而把 `sqlx` 挡在
    它之上所有东西的公开 API 之外。
-2. **`client` 只共享 `ferroma-core`，别的都不共享。** Cargo 会很乐意让
-   客户端链接 `ferroma-storage`，但桌面客户端绝不能把一个
-   PostgreSQL 连接池或一个 Maildir 拖进要发布的二进制；它自己的 SQLite 缓存位于
-   `client/src/database/` _(计划中)_。
+2. **官方客户端位于另一个代码仓库。** 这里没有 crate 会被编译进要发布的
+   客户端二进制，也没有任何代码假定客户端在本工作区内构建；两侧之间的契约是
+   FCP（[fcp.md](fcp.md)），不是共享库。
 
 ---
 
@@ -114,7 +113,7 @@ API、事件总线和认证。这样服务端上「把这封邮件标为已读�
 不可协商，出自 [../AGENTS.md](../../AGENTS.md) §4.5 与项目书 §8：
 
 ```text
-    Protocol layer            ferroma-smtp, ferroma-imap, ferroma-api, client
+    Protocol layer            ferroma-smtp, ferroma-imap, ferroma-api
     (parse, authenticate, marshal, reply)
               │
               ▼
@@ -151,8 +150,7 @@ maildir 的 `set_flags`。一条 Webmail 路由不构造 MIME；它调用
 ## 4. 请求生命周期：一封收信 SMTP 邮件
 
 一封邮件从陌生人的 MX 走到一行存储记录和一个 `new/` 文件所经过的路径。
-标记为_(计划中)_的步骤描述的是按规格实现的 `ferroma-smtp` 与 `ferroma-api`；
-存储与事件这两段步骤已实现。
+下文每一步都已实现；SMTP 与 API 两段分别是 `ferroma-smtp` 与 `ferroma-api`。
 
 ```text
  remote MX ──TCP:25──► ferroma-smtp listener
@@ -347,7 +345,7 @@ maildir 的 `set_flags`。一条 Webmail 路由不构造 MIME；它调用
   一个主题和一个大小，从不携带字节。
 
 **总线只在进程内。** 没有 Redis 或 NATS 后端，也没有
-跨进程扇出 _(计划中)_。两个共享同一个数据库的 `ferroma` 进程
+跨进程扇出。两个共享同一个数据库的 `ferroma` 进程
 有两条独立的事件流；连到进程 A 的客户端，在跑一次同步之前看不到
 通过进程 B 做的改动。这是水平扩展上的一条真实约束，在 [security.md](security.md) 和
 [deployment.md](deployment.md) 中再次列出。

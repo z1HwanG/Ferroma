@@ -8,11 +8,12 @@
 HTML 处理、路径穿越、日志卫生与密钥管理），并给出实现它的真实类型、函数与配置键。文档以
 一张把每项控制映射到实现位置的表结束，另有一节「已知缺口」，列出Ferroma v1刻意不防的东西。
 
-> **状态：**混合。§2–§7与§11–§12下的一切都已在`ferroma-core`、`ferroma-auth`、
-> `ferroma-storage`和`ferroma-mail`中实现，可以直接在那里读到。§8（SPF/DKIM/DMARC）、
-> §9（收信时的`Received:`策略）、§10（HTML 净化）以及 API 层的控制项都是_（计划中）_：
-> `ferroma-smtp`和`ferroma-api`还是 crate 骨架。这些小节点名的配置键、限制与错误变体
-> 确实存在。
+> **状态：**已实现。这里描述的一切——密码、令牌与会话、登录限流、中继预防、
+> 发件人与收件人校验、SPF/DKIM/DMARC、TLS、速率与大小限制、HTML 净化、路径穿越
+> 防护与日志卫生——都存在于`ferroma-core`、`ferroma-auth`、`ferroma-storage`、
+> `ferroma-mail`、`ferroma-smtp`和`ferroma-api`中，并由`cargo test --workspace`
+> 与验收测试覆盖。Ferroma v1 刻意**不做**的控制项在 §14 中陈述，而不是在这里标记
+> 为待办。
 
 ---
 
@@ -52,7 +53,7 @@ HTML 处理、路径穿越、日志卫生与密钥管理），并给出实现它
   显示，但从不被用来做任何授权决定。
 * **数据库可信，库里的文件系统路径不可信。**两个存储层都会重新校验交给它们的每一条
   相对路径，见§12。
-* **单进程、单主机。**多节点部署是_（计划中）_的，事件总线不跨进程
+* **单进程、单主机。**不支持多节点部署，事件总线不跨进程
   （[architecture.md](architecture.md) §6）。
 
 ---
@@ -523,17 +524,18 @@ FERROMA__IMAP__REQUIRE_TLS_FOR_LOGIN: 'true'
 
 ## 8. SPF、DKIM 与 DMARC
 
-> _（计划中）_，`ferroma-smtp`的`spf`、`dkim`与`dmarc`模块已规定但未实现。这些配置键及其
-> 默认值存在于`config/ferroma.toml`的`[dkim]`与`[policy]`中，也存在于
+> 已实现。`ferroma-smtp`的`spf`、`dkim`与`dmarc`模块（`crates/ferroma-smtp/src/spf.rs`、
+> `dkim.rs`、`dmarc.rs`，在`inbound.rs`中组装，并在`server.rs`中于`DATA`之后评估）
+> 承担了这一职责。配置键位于`config/ferroma.toml`的`[dkim]`与`[policy]`中，也存在于
 > `crates/ferroma-core/src/config.rs`的`DkimConfig` / `PolicyConfig`中。
 
 ### 8.1 收信
 
 | 校验 | 配置 | 失败时 |
 |---|---|---|
-| SPF（RFC 7208） | `policy.spf_enabled`、`policy.spf_max_lookups`（10） | 在`-all`硬失败时返回`550 5.7.23`_（计划中）_ |
-| DKIM 校验（RFC 6376） | `dkim.verify_inbound` | `550 5.7.20`_（计划中）_ |
-| DMARC（RFC 7489） | `policy.dmarc_enabled`、`policy.dmarc_failure_action` | `policy.dmarc_failure_action`是`none`、`quarantine`或`reject`；默认是`"quarantine"`，投进`Junk`_（计划中）_ |
+| SPF（RFC 7208） | `policy.spf_enabled`、`policy.spf_max_lookups`（10） | 本身不拒绝——判定结果写入`Authentication-Results`并汇入 DMARC |
+| DKIM 校验（RFC 6376） | `dkim.verify_inbound` | 本身不拒绝——判定结果汇入 DMARC 对齐检查 |
+| DMARC（RFC 7489） | `policy.dmarc_enabled`、`policy.dmarc_failure_action` | `policy.dmarc_failure_action`是`none`、`quarantine`或`reject`；默认是`"quarantine"`，投进`Junk`；发布或本地为`reject`时返回`550 5.7.1 Message rejected by the DMARC policy of <domain>` |
 | `Authentication-Results` | `policy.add_auth_results` | 该头字段会被前置插入判定结果 |
 
 `dmarc_failure_action`默认取`quarantine`而不是`reject`，有一个具体原因：对一封*被转发*的
@@ -637,12 +639,9 @@ pub struct ParseLimits { pub max_depth: usize, pub max_parts: usize,
 
 ### 10.2 HTML 净化
 
-> **_（计划中）_**，[api.md](api.md) §5.4承诺`html_body`在服务端被净化，客户端仍须在沙箱里
-> 渲染它的要求也在那里写明。`ferroma-mail`和`ferroma-api`里目前还没有净化代码，
-> `config/ferroma.toml`中也不存在`security.sanitize_html`键。因此本节的每一句陈述都是对
-> 实现的一项义务，而不是对它的描述。
-
-在它存在之前，规则是：
+已实现。`crates/ferroma-api/src/routes/mail/store.rs` 中的 `sanitize_html` 在
+HTML 正文入库时运行，由 `config/ferroma.toml` 的 `security.sanitize_html` 门控。
+规则是：
 
 * **绝不把原始`html_body`渲染进有特权的源。**Webmail 与 Admin 这两个 SPA 与 API 同源提供，
   因此一个未净化的 HTML 正文，就是对能调用 admin API 的会话的存储型 XSS。
@@ -860,29 +859,29 @@ sender          recipient   message_id   result   duration
 | 11 | 会话吊销立即生效 | `AuthService::authenticate`检查会话行 | 已实现 |
 | 12 | 改密码吊销其他会话 | `AuthService::change_password` | 已实现 |
 | 13 | 设备注册与吊销 | `devices`、`AuthService::register_device` / `revoke_device`、`Event::device_revoked` | 已实现 |
-| 14 | 空闲会话策略 | `client.session_idle_days`（90） | 已实现（清扫_（计划中）_） |
+| 14 | 空闲会话策略 | `client.session_idle_days`（90） | 已实现（清扫可经`AuthService::purge_expired_sessions`调用，尚未接入定时任务） |
 | 15 | 哈希之前的按 IP 登录限流 | `AuthService::login` + `LoginAttemptsRepository::count_failures_for_ip` | 已实现 |
 | 16 | 按账号锁定 | `users.failed_logins`、`users.locked_until`、`record_login_failure`、`User::is_login_allowed` | 已实现 |
 | 17 | 不枚举账号 | 未知/错误/停用一律返回相同的`invalid_credentials()` | 已实现 |
 | 18 | 登录尝试审计轨迹 | `login_attempts`、`AuthService::record_attempt` | 已实现 |
-| 19 | 开放中继预防 | `smtp.require_auth_on_submission`、`FerromaError::Forbidden` | 在`ferroma-smtp`中_（计划中）_ |
-| 20 | 收件人校验 | `MailboxesRepository::find_by_address`、`DomainsRepository`、`AliasesRepository`、`domains.catch_all` | 已实现（仓储层）；接线_（计划中）_ |
+| 19 | 开放中继预防 | `SmtpSession::may_relay`、`smtp.require_auth_on_submission`、`550 5.7.1 Relaying denied` | 已实现 |
+| 20 | 收件人校验 | `MailboxesRepository::find_by_address`、`DomainsRepository`、`AliasesRepository`、`domains.catch_all`、`550 5.1.1 User unknown` | 已实现 |
 | 21 | 发件人地址语法校验 | `EmailAddress::parse`、`validate_local_part`、`validate_domain` | 已实现 |
-| 22 | 本地`From`必须归该用户所有 | 提交时检查`mailboxes.user_id` | _（计划中）_ |
+| 22 | 本地`From`必须归该用户所有 | API 发送路径中的`mailboxes.user_id`检查（`crates/ferroma-api/src/routes/mail/store.rs` 中的 `resolve_sender`） | 已实现（API 路径）；SMTP 提交监听器不会重新核对`MAIL FROM` |
 | 23 | 地址大小写归一 | schema 的`CHECK` + `normalise_domain` + `to_lowercase` | 已实现 |
-| 24 | SPF | `policy.spf_enabled`、`policy.spf_max_lookups` | _（计划中）_ |
-| 25 | DKIM 校验 | `dkim.verify_inbound` | _（计划中）_ |
-| 26 | DKIM 签名 | `[dkim]`块、`DkimConfig` | _（计划中）_ |
-| 27 | DMARC | `policy.dmarc_enabled`、`policy.dmarc_failure_action` | _（计划中）_ |
+| 24 | SPF | `policy.spf_enabled`、`policy.spf_max_lookups`、`spf.rs` | 已实现 |
+| 25 | DKIM 校验 | `dkim.verify_inbound`、`dkim.rs`（`DkimVerifier`） | 已实现 |
+| 26 | DKIM 签名 | `[dkim]`块、`DkimConfig`、`DkimSigner` | 已实现 |
+| 27 | DMARC | `policy.dmarc_enabled`、`policy.dmarc_failure_action`、`dmarc.rs` + `inbound.rs` | 已实现 |
 | 28 | `Authentication-Results` | `policy.add_auth_results` | 已实现 |
-| 29 | 凡能终止TLS处都用TLS | `[tls]`、`tls.min_version`、`smtps_port`、`imaps_port`、`api.tls_port` | 已实现（配置）；监听器_（计划中）_ |
+| 29 | 凡能终止TLS处都用TLS | `[tls]`、`tls.min_version`、`smtps_port`、`imaps_port`、`api.tls_port` | 已实现 |
 | 30 | 只用 rustls | 工作区`Cargo.toml`的钉版；`AGENTS.md` §1.1 | 已实现 |
 | 31 | 自签名证书两重门控 | `Config::validate()` + `tls.allow_insecure_dev_mode` | 已实现 |
-| 32 | 生产环境无明文 AUTH/LOGIN | `smtp.require_tls_for_auth`、`imap.require_tls_for_login` | 已实现（配置）；强制_（计划中）_ |
-| 33 | 邮件大小、收件人、连接数与速率限制 | `Limits`、`Limits::validate()`、`[limits]` | 已实现（定义）；强制_（计划中）_ |
+| 32 | 生产环境无明文 AUTH/LOGIN | `smtp.require_tls_for_auth`（`may_auth` → `538 5.7.11`）、`imap.require_tls_for_login` | 已实现 |
+| 33 | 邮件大小、收件人、连接数与速率限制 | `Limits`、`Limits::validate()`、`[limits]`，在 SMTP 命令循环与 API 中强制 | 已实现 |
 | 34 | 解析限制，没有无界递归 | `ParseLimits`、`ParsedMessage::parse_with_limits` | 已实现 |
 | 35 | 全量解析：不因解析错误丢邮件 | `ferroma-mail`解析器的设计 | 已实现 |
-| 36 | HTML 净化 | `security.sanitize_html` | _（计划中）_ |
+| 36 | HTML 净化 | `security.sanitize_html`、`ferroma-api` `store.rs` 中的 `sanitize_html` | 已实现 |
 | 37 | 路径穿越防御，邮件根目录 | `sanitize_component`、`Maildir::absolute` | 已实现 |
 | 38 | 路径穿越防御，二进制存储 | `AttachmentStore::absolute`、`path_for_digest`校验 | 已实现 |
 | 39 | 不对对端输入使用`unwrap()` | 约定，`AGENTS.md` §4.4 | 已实现 |
@@ -897,11 +896,10 @@ sender          recipient   message_id   result   duration
 | 48 | 生产环境的`Secure` cookie | `api.secure_cookies`，由`docker-compose.prod.yml`设为 true | 已实现（配置） |
 | 49 | 默认关闭 CORS | `api.cors_origins = []`（仅同源） | 已实现（配置） |
 | 50 | 仅在可信时使用`X-Forwarded-For` | `api.trust_proxy_headers = false`默认 | 已实现（配置） |
-| 51 | 未认证 HTTP 到不了数据 | 除`/health`、`/version`、`/.well-known/*`外，每条`/api/v1`路由都要 bearer/cookie | 在`ferroma-api`中_（计划中）_ |
-| 52 | Admin 端点要求`is_admin` | `Authenticated::is_admin()`检查 | _（计划中）_ |
+| 51 | 未认证 HTTP 到不了数据 | 除`/health`、`/version`、`/.well-known/*`外，每条`/api/v1`路由都要 bearer/cookie | 已实现 |
+| 52 | Admin 端点要求`is_admin` | `Authenticated::is_admin()`检查 | 已实现 |
 
-标记为_（计划中）_的行来自同一批源头（`FerromaError`、`Limits`、`ApiConfig`），并在
-[api.md](api.md)与[smtp.md](smtp.md)中描述。
+这些行背后的接线在[api.md](api.md)与[smtp.md](smtp.md)中描述。
 
 ---
 
@@ -925,7 +923,7 @@ Ferroma 不扫描附件。没有 ClamAV 集成、没有`clamd`套接字、没有
 
 没有内容分类器、没有`X-Spam-Score`、没有`spamassassin`集成。唯一的收信过滤是：
 
-* SPF/DKIM/DMARC判定_（计划中）_，它们认证发件人，不分类内容；
+* SPF/DKIM/DMARC判定，它们认证发件人，不分类内容；
 * `Junk`文件夹及其`special_use = \Junk`，以及 DMARC `quarantine`把邮件投进它；
 * 速率限制与连接限制，它们约束的是量，不是内容。
 
@@ -987,9 +985,9 @@ PostgreSQL 的`LISTEN`/`NOTIFY`后端。
 | 没有泄露语料库密码检查 | 用户可能设置一个已知被泄露的密码 | 在创建账号时按你信任的清单强制执行 |
 | 没有针对`AUTH`的按用户 IP 白名单 | 偷来的密码在任何地方都能用 | 设备吊销，并监控`sessions.ip` |
 | 没有 DMARC 聚合报告处理 | 除非运维者去读，`rua`报告无人问津 | 把`rua`指向你会查看的邮箱 |
-| webhook 没有请求签名 | _（计划中）_的 webhook 是未认证的 HTTP POST | 不要在不可信网络上启用 webhook |
+| webhook 没有请求签名 | webhook 一旦到来，就是未认证的 HTTP POST | 不要在不可信网络上启用 webhook |
 | `GET /.well-known/ferroma`没有速率限制 | 一个未认证端点可被用于侦察和加载 | 如果在意，就在前面加一层代理限制 |
-| 收信时不校验 PTR | 来自没有 PTR 的主机的邮件仍被接受 | SPF/DKIM/DMARC_（计划中）_与一道网关 |
+| 收信时不校验 PTR | 来自没有 PTR 的主机的邮件仍被接受 | SPF/DKIM/DMARC 与一道网关 |
 | 没有告警 | 队列增长、磁盘写满或登录洪水，只有盯着看的人才知道 | 监控健康检查端点与`mail_queue_status_idx`计数，见[deployment.md](deployment.md) §10 |
 
 ---

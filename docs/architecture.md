@@ -12,15 +12,14 @@ layering rule and what happens to a message from the moment a remote MX opens a
 TCP connection to the moment a client's socket receives a `mail.received` frame.
 
 > **Status:** architectural description of the repository as it stands. Every crate
-> named below is implemented and exercised by `cargo test --workspace`. A statement
-> that describes behaviour the specification calls for but this build does not have
-> is marked _(planned)_ and is a design note, not an observation. The HTTP and FCP
-> wire contracts are frozen separately in [api.md](api.md) and [fcp.md](fcp.md) —
-> this document never restates them.
+> named below is implemented and exercised by `cargo test --workspace`, and every
+> step in the lifecycle sections is implemented. The HTTP and FCP wire contracts
+> are frozen separately in [api.md](api.md) and [fcp.md](fcp.md) — this document
+> never restates them.
 
 ---
 
-## 1. The four products
+## 1. The three products in this repository
 
 | Product | Where it lives | What it is | Status |
 |---|---|---|---|
@@ -108,10 +107,10 @@ Two consequences worth knowing before you touch a manifest:
    translates `sqlx::Error` into its own `StorageError` and only then into
    `FerromaError` (`crates/ferroma-storage/src/error.rs`), keeping `sqlx` out of
    the public API of everything above it.
-2. **`client` shares `ferroma-core` and nothing else.** Cargo would happily let
-   the client link `ferroma-storage`, but the desktop client must not drag a
-   PostgreSQL pool or a Maildir into a shipped binary; its own SQLite cache lives
-   in `client/src/database.rs`.
+2. **The official client is a separate repository.** No crate here is compiled
+   into a shipped client binary, and nothing assumes the client is built in this
+   workspace; the contract between the two sides is FCP ([fcp.md](fcp.md)), not a
+   shared library.
 
 ---
 
@@ -120,7 +119,7 @@ Two consequences worth knowing before you touch a manifest:
 Non-negotiable, from [../AGENTS.md](../AGENTS.md) §4.5 and specification §8:
 
 ```text
-    Protocol layer            ferroma-smtp, ferroma-imap, ferroma-api, client
+    Protocol layer            ferroma-smtp, ferroma-imap, ferroma-api
     (parse, authenticate, marshal, reply)
               │
               ▼
@@ -358,7 +357,7 @@ Guarantees and their limits:
   subject and a size, never the bytes.
 
 **The bus is in-process only.** There is no Redis or NATS backend and no
-cross-process fan-out _(planned)_. Two `ferroma` processes sharing one database
+cross-process fan-out. Two `ferroma` processes sharing one database
 have two independent event streams; a client connected to process A will not see
 a change made through process B until it runs a sync. This is a real constraint
 on horizontal scaling and is listed again in [security.md](security.md) and

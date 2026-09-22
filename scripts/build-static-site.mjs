@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 // Build Ferroma documentation static website
 // Usage: node scripts/build-static-site.mjs
+//
+// NOT the generator CI runs, and not the supported one. `tools/build-site.mjs`
+// is: it renders every document in docs/ (this script's list stops at ten and
+// has no glossary), writes the bilingual search index, and copies the stylesheet
+// and script from `tools/site-src/`. Both write `.site/`, so running this one
+// after that one replaces a complete site with a partial one.
 
 import fs from 'node:fs';
 import path from 'node:path';

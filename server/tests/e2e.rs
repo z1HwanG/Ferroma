@@ -1026,165 +1026,349 @@ fn dump(server: &mut Server, note: &str) {
 }
 
 // -----------------------------------------------------------------------------
-// The official client, against the real server
+// The bootstrap walk
 // -----------------------------------------------------------------------------
 
-/// Locate the `ferroma-client` binary, building it if this run has not.
+/// The bootstrap walk, over real sockets: a server with no database serves the
+/// setup page on the API's port, and the page's single POST hands it a database
+/// and a working `ferroma serve`, in the same process, with no restart.
 ///
-/// `CARGO_BIN_EXE_<name>` is only set for the package under test, so the client —
-/// a different package — has to be found on disk. It lands beside this test's own
-/// binary, because every target in the workspace shares one target directory.
-fn client_binary() -> PathBuf {
-    let server_binary = PathBuf::from(env!("CARGO_BIN_EXE_ferroma"));
-    let dir = server_binary
-        .parent()
-        .expect("the binary has a directory")
-        .to_path_buf();
-    let name = if cfg!(windows) {
-        "ferroma-client.exe"
-    } else {
-        "ferroma-client"
-    };
-    let candidate = dir.join(name);
-    if candidate.is_file() {
-        return candidate;
-    }
-
-    // Build it, so `cargo test -p ferroma-server --test e2e` works on its own.
-    let status = Command::new(env!("CARGO"))
-        .args(["build", "-p", "ferroma-client"])
-        .status()
-        .expect("run cargo build");
-    assert!(status.success(), "could not build ferroma-client");
-    assert!(
-        candidate.is_file(),
-        "ferroma-client was not produced at {}",
-        candidate.display()
-    );
-    candidate
-}
-
-/// The strongest integration evidence in this file: the shipped desktop client,
-/// speaking FCP to the shipped server, over a real socket, against a real database.
+/// This is the first thing a `docker compose up` operator meets, and the unit
+/// tests in `server/src/bootstrap.rs` only cover the router in memory. What only
+/// a socket test can prove: the code is printed and then enforced, the wizard
+/// page is what `/` serves while there is no database, an unknown API path is
+/// JSON rather than the front-end fallback, a wrong code or an unreachable
+/// database is refused with the error envelope, and an accepted POST migrates
+/// the database it is given, writes `database.json`, and ends in a healthy API
+/// that no longer serves the bootstrap endpoint.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_official_client_syncs_and_reads_from_the_server() {
+async fn the_bootstrap_server_becomes_the_server_once_a_database_is_entered() {
     if !require_database() {
         return;
     }
-    // Held for the whole test: these tests bind fixed ports and start a real server.
+    // Held for the whole test: it binds the same fixed ports the other tests use.
     let _serial = serial_guard().lock().await;
 
-    let server = Server::start().await;
-    let client = client_binary();
-    let client_dir = server.dir.path().join("client");
-    std::fs::create_dir_all(&client_dir).expect("create the client data directory");
+    // The database the wizard will point at. It exists but has no schema: the
+    // connect endpoint applies the migrations itself, and that is part of what
+    // this test proves.
+    let database = database_name(&uuid::Uuid::new_v4().simple().to_string()[..12]);
+    ensure_database(&database).await;
+    let url = acceptance_url(&database);
 
-    server.cli(&["domain", "create", "acceptance.test"]);
-    server.cli(&[
-        "user", "create", ALICE, "--password", PASSWORD, "--display-name", "Alice",
-    ]);
-    server.cli(&["user", "create", BOB, "--password", PASSWORD]);
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let data = dir.path().join("data");
+    std::fs::create_dir_all(&data).expect("create the data directory");
 
-    let run_client = |args: &[&str]| -> (bool, String) {
-        let output = Command::new(&client)
-            .arg("--data-dir")
-            .arg(&client_dir)
-            .args(args)
-            .output()
-            .unwrap_or_else(|e| panic!("cannot run the client: {e}"));
-        let mut text = String::from_utf8_lossy(&output.stdout).to_string();
-        text.push_str(&String::from_utf8_lossy(&output.stderr));
-        (output.status.success(), text)
+    // The child inherits the *package* directory as its working directory, so the
+    // frontends get absolute paths — the same arrangement `Server::start` uses.
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the workspace root")
+        .to_path_buf();
+    let webmail = workspace.join("web");
+    let admin = workspace.join("admin");
+    let shared = workspace.join("shared");
+
+    // Deliberately **no** `[database] url`: the field keeps its built-in default,
+    // which is exactly how `database_source` recognises "nobody has connected
+    // yet" and enters bootstrap mode instead of failing to connect.
+    let toml = format!(
+        r#"
+[server]
+name = "Ferroma"
+hostname = "localhost"
+data_dir = {data:?}
+log_level = "debug"
+log_format = "text"
+
+[database]
+run_migrations = true
+
+[smtp]
+enabled = true
+host = "127.0.0.1"
+port = {smtp}
+submission_port = {submission}
+smtps_port = 0
+require_tls_for_auth = false
+require_auth_on_submission = true
+
+[imap]
+enabled = true
+host = "127.0.0.1"
+port = {imap}
+imaps_port = 0
+require_tls_for_login = false
+
+[tls]
+enabled = false
+
+[dns]
+timeout_secs = 1
+attempts = 1
+cache_ttl_secs = 60
+negative_ttl_secs = 60
+
+[policy]
+spf_enabled = false
+dmarc_enabled = false
+add_auth_results = false
+
+[queue]
+enabled = true
+workers = 1
+retry_schedule_secs = [2, 5, 15]
+max_attempts = 3
+poll_interval_secs = 1
+
+[api]
+enabled = true
+host = "127.0.0.1"
+port = {api}
+tls_port = 0
+base_path = "/api/v1"
+public_url = {public:?}
+webmail_dir = {webmail:?}
+admin_dir = {admin:?}
+shared_dir = {shared:?}
+jwt_secret = "acceptance-run-secret-that-is-at-least-32-bytes"
+secure_cookies = false
+serve_frontend = true
+
+[storage]
+fsync_on_write = false
+"#,
+        data = data.display().to_string(),
+        smtp = SMTP_PORT,
+        submission = SUBMISSION_PORT,
+        imap = IMAP_PORT,
+        api = API_PORT,
+        public = format!("http://127.0.0.1:{API_PORT}"),
+        webmail = webmail.display().to_string(),
+        admin = admin.display().to_string(),
+        shared = shared.display().to_string(),
+    );
+    let config = dir.path().join("ferroma.toml");
+    std::fs::write(&config, toml).expect("write the configuration");
+
+    let binary = env!("CARGO_BIN_EXE_ferroma");
+    let mut child = Command::new(binary)
+        .arg("--config")
+        .arg(&config)
+        .arg("serve")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| panic!("cannot start {binary}: {e}"));
+
+    // Drain stdout from a thread — a child blocked on a full pipe is the failure
+    // mode where the API never answers and the test times out confusingly — and
+    // pick out the one-time setup code the bootstrap mode prints.
+    let stdout = child.stdout.take().expect("piped stdout");
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let code = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+    {
+        let seen = seen.clone();
+        let code = code.clone();
+        std::thread::spawn(move || {
+            let mut reader = std::io::BufReader::new(stdout);
+            let mut line = String::new();
+            use std::io::BufRead as _;
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        // `announce()` prints "    code      ABCD2345" to stdout.
+                        let trimmed = line.trim_start();
+                        if let Some(rest) = trimmed.strip_prefix("code ") {
+                            let candidate = rest.trim();
+                            if candidate.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+                                && candidate.len() == 8
+                            {
+                                *code.lock().expect("code lock") = Some(candidate.to_string());
+                            }
+                        }
+                        let mut text = seen.lock().expect("seen lock");
+                        text.push_str(line.trim_end_matches('\n'));
+                        text.push('\n');
+                    }
+                }
+            }
+        });
+    }
+    // Stderr is only needed for the failure report; drain it so nothing blocks.
+    if let Some(stderr) = child.stderr.take() {
+        std::thread::spawn(move || {
+            let mut reader = std::io::BufReader::new(stderr);
+            let mut line = String::new();
+            use std::io::BufRead as _;
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+        });
+    }
+
+    let api = format!("http://127.0.0.1:{API_PORT}");
+    let bootstrap = format!("{api}/api/v1/bootstrap");
+
+    // --- bootstrap mode is up, and says so honestly ---------------------------
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let (mut status, mut body) = (0u16, String::new());
+    loop {
+        if Instant::now() > deadline {
+            panic!(
+                "the bootstrap page did not answer within 30s\n--- captured output ---\n{}",
+                seen.lock().expect("seen lock")
+            );
+        }
+        let Some(answer) = http_request("GET", &bootstrap, None, None).await else {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        };
+        (status, body) = (answer.0, answer.1);
+        break;
+    }
+    assert_eq!(status, 200, "the status endpoint: {body}");
+    let status_json: serde_json::Value = serde_json::from_str(&body).expect("JSON status");
+    assert_eq!(status_json["required"], true);
+    assert_eq!(
+        status_json["data_dir"].as_str().expect("a data_dir"),
+        data.display().to_string(),
+        "the page names the directory the connection will be remembered in"
+    );
+
+    // The health check refuses to lie: the process is up but not a mail server.
+    let (status, health) = http_json("GET", &format!("{api}/api/v1/health"), None, None).await;
+    assert_eq!(status, 503, "bootstrap health must be 503: {health}");
+    assert_eq!(health["status"], "setup");
+    assert_eq!(health["database"]["ok"], false);
+
+    // `/` is the console, HTML — not a JSON error and not the webmail.
+    let (status, root) =
+        http_request("GET", &format!("{api}/"), None, None).await.expect("the root answers");
+    assert_eq!(status, 200, "the setup page: {root}");
+    assert!(
+        root.contains("<!DOCTYPE html") || root.contains("<html"),
+        "the setup page must be HTML, got: {}",
+        &root[..root.len().min(200)]
+    );
+
+    // An unknown API path is the JSON envelope, never the SPA fallback. The
+    // console reloads while this router is still bound, and a `200` with HTML
+    // here is what once showed a fresh install a sign-in box.
+    let (status, missing) =
+        http_json("GET", &format!("{api}/api/v1/no-such-endpoint"), None, None).await;
+    assert_eq!(status, 404, "an unknown API path: {missing}");
+    assert_eq!(missing["error"]["code"], "not_found");
+
+    // --- the setup code is enforced ------------------------------------------
+    let (status, refused) = http_json(
+        "POST",
+        &bootstrap,
+        Some(&format!(r#"{{"code":"AAAAAAAA","url":"{url}"}}"#)),
+        None,
+    )
+    .await;
+    assert_eq!(status, 403, "a wrong code must be refused: {refused}");
+    assert_eq!(refused["error"]["code"], "forbidden");
+
+    // Wait until the printed code has been read off stdout.
+    let setup_code = loop {
+        let found = code.lock().expect("code lock").clone();
+        if let Some(found) = found {
+            break found;
+        }
+        assert!(
+            Instant::now() <= deadline,
+            "the setup code was never printed\n{}",
+            seen.lock().expect("seen lock")
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
     };
 
-    // --- add the account, pointing it straight at the server ------------------
-    let fcp = format!("http://127.0.0.1:{API_PORT}/api/v1/client");
-    let (ok, output) = run_client(&[
-        "account", "add", BOB, "--password", PASSWORD, "--server", &fcp,
-    ]);
-    assert!(ok, "the client could not add the account:\n{output}");
-
-    let (ok, output) = run_client(&["account", "list"]);
-    assert!(ok && output.contains(BOB), "the account must be listed:\n{output}");
-
-    // --- sync an empty mailbox, then one with a message ----------------------
-    let (ok, output) = run_client(&["sync"]);
-    assert!(ok, "the first sync must succeed:\n{output}");
-
-    let message = format!(
-        "From: {ALICE}\r\nTo: {BOB}\r\nSubject: For the official client\r\nDate: Thu, 16 Sep 2026 12:00:00 +0000\r\nMessage-ID: <acceptance-client@acceptance.test>\r\n\r\nHello from the server side.\r\n"
-    );
-    let replies = smtp_send(SMTP_PORT, "client.acceptance.test", ALICE, &[BOB], &message).await;
-    assert_eq!(
-        replies.last().expect("a reply").0,
-        250,
-        "delivery must succeed: {replies:?}"
-    );
-
-    let (ok, output) = run_client(&["sync"]);
-    assert!(ok, "the sync after delivery must succeed:\n{output}");
-
-    // --- the message is in the client's local cache --------------------------
-    let (ok, output) = run_client(&["list", "INBOX"]);
-    assert!(ok, "the client must list INBOX:\n{output}");
-    assert!(
-        output.contains("For the official client"),
-        "the client's cache must contain the delivered message:\n{output}"
-    );
-
-    // --- and reading it pulls the body ---------------------------------------
-    let (ok, output) = run_client(&["list", "INBOX", "--json"]);
-    assert!(ok, "the JSON listing must succeed:\n{output}");
-    let parsed: serde_json::Value = serde_json::from_str(output.trim())
-        .unwrap_or_else(|e| panic!("the client's --json output must be JSON ({e}):\n{output}"));
-
-    let first_id = parsed["messages"]
-        .as_array()
-        .or_else(|| parsed["items"].as_array())
-        .and_then(|items| items.first())
-        .and_then(|item| item["id"].as_i64())
-        .unwrap_or_else(|| panic!("a message id in {parsed}"));
-
-    let (ok, output) = run_client(&["read", &first_id.to_string()]);
-    assert!(ok, "reading the message must succeed:\n{output}");
-    assert!(
-        output.contains("Hello from the server side"),
-        "the client must have fetched the body:\n{output}"
-    );
-
-    // --- the local search index agrees ---------------------------------------
-    let (ok, output) = run_client(&["search", "subject:client"]);
-    assert!(ok, "a local search must succeed:\n{output}");
-    assert!(
-        output.contains("For the official client"),
-        "the local index must match on the subject:\n{output}"
-    );
-
-    // --- the client is registered as a device on the server ------------------
-    let (status, login) = http_json(
+    // The real code, but not a PostgreSQL address.
+    let (status, refused) = http_json(
         "POST",
-        &format!("http://127.0.0.1:{API_PORT}/api/v1/auth/login"),
-        Some(&format!(r#"{{"email":"{BOB}","password":"{PASSWORD}"}}"#)),
+        &bootstrap,
+        Some(&format!(
+            r#"{{"code":"{setup_code}","url":"mysql://ferroma@127.0.0.1/{database}"}}"#
+        )),
         None,
     )
     .await;
-    assert_eq!(status, 200, "login: {login}");
-    let token = login["access_token"].as_str().expect("a token").to_string();
+    assert_eq!(status, 400, "a non-postgres address must be refused: {refused}");
+    assert_eq!(refused["error"]["code"], "invalid_input");
 
-    let (status, devices) = http_json(
-        "GET",
-        &format!("http://127.0.0.1:{API_PORT}/api/v1/devices"),
+    // A plausible address that no database answers on.
+    let (status, refused) = http_json(
+        "POST",
+        &bootstrap,
+        Some(&format!(
+            r#"{{"code":"{setup_code}","url":"postgres://ferroma@127.0.0.1:5999/{database}"}}"#
+        )),
         None,
-        Some(&token),
     )
     .await;
-    // `GET /devices` is admin-only; bob is not an admin, so a 403 is the correct
-    // answer and itself worth asserting — the route must not be open to everyone.
-    assert!(
-        status == 403 || status == 200,
-        "the devices route must answer 200 or 403, got {status}: {devices}"
+    assert_eq!(status, 400, "an unreachable database must be refused: {refused}");
+    assert_eq!(refused["error"]["code"], "invalid_input");
+
+    // --- the real walk: code + address, and the server takes it from here -----
+    let (status, accepted) = http_json(
+        "POST",
+        &bootstrap,
+        Some(&format!(r#"{{"code":"{setup_code}","url":"{url}"}}"#)),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        200,
+        "the connect endpoint must accept its own database: {accepted}"
     );
-    server.cleanup().await;
+    assert_eq!(accepted["ok"], true);
 
+    // The connection is remembered for the next start, owner-only.
+    let remembered = data.join("database.json");
+    assert!(remembered.is_file(), "database.json must exist in the data directory");
+    let stored: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&remembered).expect("read database.json"),
+    )
+    .expect("database.json holds JSON");
+    assert_eq!(stored["url"].as_str(), Some(url.as_str()));
+
+    // The same process is now the real server: listeners bind, migrations are
+    // already applied, and health goes green.
+    let deadline = Instant::now() + Duration::from_secs(45);
+    loop {
+        assert!(
+            Instant::now() <= deadline,
+            "the server did not become healthy after the database was accepted\n--- captured output ---\n{}",
+            seen.lock().expect("seen lock")
+        );
+        if let Some((200, health)) =
+            http_request("GET", &format!("{api}/api/v1/health"), None, None).await
+        {
+            let health: serde_json::Value =
+                serde_json::from_str(&health).expect("JSON health");
+            assert_eq!(health["status"], "ok", "a healthy server says so: {health}");
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    // The bootstrap endpoint is gone: the normal API's 404 envelope answers.
+    let (status, after) = http_json("GET", &bootstrap, None, None).await;
+    assert_eq!(status, 404, "the bootstrap endpoint must not survive the boot: {after}");
+    assert_eq!(after["error"]["code"], "not_found");
+
+    let _ = child.kill();
+    let _ = child.wait();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    drop_database(&database).await;
 }
-

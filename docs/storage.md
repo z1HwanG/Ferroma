@@ -463,7 +463,7 @@ query, not the index.
 Two things to know before adding an index: there is no index on
 `messages.flags`, so `SEARCH UNSEEN` is a filtered scan within a folder — fine for
 mailbox-sized folders, not fine for a million-row folder; and there is no body
-index, which is why `SEARCH BODY` is _(planned)_ ([imap.md](imap.md) §8).
+index, which is why `SEARCH BODY` is not supported ([imap.md](imap.md) §8).
 
 ---
 

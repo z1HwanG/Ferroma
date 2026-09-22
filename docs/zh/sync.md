@@ -2,7 +2,7 @@
 
 **读者对象：** 任何实现或调试同步链路的人，无论做的是
 `ferroma-sync` / `ferroma-storage::repository::sync` 里的服务端部分，
-还是 `client/src/sync/` 里的客户端部分。
+还是位于另一个代码仓库的官方客户端。
 
 本文说明 Ferroma 客户端如何与服务端保持同步：为什么在 IMAP 之外还有 FCP，
 「服务端是事实来源」约束了什么，`change_log.seq` 如何成为客户端保存的游标，
@@ -12,14 +12,12 @@
 以及每一类失败会发生什么。**线上格式**（请求与响应的形状、头部、
 WebSocket 分帧）冻结在 [fcp.md](fcp.md) 中，本文不再重复。
 
-> **状态：** 混合。服务端原语已实现：
-> `migrations/0001_initial.sql` 中的
-> `change_log`、`client_sync_states` 与 `operations`；
+> **状态：** 已实现。服务端原语包括 `migrations/0001_initial.sql` 中的
+> `change_log`、`client_sync_states` 与 `operations`，以及
 > `crates/ferroma-storage/src/repository/sync.rs` 中的 `ChangeLogRepository`、
-> `SyncStatesRepository`、`OperationsRepository` 与 `OperationOutcome`。
-> 把这些变成 `GET /api/v1/client/sync` 的服务位于 `ferroma-sync`，
-> 状态为 _(计划中)_，`crates/ferroma-sync/src/lib.rs` 只是一个骨架。
-> 客户端的同步引擎（`client/src/sync/`）状态为 _(计划中)_。
+> `SyncStatesRepository`、`OperationsRepository` 与 `OperationOutcome`；
+> `crates/ferroma-sync/src/service.rs` 中的 `SyncService` 把它们变成
+> `GET /api/v1/client/sync` 与幂等的 `with_operation` 包装。
 
 ---
 

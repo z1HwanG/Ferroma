@@ -14,12 +14,14 @@ it. It ends with a table mapping every control to its implementation site, and a
 "known gaps" section listing what Ferroma v1 deliberately does not defend
 against.
 
-> **Status:** mixed. Everything under §2–§7 and §11–§12 is implemented in
-> `ferroma-core`, `ferroma-auth`, `ferroma-storage` and `ferroma-mail` and can be
-> read there. Everything under §8 (SPF/DKIM/DMARC), §9 (`Received:` policy on
-> inbound), §10 (HTML sanitisation) and the API-level controls is _(planned)_:
-> `ferroma-smtp` and `ferroma-api` are crate skeletons. The configuration keys,
-> limits and error variants those sections name do exist.
+> **Status:** implemented. Everything described here — passwords, tokens and
+> sessions, login throttling, relay prevention, sender and recipient validation,
+> SPF/DKIM/DMARC, TLS, rate and size limits, HTML sanitisation, path traversal
+> guards and log hygiene — exists in `ferroma-core`, `ferroma-auth`,
+> `ferroma-storage`, `ferroma-mail`, `ferroma-smtp` and `ferroma-api`, and is
+> exercised by `cargo test --workspace` and the acceptance suite. The controls
+> listed in [../AGENTS.md](../AGENTS.md) §1 that Ferroma v1 deliberately does
+> **not** have are stated in §14, not marked as pending here.
 
 ---
 
@@ -61,7 +63,7 @@ against.
   decision.
 * **The database is trusted; the filesystem paths in it are not.** Both stores
   re-validate every relative path they are handed — §12.
-* **One process, one host.** Multi-node deployments are _(planned)_ and the
+* **One process, one host.** Multi-node deployments are not supported and the
   event bus does not cross processes ([architecture.md](architecture.md) §6).
 
 ---
@@ -578,18 +580,19 @@ without re-deriving it.
 
 ## 8. SPF, DKIM and DMARC
 
-> _(planned)_ — `ferroma-smtp`'s `spf`, `dkim` and `dmarc` modules are specified
-> but not implemented. The configuration keys and their defaults exist in
-> `[dkim]` and `[policy]` of `config/ferroma.toml` and in
-> `DkimConfig` / `PolicyConfig` in `crates/ferroma-core/src/config.rs`.
+> Implemented. `ferroma-smtp`'s `spf`, `dkim` and `dmarc` modules
+> (`crates/ferroma-smtp/src/spf.rs`, `dkim.rs`, `dmarc.rs`, wired together in
+> `inbound.rs` and evaluated after `DATA` in `server.rs`) carry this out. The
+> configuration keys live in `[dkim]` and `[policy]` of `config/ferroma.toml`
+> and in `DkimConfig` / `PolicyConfig` in `crates/ferroma-core/src/config.rs`.
 
 ### 8.1 Inbound
 
 | Check | Config | On failure |
 |---|---|---|
-| SPF (RFC 7208) | `policy.spf_enabled`, `policy.spf_max_lookups` (10) | `550 5.7.23` on a `-all` hard fail _(planned)_ |
-| DKIM verification (RFC 6376) | `dkim.verify_inbound` | `550 5.7.20` _(planned)_ |
-| DMARC (RFC 7489) | `policy.dmarc_enabled`, `policy.dmarc_failure_action` | `policy.dmarc_failure_action` is `none`, `quarantine` or `reject`; the default is `"quarantine"` — file to `Junk` _(planned)_ |
+| SPF (RFC 7208) | `policy.spf_enabled`, `policy.spf_max_lookups` (10) | no direct rejection — the verdict goes into `Authentication-Results` and feeds DMARC |
+| DKIM verification (RFC 6376) | `dkim.verify_inbound` | no direct rejection — the verdict feeds DMARC alignment |
+| DMARC (RFC 7489) | `policy.dmarc_enabled`, `policy.dmarc_failure_action` | `policy.dmarc_failure_action` is `none`, `quarantine` or `reject`; the default is `"quarantine"` — file to `Junk`; a published or local `reject` is `550 5.7.1 Message rejected by the DMARC policy of <domain>` |
 | `Authentication-Results` | `policy.add_auth_results` | the header is prepended with the verdicts |
 
 `dmarc_failure_action` defaults to `quarantine` rather than `reject` for a
@@ -703,14 +706,9 @@ results with explicit errors only for genuinely undecodable input.
 
 ### 10.2 HTML sanitisation
 
-> **_(planned)_** — `html_body` is promised as sanitised server-side by
-> [api.md](api.md) §5.4, and the requirement that a client still render it in a
-> sandbox is stated there too. There is no sanitisation code in `ferroma-mail` or
-> `ferroma-api` yet, and no `security.sanitize_html` key exists in
-> `config/ferroma.toml`. Every statement in this section is therefore an
-> obligation on the implementation, not a description of it.
-
-Until it exists, the rules are:
+Implemented. `sanitize_html` in `crates/ferroma-api/src/routes/mail/store.rs`
+runs when an HTML body is stored, gated by `security.sanitize_html` in
+`config/ferroma.toml`. The rules:
 
 * **Never render raw `html_body` into a privileged origin.** The Webmail and
   Admin SPAs are served from the same origin as the API, so an unsanitised HTML
@@ -948,29 +946,29 @@ Rotation, when it is needed:
 | 11 | Session revocation takes effect immediately | `AuthService::authenticate` checks the session row | implemented |
 | 12 | Password change revokes other sessions | `AuthService::change_password` | implemented |
 | 13 | Device registration and revocation | `devices`, `AuthService::register_device` / `revoke_device`, `Event::device_revoked` | implemented |
-| 14 | Idle-session policy | `client.session_idle_days` (90) | implemented (sweep _(planned)_) |
+| 14 | Idle-session policy | `client.session_idle_days` (90) | implemented (sweep callable via `AuthService::purge_expired_sessions`, not yet scheduled) |
 | 15 | Per-IP login throttle before hashing | `AuthService::login` + `LoginAttemptsRepository::count_failures_for_ip` | implemented |
 | 16 | Per-account lockout | `users.failed_logins`, `users.locked_until`, `record_login_failure`, `User::is_login_allowed` | implemented |
 | 17 | No account enumeration | identical `invalid_credentials()` for unknown/wrong/disabled | implemented |
 | 18 | Login attempt audit trail | `login_attempts`, `AuthService::record_attempt` | implemented |
-| 19 | Open-relay prevention | `smtp.require_auth_on_submission`, `FerromaError::Forbidden` | _(planned)_ in `ferroma-smtp` |
-| 20 | Recipient validation | `MailboxesRepository::find_by_address`, `DomainsRepository`, `AliasesRepository`, `domains.catch_all` | implemented (repositories); _(planned)_ wiring |
+| 19 | Open-relay prevention | `SmtpSession::may_relay`, `smtp.require_auth_on_submission`, `550 5.7.1 Relaying denied` | implemented |
+| 20 | Recipient validation | `MailboxesRepository::find_by_address`, `DomainsRepository`, `AliasesRepository`, `domains.catch_all`, `550 5.1.1 User unknown` | implemented |
 | 21 | Sender address syntax validation | `EmailAddress::parse`, `validate_local_part`, `validate_domain` | implemented |
-| 22 | Local `From` must be owned by the user | `mailboxes.user_id` check on submission | _(planned)_ |
+| 22 | Local `From` must be owned by the user | `mailboxes.user_id` check in the API send path (`resolve_sender` in `crates/ferroma-api/src/routes/mail/store.rs`) | implemented (API path); the SMTP submission listener does not re-verify `MAIL FROM` |
 | 23 | Case-normalised addresses | schema `CHECK`s + `normalise_domain` + `to_lowercase` | implemented |
-| 24 | SPF | `policy.spf_enabled`, `policy.spf_max_lookups` | _(planned)_ |
-| 25 | DKIM verification | `dkim.verify_inbound` | _(planned)_ |
-| 26 | DKIM signing | `[dkim]` block, `DkimConfig` | _(planned)_ |
-| 27 | DMARC | `policy.dmarc_enabled`, `policy.dmarc_failure_action` | _(planned)_ |
+| 24 | SPF | `policy.spf_enabled`, `policy.spf_max_lookups`, `spf.rs` | implemented |
+| 25 | DKIM verification | `dkim.verify_inbound`, `dkim.rs` (`DkimVerifier`) | implemented |
+| 26 | DKIM signing | `[dkim]` block, `DkimConfig`, `DkimSigner` | implemented |
+| 27 | DMARC | `policy.dmarc_enabled`, `policy.dmarc_failure_action`, `dmarc.rs` + `inbound.rs` | implemented |
 | 28 | `Authentication-Results` | `policy.add_auth_results` | implemented |
-| 29 | TLS everywhere it can be terminated | `[tls]`, `tls.min_version`, `smtps_port`, `imaps_port`, `api.tls_port` | implemented (config); listeners _(planned)_ |
+| 29 | TLS everywhere it can be terminated | `[tls]`, `tls.min_version`, `smtps_port`, `imaps_port`, `api.tls_port` | implemented |
 | 30 | rustls only | workspace `Cargo.toml` pins; `AGENTS.md` §1.1 | implemented |
 | 31 | Self-signed cert gated twice | `Config::validate()` + `tls.allow_insecure_dev_mode` | implemented |
-| 32 | No cleartext AUTH/LOGIN in production | `smtp.require_tls_for_auth`, `imap.require_tls_for_login` | implemented (config); enforcement _(planned)_ |
-| 33 | Message size, recipient, connection and rate limits | `Limits`, `Limits::validate()`, `[limits]` | implemented (definition); enforcement _(planned)_ |
+| 32 | No cleartext AUTH/LOGIN in production | `smtp.require_tls_for_auth` (`may_auth` → `538 5.7.11`), `imap.require_tls_for_login` | implemented |
+| 33 | Message size, recipient, connection and rate limits | `Limits`, `Limits::validate()`, `[limits]`, enforced in the SMTP command loop and the API | implemented |
 | 34 | Parse limits, no unbounded recursion | `ParseLimits`, `ParsedMessage::parse_with_limits` | implemented |
 | 35 | Total parsing: no message dropped by a parser error | `ferroma-mail` parser design | implemented |
-| 36 | HTML sanitisation | `security.sanitize_html` | _(planned)_ |
+| 36 | HTML sanitisation | `security.sanitize_html`, `sanitize_html` in `ferroma-api` `store.rs` | implemented |
 | 37 | Path-traversal defence, mail root | `sanitize_component`, `Maildir::absolute` | implemented |
 | 38 | Path-traversal defence, blob store | `AttachmentStore::absolute`, `path_for_digest` validation | implemented |
 | 39 | No `unwrap()` on peer input | convention, `AGENTS.md` §4.4 | implemented |
@@ -985,11 +983,10 @@ Rotation, when it is needed:
 | 48 | `Secure` cookies in production | `api.secure_cookies`, set true by `docker-compose.prod.yml` | implemented (config) |
 | 49 | CORS closed by default | `api.cors_origins = []` (same-origin only) | implemented (config) |
 | 50 | `X-Forwarded-For` only when trusted | `api.trust_proxy_headers = false` by default | implemented (config) |
-| 51 | Unauthenticated HTTP cannot reach data | bearer/cookie on every `/api/v1` route except `/health`, `/version`, `/.well-known/*` | _(planned)_ in `ferroma-api` |
-| 52 | Admin endpoints require `is_admin` | `Authenticated::is_admin()` check | _(planned)_ |
+| 51 | Unauthenticated HTTP cannot reach data | bearer/cookie on every `/api/v1` route except `/health`, `/version`, `/.well-known/*` | implemented |
+| 52 | Admin endpoints require `is_admin` | `Authenticated::is_admin()` check | implemented |
 
-Rows marked _(planned)_ follow from the same source (`FerromaError`,
-`Limits`, `ApiConfig`) and are described in [api.md](api.md) and
+The wiring behind these rows is described in [api.md](api.md) and
 [smtp.md](smtp.md).
 
 ---
@@ -1020,7 +1017,7 @@ receiving client, which is where the user actually opens them.
 There is no content classifier, no `X-Spam-Score`, no `spamassassin` integration.
 The only inbound filtering is:
 
-* SPF/DKIM/DMARC verdicts _(planned)_ — these authenticate the sender, they do not
+* SPF/DKIM/DMARC verdicts — these authenticate the sender, they do not
   classify content;
 * `Junk` as a folder with `special_use = \Junk`, and DMARC `quarantine` filing
   into it;
@@ -1093,9 +1090,9 @@ event fan-out.
 | No breach-corpus password check | a user may set a known-breached password | enforce at account creation from a list you trust |
 | No per-user IP allow-listing for `AUTH` | a stolen password works from anywhere | device revocation, and monitor `sessions.ip` |
 | No DMARC aggregate report processing | `rua` reports go unread unless the operator reads them | point `rua` at a mailbox you check |
-| No request signing on webhooks | _(planned)_ webhooks are unauthenticated HTTP POSTs | do not enable webhooks on an untrusted network |
+| No request signing on webhooks | webhooks, when they arrive, are unauthenticated HTTP POSTs | do not enable webhooks on an untrusted network |
 | No rate limit on `GET /.well-known/ferroma` | an unauthenticated endpoint can be used for reconnaissance and load | front it with a proxy limit if it matters |
-| PTR is not verified on inbound | mail from a host with no PTR is still accepted | SPF/DKIM/DMARC _(planned)_ and a gateway |
+| PTR is not verified on inbound | mail from a host with no PTR is still accepted | SPF/DKIM/DMARC and a gateway |
 | No alerting | a growing queue, a full disk or a login flood is visible only to someone looking | monitor the health endpoint and `mail_queue_status_idx` counts — [deployment.md](deployment.md) §10 |
 
 ---

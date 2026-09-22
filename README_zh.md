@@ -168,25 +168,20 @@ ferroma config check --dns-domain example.com
 | `server` — `ferroma` 二进制及其运维命令 | 完成 |
 | Webmail、Admin | 完成 |
 
-上表最后一行以上的全部内容，都由下面的测试体系验证，其中包括一项验收测试：启动真实服务器、通过 SMTP 投递一封信、用 IMAP 读回来、再通过 API 找到它，并用真实的桌面客户端完成同步。
+上表最后一行以上的全部内容，都由下面的测试体系验证，其中包括一项验收测试：启动真实服务器、通过 SMTP 投递一封信、用 IMAP 读回来、再通过 API 找到它、跟着同步游标走一遍，并驱动 bootstrap 设置页——无数据库的服务器、setup code、向导的 POST、健康的 API——全程走真实 socket。
 
 ```text
-cargo test --workspace    →  2437 通过，0 失败，0 跳过
+cargo test --workspace    →  2136 通过，0 失败，0 跳过
 cargo clippy --workspace  →  0 错误（clippy 1.98 下多 2 条 `manual_is_multiple_of`；
                               该 lint 比钉住的 1.88 工具链更新）
 ```
 
-官方客户端目前交付的是「经过测试的共享核心 + 命令行」。项目书 §51 描述的三栏式图形界面，是唯一尚未构建的部分。
-
 ### 带入 0.1.9 的待办
 
-发 0.1.3 时发现的一件事。它真实存在，但不值得为它推迟发版，也不是一次机械替换就能了结的：
-
-* **七篇文档里还留着写于各 crate 尚不存在之时的 `_(planned)_` 断言。**
-  其中四篇（`imap.md`、`security.md`、`smtp.md`、`sync.md`）开头仍挂着把已实现
-  crate 称作未实现的状态横幅；`architecture.md` 的横幅与产品表已在 0.1.3 修正，其余没有。
-  每一处标记都是关于行为的一句断言，需要对着代码逐条核实，所以这是一次独立的通读，而不是
-  查找替换。逐篇的标记数量由 [`TODO_zh.md`](TODO_zh.md) 维护，数字只留一处，免得在这里过期。
+0.1.3 时的发现已经了结。七篇文档曾带着写于各 crate 尚不存在之时的 `_(planned)_`
+断言；如今每一处都已对照代码核实，改写成关于服务器实际行为的陈述，四篇把已实现
+crate 称作骨架的状态横幅也已摘掉。bootstrap 设置页也补上了它一直缺失的验收测试
+（仍待办的事与缘由见 [`TODO_zh.md`](TODO_zh.md)）。
 
 仓库约定见 [`AGENTS.md`](AGENTS.md)；本文件的英文原版见 [`README.md`](README.md)。
 
@@ -247,7 +242,6 @@ crates/
   ferroma-sync/      变更日志、游标、幂等客户端操作
   ferroma-api/       REST API、Ferroma 客户端协议、WebSocket、前端
 server/              `ferroma` 二进制
-client/              官方桌面客户端
 web/, admin/         Webmail 与 Admin 单页应用（无构建步骤）
 shared/              两个前端共用的 ES 模块，服务端挂在 /shared
 migrations/          PostgreSQL DDL，编译期嵌入二进制

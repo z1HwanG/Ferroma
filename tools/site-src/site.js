@@ -15,8 +15,16 @@
   // ------------------------------------------------------------- mobile drawer
   var menuBtn = document.getElementById('menuBtn');
   var scrim = document.getElementById('scrim');
-  function closeNav() { document.body.classList.remove('nav-open'); }
-  if (menuBtn) menuBtn.addEventListener('click', function () { document.body.classList.toggle('nav-open'); });
+  function closeNav() {
+    document.body.classList.remove('nav-open');
+    if (menuBtn) menuBtn.setAttribute('aria-expanded', 'false');
+  }
+  if (menuBtn) {
+    menuBtn.addEventListener('click', function () {
+      var open = document.body.classList.toggle('nav-open');
+      menuBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+  }
   if (scrim) scrim.addEventListener('click', closeNav);
 
   // ------------------------------------------------------------- copy buttons
@@ -69,6 +77,8 @@
   var input = document.getElementById('searchInput');
   var box = document.getElementById('searchResults');
   if (!input || !box) return;
+  // 站点根的相对前缀由生成器写在 body 上：根目录的首页是 ""，zh/ 下的页面是 "../"。
+  var ROOT = document.body.getAttribute('data-root') || '';
   var INDEX = (window.FERROMA_SEARCH || {})[document.documentElement.lang.startsWith('zh') ? 'zh' : 'en'] || [];
   var IS_ZH = document.documentElement.lang.toLowerCase().startsWith('zh');
   var NO_RESULTS = IS_ZH ? '没有匹配结果' : 'No results';
@@ -92,10 +102,14 @@
         var seg = page.s[si];
         var inHead = seg.h.toLowerCase().indexOf(ql);
         var at = seg.x.toLowerCase().indexOf(ql);
+        // 代码块里的命中排在正文命中之后：搜 FERROMA__QUEUE__RELAY_HOST 这种只出现在
+        // 代码里的标识符能找到东西，但搜 docker 不会让每个带示例的章节都挤到最前面。
+        var codeAt = seg.c ? seg.c.toLowerCase().indexOf(ql) : -1;
         var score = -1;
         if (inHead === 0) score = 100;
         else if (inHead >= 0) score = 60;
         else if (at >= 0) score = 30;
+        else if (codeAt >= 0) score = 18;
         else if (titleHit >= 0 && seg.id === '') score = 20;
         if (score < 0) continue;
         if (titleHit >= 0) score += 10;
@@ -103,10 +117,14 @@
         if (inHead >= 0) {
           snippet = seg.x.slice(0, 110);
           out.push({ p: page, s: seg, score: score, head: seg.h, snippet: snippet });
-        } else {
+        } else if (at >= 0) {
           var start = Math.max(0, at - 34);
           snippet = (start > 0 ? '…' : '') + seg.x.slice(start, start + 118);
           out.push({ p: page, s: seg, score: score, head: seg.h === page.t ? null : seg.h, snippet: snippet, at: at - start });
+        } else {
+          var cstart = Math.max(0, codeAt - 34);
+          snippet = (cstart > 0 ? '…' : '') + seg.c.slice(cstart, cstart + 118);
+          out.push({ p: page, s: seg, score: score, head: seg.h === page.t ? null : seg.h, snippet: snippet });
         }
       }
     }
@@ -124,7 +142,7 @@
       return;
     }
     box.innerHTML = res.map(function (r, i) {
-      var href = (document.body.classList.contains('home') ? '' : '../') + r.p.u + (r.s.id ? '#' + r.s.id : '');
+      var href = ROOT + r.p.u + (r.s.id ? '#' + r.s.id : '');
       var headHtml = r.head ? '<span class="sr-head">' + mark(r.head, q) + '</span>' : '';
       var snip = r.snippet;
       var snipHtml = snip.toLowerCase().indexOf(q.toLowerCase()) >= 0 ? mark(snip, q) : esc(snip);
@@ -142,6 +160,27 @@
     els[sel].scrollIntoView({ block: 'nearest' });
   }
 
+  // 在输入框里按住鼠标拖动时，浏览器把它当成一次跨文档的选择，指针一离开视口就
+  // 一路自动滚动到页面顶部——搜索框就在固定顶栏里，这个"页面自己往上跑"极易误触。
+  // 按下期间把滚动位置钉住：拖拽、选择、光标定位全都还是原生的，只是页面不再跟着动。
+  // （`user-select: none` 管不住输入框，它有自己的一套选择模型；`preventDefault`
+  // 能挡住滚动，但会把光标定位一起禁掉。）
+  input.addEventListener('mousedown', function (event) {
+    if (event.button !== 0) return;
+    var x = window.scrollX, y = window.scrollY, raf = 0;
+    var pin = function () {
+      if (window.scrollX !== x || window.scrollY !== y) {
+        window.scrollTo({ left: x, top: y, behavior: 'instant' });
+      }
+      raf = requestAnimationFrame(pin);
+    };
+    raf = requestAnimationFrame(pin);
+    document.addEventListener('mouseup', function up() {
+      cancelAnimationFrame(raf);
+      document.removeEventListener('mouseup', up, true);
+    }, true);
+  });
+
   input.addEventListener('input', function () { render(input.value.trim()); });
   input.addEventListener('focus', function () { if (input.value.trim()) render(input.value.trim()); });
   input.addEventListener('keydown', function (e) {
@@ -149,7 +188,7 @@
     else if (e.key === 'ArrowUp') { e.preventDefault(); move(-1); }
     else if (e.key === 'Enter') {
       var target = sel >= 0 ? items[sel] : items[0];
-      if (target) { location.href = (document.body.classList.contains('home') ? '' : '../') + target.p.u + (target.s.id ? '#' + target.s.id : ''); close(); }
+      if (target) { location.href = ROOT + target.p.u + (target.s.id ? '#' + target.s.id : ''); close(); }
     } else if (e.key === 'Escape') { close(); input.blur(); }
   });
   document.addEventListener('click', function (e) { if (!e.target.closest('.search')) close(); });

@@ -38,8 +38,8 @@ Let's Encrypt 证书、首次运行设置、创建域与用户、生成并发布
                   ┌────────▼──────────────────────────────────▼────────┐
                   │                  ferroma container                 │
                   │  one process: SMTP, IMAP, HTTP API, queue workers, │
-                  │  sync service, event bus                          │
-                  └────────┬───────────────────────────────┬──────────┘
+                  │  sync service, event bus                           │
+                  └────────┬───────────────────────────────┬───────────┘
                            │                               │
                   ┌────────▼────────┐            ┌─────────▼──────────┐
                   │ postgres:16     │            │ volume ferroma-data│
@@ -65,7 +65,7 @@ Let's Encrypt 证书、首次运行设置、创建域与用户、生成并发布
 | 端口 25 **发信**可达 | 投递邮件。有些供应商封锁发信 25，迫使你走中继 |
 | 一个你控制的域 | 下文的 `example.com` |
 | Docker Engine 24+ 与 Compose 插件 | `docker compose`，不是 `docker-compose` |
-| 约 4 GB 内存、2 vCPU、20 GB 磁盘 | 够小型部署使用；邮件存储会持续增长 |
+| 1 vCPU、1 GB 内存、20 GB 磁盘 | 小型部署足够。Ferroma 自身只占几十 MB，内存是给 PostgreSQL 和页缓存的；邮件存储会持续增长 |
 
 ---
 
@@ -154,6 +154,14 @@ dig +short -x 203.0.113.10
 dig +short mail.example.com        # -> 203.0.113.10
 dig +short -x 203.0.113.10         # -> mail.example.com.
 ```
+
+**如果服务商不给设**，不要硬从这个地址直发：让出站走中继。`ferroma.toml` 里的
+`[queue] relay_host`——容器里是 `FERROMA__QUEUE__RELAY_HOST`——会把每一封外发邮件交给一个
+PTR 已经配好的中继。受影响的只有出站：一个没有反向 DNS 的地址照常收信，因为收信取决于 MX
+而不是 PTR。跟着一起变的还有两条 DNS 记录。`SPF` 记录必须 `include` 中继服务商自己的域，
+因为投递方现在是他们的地址，而那个名字无法从中继主机名推出来。`PTR` 记录不再有意义，
+因为接收方做的反查是中继的地址，不是你的。§4 列出了中继相关的变量，`config/ferroma.toml`
+在相邻的位置逐个说明了它们。
 
 ### 2.4 MX 优先级与备用 MX
 
@@ -1531,12 +1539,10 @@ docker compose -f docker-compose.prod.yml logs -f ferroma | grep -E 'WARN|ERROR'
 所以日志洪水无法塞满磁盘。不要在生产环境提高 `database.log_statements`：它会打印邮件
 主题。
 
-### 10.4 指标与告警是 _(计划中)_
+### 10.4 指标与告警尚未实现
 
-项目书 §40 列出了 Prometheus 指标（`smtp_connections_total`、
-`smtp_messages_received_total`、`queue_pending_messages`、`mail_storage_bytes`、
-`sync_operations_total` 等），§41 把 Prometheus 与 Grafana 放在更晚的版本。两者都还
-不存在：没有 `/metrics` 端点。在它出现之前，用健康端点与上面的 `psql` 查询来监控，并对
+没有 `/metrics` 端点，也没有 Prometheus 或 Grafana 集成；它们计划放在更晚的版本。
+在它出现之前，用健康端点与上面的 `psql` 查询来监控，并对
 以下情况告警：
 
 * 容器健康检查失败，
