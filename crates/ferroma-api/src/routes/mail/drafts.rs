@@ -22,7 +22,7 @@ use ferroma_storage::repository::{DraftUpdate, NewDraft};
 use serde::{Deserialize, Serialize};
 
 use crate::error::ApiError;
-use crate::extract::{AuthUser, Pagination, Page};
+use crate::extract::{AuthUser, Page, Pagination};
 use crate::routes::mail::ownership::{owned_draft, owned_mailbox, owned_message};
 use crate::routes::mail::shapes::{AddressResponse, AttachmentResponse, DraftResponse};
 use crate::service::SendRequest;
@@ -100,11 +100,7 @@ pub async fn list_drafts(
         .drafts
         .list_for_user(user.user_id(), page.limit, page.offset)
         .await?;
-    let total = state
-        .repos
-        .drafts
-        .count_for_user(user.user_id())
-        .await?;
+    let total = state.repos.drafts.count_for_user(user.user_id()).await?;
     let items = rows.iter().map(draft_response).collect();
     Ok(Json(page.page(items, total)))
 }
@@ -354,7 +350,10 @@ pub async fn send_draft(
         text: request.text.clone(),
         html: request.html.clone(),
         attachment_ids: json_ids(&request.attachment_ids),
-        in_reply_to: request.in_reply_to.clone().or_else(|| row.in_reply_to.clone()),
+        in_reply_to: request
+            .in_reply_to
+            .clone()
+            .or_else(|| row.in_reply_to.clone()),
         references: request.references.clone().unwrap_or_else(|| {
             row.reference_ids
                 .as_array()
@@ -621,7 +620,12 @@ async fn mirror_draft(
             _ => return None,
         },
     };
-    let mailbox = match state.repos.mailboxes.find_by_id(MailboxId::new(mailbox_id)).await {
+    let mailbox = match state
+        .repos
+        .mailboxes
+        .find_by_id(MailboxId::new(mailbox_id))
+        .await
+    {
         Ok(Some(mailbox)) if mailbox.user_id == user.user_id().get() => mailbox,
         _ => return None,
     };
@@ -724,7 +728,10 @@ async fn publish_draft(
 mod tests {
     use super::*;
 
-    fn draft(recipients: serde_json::Value, attachments: serde_json::Value) -> ferroma_storage::models::Draft {
+    fn draft(
+        recipients: serde_json::Value,
+        attachments: serde_json::Value,
+    ) -> ferroma_storage::models::Draft {
         ferroma_storage::models::Draft {
             id: 44,
             user_id: 7,
@@ -761,10 +768,21 @@ mod tests {
 
     #[test]
     fn junk_recipients_never_panic() {
-        assert!(decode_recipients(&draft(serde_json::json!(null), serde_json::json!([]))).is_empty());
-        assert!(decode_recipients(&draft(serde_json::json!("nope"), serde_json::json!([]))).is_empty());
-        assert!(decode_recipients(&draft(serde_json::json!([1, 2, {}]), serde_json::json!([]))).is_empty());
-        assert!(decode_recipients(&draft(serde_json::json!([{ "address": 5 }]), serde_json::json!([]))).is_empty());
+        assert!(
+            decode_recipients(&draft(serde_json::json!(null), serde_json::json!([]))).is_empty()
+        );
+        assert!(
+            decode_recipients(&draft(serde_json::json!("nope"), serde_json::json!([]))).is_empty()
+        );
+        assert!(
+            decode_recipients(&draft(serde_json::json!([1, 2, {}]), serde_json::json!([])))
+                .is_empty()
+        );
+        assert!(decode_recipients(&draft(
+            serde_json::json!([{ "address": 5 }]),
+            serde_json::json!([])
+        ))
+        .is_empty());
     }
 
     #[test]
@@ -784,8 +802,13 @@ mod tests {
 
     #[test]
     fn junk_attachments_never_panic() {
-        assert!(decode_attachments(&draft(serde_json::json!([]), serde_json::json!(null))).is_empty());
-        assert!(decode_attachments(&draft(serde_json::json!([]), serde_json::json!([null, 3]))).len() == 2);
+        assert!(
+            decode_attachments(&draft(serde_json::json!([]), serde_json::json!(null))).is_empty()
+        );
+        assert!(
+            decode_attachments(&draft(serde_json::json!([]), serde_json::json!([null, 3]))).len()
+                == 2
+        );
     }
 
     #[test]

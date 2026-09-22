@@ -17,8 +17,11 @@ story.
 > **Status:** describes implemented code. `ferroma-storage` is complete:
 > `crates/ferroma-storage/src/{database,maildir,attachment,error,models}.rs` and
 > `crates/ferroma-storage/src/repository/*.rs`. The schema is
-> `migrations/0001_initial.sql`, which is the single migration in the repository
-> and the source of every table and column named below.
+> `migrations/0001_initial.sql` plus the three migrations after it. 0001 creates
+> every table named below; 0002 comments the columns, 0003 lets a folder tombstone
+> outlive its row, and 0004 widens `sessions.kind` to admit `jmap`. 0001's bytes
+> are a checksum every existing database already recorded, so a later change to
+> the schema is a new file, never an edit of that one.
 > `ferroma storage stats|verify|gc` and the API's `GET /api/v1/storage` and
 > `POST /api/v1/storage/gc` exist today. Where a `pg_dump`/`psql` command is given
 > instead, it is a real command you can run today.
@@ -90,9 +93,18 @@ update `server.data_dir`, and every path still resolves.
 
 ## 2. The schema, table by table
 
-One migration: `migrations/0001_initial.sql`, 440 lines, applied at startup when
-`database.run_migrations = true`. It targets PostgreSQL 14+ and uses only core
-`gen_random_uuid()`-era features — no extensions to install.
+Four migrations, applied in order at startup when `database.run_migrations = true`.
+`migrations/0001_initial.sql` (440 lines) creates the schema; `0002` adds the column
+comments, `0003` drops the foreign key that kept a deleted folder's tombstone from
+being written, and `0004` widens `sessions.kind` so a JMAP token is a session like
+the others. They target PostgreSQL 14+ and use only core `gen_random_uuid()`-era
+features — no extensions to install.
+
+**An applied migration is frozen.** sqlx records a SHA-384 of each file and refuses
+to start when the file and the record disagree (`VersionMismatch`). Editing 0001 to
+add `jmap` would stop every database that had already applied it, which is why the
+kind is added by 0004 instead. A fresh database runs both and ends at the same
+constraint.
 
 ### 2.1 Identity
 
@@ -321,10 +333,12 @@ idempotent: `DevicesRepository::upsert` can be called on every client start.
 
 #### `sessions`
 
-`id`, `user_id`, `kind` (`web`, `api`, `client`, `imap`, `smtp` — restricted by
-`sessions_kind_known`), `token_hash TEXT`, `device_id BIGINT REFERENCES
-devices(id) ON DELETE SET NULL`, `ip`, `user_agent`, `created_at`, `last_seen_at`,
-`expires_at`, `revoked_at`.
+`id`, `user_id`, `kind` (`web`, `api`, `client`, `imap`, `smtp`, and `jmap` once
+`0004_sessions_allow_jmap.sql` has widened `sessions_kind_known`), `token_hash TEXT`,
+`device_id BIGINT REFERENCES devices(id) ON DELETE SET NULL`, `ip`, `user_agent`,
+`created_at`, `last_seen_at`, `expires_at`, `revoked_at`. 0001 creates the check
+without `jmap`; 0004 drops it and adds it back with the extra kind, so an existing
+database and a fresh one accept the same set.
 
 **The raw token is never stored.** `sessions.token_hash` is the SHA-256 of an
 opaque refresh token (`TokenService::hash`), so a database dump does not hand an
@@ -830,13 +844,14 @@ silently stored absolute path.
 
 ## 8. Backup and restore
 
-**Ferroma ships no backup tooling.** No compose file defines a `backup` or a
-`restore` service, there is no `ferroma-backups` volume, and `scripts/deploy.sh`
-has no `backup` or `restore` subcommand: a backup is the operator's job, taken with
-whatever the host already has — `pg_dump`/`pg_dumpall`, `tar`, `rsync`, `restic`,
-`borg`, a storage-level snapshot. What belongs here is what such a backup must
-contain, why the two halves cannot be separated, and the order to restore in; the
-step-by-step operator walkthrough is in [deployment.md](deployment.md) §8.
+**Ferroma ships one command for both halves, and nothing else.** `ferroma storage
+export` writes one archive — the database dump and the volume, taken together —
+and `ferroma storage import` puts that archive back. There is still no `backup`
+service in either compose file, no `ferroma-backups` volume, and no `backup` or
+`restore` subcommand in `scripts/deploy.sh`: scheduling and off-site retention stay
+the operator's job. What belongs here is what the archive contains, why the two
+halves cannot be separated, and the order a restore follows; the step-by-step
+operator walkthrough is in [deployment.md](deployment.md) §8.
 
 ### 8.1 The two halves, and why neither alone is a backup
 

@@ -345,6 +345,19 @@ delegates sending is accepted, with a hint naming the condition, rather than war
 | `GET` | `/api/v1/audit` | `?actor_user_id=&action=&since=&limit=&offset=` |
 | `GET` | `/api/v1/settings` | DB-backed settings |
 | `PUT` | `/api/v1/settings/:key` | `{ "value": … }` |
+| `GET` | `/api/v1/services` | live SMTP and IMAP listener state |
+| `PUT` | `/api/v1/services/:service` | `service` is `smtp`, `imap` or `jmap`; `{ "enabled": true\|false }` |
+
+`GET /api/v1/services` returns `{ "smtp": { "available": true, "enabled": true },
+"imap": { "available": true, "enabled": true }, "jmap": { "available": true, "enabled": true } }`.  `available` is false when the
+process was started without that subsystem (`--only` or its static configuration); such a
+listener cannot be enabled through the API. `PUT` is Admin-only, persists the choice as a
+dedicated runtime setting, and applies it before returning. Disabling SMTP stops its MX,
+submission and configured SMTPS listeners; disabling IMAP stops its plaintext and configured
+IMAPS listeners. Idle sessions receive the protocol shutdown response and disconnect, while
+mail already stored remains untouched. Disabling JMAP withdraws `/.well-known/jmap` and the
+JMAP API, uploads and downloads while leaving Webmail and the management API online. TLS ports are still controlled by `smtps_port`,
+`imaps_port`, and `tls.enabled` — this endpoint adds no TLS-specific switch.
 
 `GET /api/v1/storage` answers the Admin "Storage" screen and the dashboard cards:
 
@@ -706,3 +719,38 @@ The flow the Webmail UI and the official client both follow:
 5. `GET /api/v1/queue?status=retry,failed` (or the client's own Outbox view) to
    watch delivery; the server pushes `delivery.updated` events over the socket as
    each attempt completes.
+
+---
+
+## 8. JMAP
+
+Ferroma also exposes the initial JMAP mail surface from RFC 8620 and RFC 8621. It
+uses the existing mailboxes, Maildir files, repositories, events and change log; it
+never creates a second mailbox or message store. JMAP is alongside IMAP and FCP, not
+a replacement for either.
+
+A client first obtains a separately revocable JMAP bearer-token session with
+`POST /api/jmap/auth/token` (`email`, `password`, `device_name`). The resulting
+access token is accepted only by JMAP endpoints; browser cookies and ordinary REST or
+FCP bearer sessions are rejected. `GET /.well-known/jmap`, with that bearer token,
+returns the RFC 8620 Session object and the API/upload/download URL templates.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/.well-known/jmap` | authenticated JMAP Session discovery |
+| `POST` | `/api/jmap/` | JMAP method-call endpoint |
+| `POST` | `/api/jmap/auth/token` | create a dedicated JMAP token session |
+| `POST` | `/api/jmap/upload/:accountId` | upload one raw blob |
+| `GET` | `/api/jmap/download/:accountId/:blobId` | download an owned blob |
+
+The method endpoint currently supports `Mailbox/get`, `Email/query`, `Email/get`,
+`Email/set`, and `Email/import`. `Email/set` changes standard seen/flagged keywords
+or destroys an email through the shared message service, so its changes are visible to
+IMAP and FCP cursor sync. `Email/import` consumes a blob returned by the upload
+endpoint and files the parsed RFC 5322 message into a selected existing folder.
+
+This first cut deliberately does not advertise push, calendars, contacts, Sieve,
+Mailbox mutations, arbitrary custom keyword patches, multi-mailbox Email membership,
+or the full MIME-body property set. Clients must poll the JMAP state returned by the
+Session and method responses. Those unsupported pieces are not claimed as RFC 8621
+complete support.

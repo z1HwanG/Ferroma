@@ -198,7 +198,11 @@ pub async fn get_queue_entry(
         .await?
         .ok_or_else(|| ApiError::new(FerromaError::NotFound(format!("queue entry {id}"))))?;
 
-    let attempts = state.repos.delivery_attempts.list_by_queue(queue_id).await?;
+    let attempts = state
+        .repos
+        .delivery_attempts
+        .list_by_queue(queue_id)
+        .await?;
     let subject = state
         .repos
         .messages
@@ -215,7 +219,10 @@ pub async fn get_queue_entry(
 
     Ok(Json(QueueEntryResponse {
         entry: QueueResponse::from_row(&entry),
-        attempts: attempts.iter().map(DeliveryAttemptResponse::from_row).collect(),
+        attempts: attempts
+            .iter()
+            .map(DeliveryAttemptResponse::from_row)
+            .collect(),
         subject,
         recipient_count,
     }))
@@ -362,7 +369,10 @@ mod tests {
     #[test]
     fn a_single_status_parses() {
         assert_eq!(parse_statuses(Some("retry")).expect("valid"), vec!["retry"]);
-        assert_eq!(parse_statuses(Some(" FAILED ")).expect("valid"), vec!["failed"]);
+        assert_eq!(
+            parse_statuses(Some(" FAILED ")).expect("valid"),
+            vec!["failed"]
+        );
     }
 
     #[test]

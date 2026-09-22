@@ -9,7 +9,7 @@ Ferroma 的重要变更，新的在前。
 章节形式大体沿用 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)：某个版本
 没有内容的章节直接省略，不留空标题。英文原版见 [`CHANGELOG.md`](CHANGELOG.md)。
 
-## [未发布]
+## [0.1.9] — 2026-09-22
 
 ### 修复
 
@@ -30,7 +30,29 @@ Ferroma 的重要变更，新的在前。
   已删除；它覆盖的 FCP 同步路径由 `the_sync_cursor_sees_the_delivery` 直接对 API 驱动，而一个端到
   端说 FCP 的客户端，其验收属于客户端自己的仓库。
 
+- **窄窗口里看到的是邮件，而不是一条页眉。** 宽度低于 900px 时文件夹与列表栏会被藏起，但网格仍占着
+  它们的列，于是只剩下的阅读栏被放进第一列那 200px 里，窗口其余部分空着。主题、地址和操作按钮堆成一条
+  竖栏，正文被推到窗口下方。现在这个宽度下打开一封信是单列，占满窗口。
+
+- **邮件里的内嵌图片是图片，不再是破图方框。** `<img src="cid:…">` 用 Content-ID 指名一个附件，浏览器
+  取不到这个地址。阅读框又是不透明源，同样无法带着本页的会话去取 `/api/v1/attachments/…`。现在由父页面
+  读出对应的图片部分，在拼装阅读框之前把 `cid:` 改写成 `data:` URL。远程的 `http:`/`https:` 图片仍然不
+  加载——那会向发件人确认这封信已被打开——SVG 也不内联，因为 `data:image/svg+xml` 文档可以携带脚本。
+
+- **账户菜单里的「管理控制台」看起来和其他项一样。** 它是一排按钮里唯一的链接，全站的链接颜色把它染成
+  蓝色，夹在「设置…」和「退出登录」之间。菜单项现在统一用正文色，且没有下划线。
+
 ### 新增
+
+- **`ferroma storage export` / `ferroma storage import`：一份归档，两半都在。** 手动备份和换服务器是
+  同一件事，任何一半单独都不是备份。`export --to` 写出一份 tar：PostgreSQL custom-format 转储、
+  Maildir、附件二进制对象、`dkim/`、`<data_dir>/database.json`、生成的 `jwt_secret`，以及一份
+  `manifest.json`（Ferroma 版本、时间、`pg_dump` 大版本、文件数、每段的 SHA-256）。`--to` 是本地
+  路径，或 `s3://` / `webdav://` URL；S3 与 WebDAV 只是这份归档的目的地，不是第二套备份系统，凭证
+  来自环境变量。导出时若 `ferroma serve` 仍在运行则拒绝，除非 `--live`，清单会标明。导入先核对
+  清单，目标里已有账户或文件则拒绝，除非 `--replace`；`pg_dump` 大版本与服务器不一致也拒绝；灌完
+  之后运行 `ferroma storage verify`，对不上就非零退出。运行镜像现在带 `postgresql-client-16`，这条
+  命令调用的就是它。定时与异地保留期仍由运维自己负责：已退休的备份边车没有回来。
 
 - **bootstrap 设置页补上了它一直缺失的验收测试。** 一项新的 e2e 在未配置数据库的情况下启动真实
   服务器，用真实 socket 走完整个首次运行路径：setup code 被打印且随后被强制执行（错误代码得
@@ -38,6 +60,31 @@ Ferroma 的重要变更，新的在前。
   `503 setup`、错误的 code/非 postgres 地址/连不上的数据库各得 `invalid_input`，被接受的 POST 为
   它收到的地址执行迁移、把 `database.json` 写进数据目录，然后同一个进程在同一个端口上长成一个
   健康的 `ferroma serve`——此时 bootstrap 端点不复存在。此前这个模式只有路由器的内存单测守着。
+
+- **JMAP 是已有数据库也能长出来的一种会话。** `sessions.kind` 是一条检查约束，JMAP
+  出现之前建的库并不把 `jmap` 列在其中，于是签发 JMAP 令牌时插入会失败。
+  `migrations/0004_sessions_allow_jmap.sql` 删掉这条检查，再补上包含 `jmap` 的那一条。
+  这个 kind 故意不加进 `0001_initial.sql`：sqlx 按文件字节做校验，改动第 1 版迁移会让
+  每一个已经应用过它的数据库以 `VersionMismatch` 拒绝启动。全新的数据库先跑 0001 再跑
+  0004，最终停在同一条约束上。
+
+- **镜像读不到的一个前端文件。** `admin/views/services.js` 的权限是 `0600`。`COPY`
+  保留它拿到的权限，而服务以 uid 10001 运行，于是这个文件变成 404，导入它的管理页
+  永远起不来。把检出目录以 `FERROMA__API__WEBMAIL_DIR` 挂进去也一样，因为那条路径
+  不经过 Dockerfile 里的 `chmod`。该文件现为 `0644`，这也是 `tools/check-deploy.mjs`
+  对 `web/`、`admin/`、`shared/` 与 `config/` 下每个文件的要求。
+
+- **`cargo clippy --workspace` 在 1.98 上是干净的，而不只是没有错误。** SMTP 连接
+  限流里的两条 `manual_is_multiple_of`、IMAP 关闭信号上多余的 `as_deref_mut`、DNS
+  报告里嵌套的 `if` 与用 clone 拼切片、JMAP 地址拆分返回的五元向量，以及 SigV4
+  辅助函数的十个参数，都已去掉。端到端测试里等待 bootstrap 的那段也不再先赋一个
+  马上就被覆盖的状态。
+
+### 变更
+
+- **存储文档写的是实际存在的那些迁移。** 它原先声称只有一个 440 行的文件。实际有
+  四次：0001 创建 schema，0002 为它加注释，0003 让文件夹墓碑比行活得更久，0004
+  接纳 `jmap`。它也说明了 0001 在应用之后为什么不能再改。
 
 ## [0.1.8] — 2026-09-21
 

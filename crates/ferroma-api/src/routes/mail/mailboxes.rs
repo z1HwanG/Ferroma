@@ -242,7 +242,11 @@ pub async fn ensure_folder_path(
     let mut prefix = String::new();
     let mut leaf: Option<ferroma_storage::models::Folder> = None;
 
-    for segment in path.split('/').map(str::trim).filter(|part| !part.is_empty()) {
+    for segment in path
+        .split('/')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
         if !prefix.is_empty() {
             prefix.push('/');
         }
@@ -288,7 +292,6 @@ pub async fn ensure_folder_path(
         ))
     })
 }
-
 
 /// `PATCH /api/v1/folders/:id`
 ///
@@ -388,9 +391,7 @@ pub async fn update_folder(
                             .await
                             .map_err(ApiError::from)?
                             .ok_or_else(|| {
-                                ApiError::new(FerromaError::NotFound(format!(
-                                    "folder {parent_id}"
-                                )))
+                                ApiError::new(FerromaError::NotFound(format!("folder {parent_id}")))
                             })?,
                     ),
                     None => None,
@@ -407,9 +408,7 @@ pub async fn update_folder(
                             .await
                             .map_err(ApiError::from)?
                             .ok_or_else(|| {
-                                ApiError::new(FerromaError::NotFound(format!(
-                                    "folder {parent_id}"
-                                )))
+                                ApiError::new(FerromaError::NotFound(format!("folder {parent_id}")))
                             })?,
                     ),
                     None => None,
@@ -733,7 +732,10 @@ mod tests {
             "财务/待办"
         );
         // A nested folder keeps only its own leaf, not the whole old path.
-        assert_eq!(moved_folder_name(Some(&finance), child.name.as_str()), "财务/2026");
+        assert_eq!(
+            moved_folder_name(Some(&finance), child.name.as_str()),
+            "财务/2026"
+        );
         // To the top level: the bare leaf.
         assert_eq!(moved_folder_name(None, child.name.as_str()), "2026");
         // And the parent is untouched by the name helper.
@@ -747,9 +749,21 @@ mod tests {
         let quarter = folder(3, "项目/2026/Q1", Some(2));
         let other = folder(4, "财务", None);
 
-        assert!(would_cycle(&projects, &projects, &[year.clone(), quarter.clone()]));
-        assert!(would_cycle(&projects, &year, &[year.clone(), quarter.clone()]));
-        assert!(would_cycle(&projects, &quarter, &[year.clone(), quarter.clone()]));
+        assert!(would_cycle(
+            &projects,
+            &projects,
+            &[year.clone(), quarter.clone()]
+        ));
+        assert!(would_cycle(
+            &projects,
+            &year,
+            &[year.clone(), quarter.clone()]
+        ));
+        assert!(would_cycle(
+            &projects,
+            &quarter,
+            &[year.clone(), quarter.clone()]
+        ));
         assert!(!would_cycle(&projects, &other, &[year, quarter]));
     }
 
@@ -765,8 +779,14 @@ mod tests {
     #[test]
     fn folder_names_join_with_a_single_separator() {
         assert_eq!(compose_folder_name("2026", Some("Archive")), "Archive/2026");
-        assert_eq!(compose_folder_name("/2026/", Some("/Archive/")), "Archive/2026");
-        assert_eq!(compose_folder_name("Archive/2026", Some("Archive")), "Archive/2026");
+        assert_eq!(
+            compose_folder_name("/2026/", Some("/Archive/")),
+            "Archive/2026"
+        );
+        assert_eq!(
+            compose_folder_name("Archive/2026", Some("Archive")),
+            "Archive/2026"
+        );
         assert_eq!(compose_folder_name("Archive", Some("Archive")), "Archive");
         assert_eq!(compose_folder_name("Sent", None), "Sent");
         assert_eq!(compose_folder_name("  Sent  ", None), "Sent");

@@ -117,7 +117,10 @@ pub async fn tls_status(
             smtps_port: state.config.smtp.smtps_port,
             imaps_port: state.config.imap.imaps_port,
             https_port: state.config.api.tls_port,
-            public_url_is_tls: public_url.trim_start().to_ascii_lowercase().starts_with("https://"),
+            public_url_is_tls: public_url
+                .trim_start()
+                .to_ascii_lowercase()
+                .starts_with("https://"),
             public_url,
         },
     }))
@@ -251,8 +254,14 @@ mod tests {
         // `false` is what the handler passes for `key_path`.
         let status = inspect(Some(&path), false);
         assert!(status.present && status.readable);
-        assert!(status.size_bytes.is_some(), "size and mtime are still reported");
-        assert!(status.sha256.is_none(), "a hash of the key must not be published");
+        assert!(
+            status.size_bytes.is_some(),
+            "size and mtime are still reported"
+        );
+        assert!(
+            status.sha256.is_none(),
+            "a hash of the key must not be published"
+        );
     }
 
     #[test]
@@ -273,7 +282,11 @@ mod tests {
         assert!(status.present && status.readable);
         assert!(status.sha256.is_none());
         assert!(
-            status.error.as_deref().unwrap_or_default().contains("exceeds"),
+            status
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("exceeds"),
             "error: {:?}",
             status.error
         );
@@ -327,7 +340,9 @@ mod tests {
             ("mail.example.com", false),
         ] {
             assert_eq!(
-                url.trim_start().to_ascii_lowercase().starts_with("https://"),
+                url.trim_start()
+                    .to_ascii_lowercase()
+                    .starts_with("https://"),
                 expected,
                 "{url}"
             );

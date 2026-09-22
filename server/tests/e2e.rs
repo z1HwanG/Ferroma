@@ -340,6 +340,14 @@ max_failed_logins = 5
 
     /// Run the `ferroma` CLI against the same configuration and database.
     fn cli(&self, args: &[&str]) -> String {
+        let (ok, stdout, stderr) = self.cli_raw(args);
+        assert!(ok, "`ferroma {}` failed: {stderr}{stdout}", args.join(" "));
+        stdout
+    }
+
+    /// The same, without asserting success: the export and import refusals are
+    /// part of the contract, so a test has to see the non-zero exit.
+    fn cli_raw(&self, args: &[&str]) -> (bool, String, String) {
         let binary = env!("CARGO_BIN_EXE_ferroma");
         let output = Command::new(binary)
             .arg("--config")
@@ -348,14 +356,11 @@ max_failed_logins = 5
             .output()
             .unwrap_or_else(|e| panic!("cannot run the CLI: {e}"));
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        assert!(
+        (
             output.status.success(),
-            "`ferroma {}` failed: {stderr}{stdout}",
-            args.join(" ")
-        );
-        stdout
+            String::from_utf8_lossy(&output.stdout).to_string(),
+            String::from_utf8_lossy(&output.stderr).to_string(),
+        )
     }
 
     fn data_dir(&self) -> PathBuf {
@@ -921,6 +926,220 @@ async fn the_cli_reports_a_consistent_store() {
 
 }
 
+/// `ferroma storage export` / `import` is one archive of both halves.
+///
+/// The export must refuse while the server is up unless `--live`, and the import
+/// must refuse a non-empty target unless `--replace`. The round trip is the thing
+/// that would fail if the dump and the Maildir were taken apart: Alice's account
+/// and the message delivered to her have to come back on a server that never saw
+/// either.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn storage_export_and_import_round_trip() {
+    if !require_database() {
+        return;
+    }
+    let _serial = serial_guard().lock().await;
+    point_at_dev_pg_tools();
+
+    let source = Server::start().await;
+    source.cli(&["domain", "create", "acceptance.test"]);
+    source.cli(&["user", "create", ALICE, "--password", PASSWORD, "--display-name", "Alice"]);
+
+    let message = format!(
+        "From: {BOB}\r\nTo: {ALICE}\r\nSubject: Keep me\r\nDate: Thu, 16 Sep 2026 12:00:00 +0000\r\nMessage-ID: <acceptance-backup@acceptance.test>\r\n\r\nThis message must survive the move.\r\n"
+    );
+    let replies = smtp_send(SMTP_PORT, "client.acceptance.test", BOB, &[ALICE], &message).await;
+    assert_eq!(replies.last().expect("a reply").0, 250, "{replies:?}");
+
+    // Not inside the source server's directory: cleanup deletes that, and the
+    // import has to happen afterwards.
+    let archive_dir = tempfile::tempdir().expect("a directory for the archive");
+    let archive = archive_dir.path().join("ferroma.tar");
+    let archive_arg = archive.display().to_string();
+
+    // A live server is exactly what the command refuses, unless the operator says so.
+    let (ok, stdout, stderr) = source.cli_raw(&["storage", "export", "--to", &archive_arg]);
+    assert!(!ok, "export must refuse while serve is up: {stdout}{stderr}");
+    assert!(
+        stderr.contains("--live") || stdout.contains("--live"),
+        "the refusal must name --live: {stderr}{stdout}"
+    );
+
+    let exported = source.cli(&["storage", "export", "--live", "--to", &archive_arg]);
+    assert!(exported.contains("live        yes"), "{exported}");
+    assert!(archive.is_file(), "the archive must exist");
+
+    // Import refuses while the source server is still up: the ports are the signal.
+    let (ok, stdout, stderr) = source.cli_raw(&["storage", "import", "--from", &archive_arg]);
+    assert!(!ok, "import must refuse while serve is up: {stdout}{stderr}");
+
+    // A second, empty database is the move. It is prepared without starting a
+    // server — the ports are still held by the source, and import refuses while a
+    // listener answers. The database has no tables and the data directory is
+    // empty, so the import needs no --replace.
+    let target_database = database_name(&uuid::Uuid::new_v4().simple().to_string()[..12]);
+    ensure_database(&target_database).await;
+    let target_dir = tempfile::tempdir().expect("a temporary directory");
+    let target_data = target_dir.path().join("data");
+    std::fs::create_dir_all(&target_data).expect("create the target data directory");
+    let target_config = write_acceptance_config(target_dir.path(), &target_data, &target_database);
+
+    source.cleanup().await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let target = CliOnly {
+        config: target_config,
+        database: target_database,
+    };
+
+    let restored = target.cli(&["storage", "import", "--from", &archive_arg]);
+    assert!(restored.contains("mail store is consistent"), "{restored}");
+    let listed = target.cli(&["user", "list", "--emails-only"]);
+    assert!(listed.contains(ALICE), "the restored store must still know Alice: {listed}");
+
+    // A second import is a merge, and that is refused.
+    let (ok, stdout, stderr) = target.cli_raw(&["storage", "import", "--from", &archive_arg]);
+    assert!(!ok, "a second import must refuse a non-empty target: {stdout}{stderr}");
+    assert!(
+        stderr.contains("--replace") || stdout.contains("--replace"),
+        "the refusal must name --replace: {stderr}{stdout}"
+    );
+
+    let replaced = target.cli(&["storage", "import", "--from", &archive_arg, "--replace"]);
+    assert!(replaced.contains("mail store is consistent"), "{replaced}");
+    drop_database(&target.database).await;
+    // Keep the archive directory alive until the import has finished.
+    drop(archive_dir);
+}
+
+/// A configuration and a database, with no server process.
+///
+/// Import refuses while a listener answers, so the target of a round trip cannot
+/// be a running `Server`.
+struct CliOnly {
+    config: PathBuf,
+    database: String,
+}
+
+impl CliOnly {
+    fn cli(&self, args: &[&str]) -> String {
+        let (ok, stdout, stderr) = self.cli_raw(args);
+        assert!(ok, "`ferroma {}` failed: {stderr}{stdout}", args.join(" "));
+        stdout
+    }
+
+    fn cli_raw(&self, args: &[&str]) -> (bool, String, String) {
+        let binary = env!("CARGO_BIN_EXE_ferroma");
+        let output = Command::new(binary)
+            .arg("--config")
+            .arg(&self.config)
+            .args(args)
+            .output()
+            .unwrap_or_else(|e| panic!("cannot run the CLI: {e}"));
+        (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stdout).to_string(),
+            String::from_utf8_lossy(&output.stderr).to_string(),
+        )
+    }
+}
+
+/// Write the acceptance configuration used by [`Server::start`], without starting it.
+fn write_acceptance_config(dir: &Path, data: &Path, database: &str) -> PathBuf {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the workspace root")
+        .to_path_buf();
+    let config = dir.join("ferroma.toml");
+    let toml = format!(
+        r#"
+[server]
+name = "Ferroma"
+hostname = "localhost"
+data_dir = {data:?}
+log_level = "debug"
+
+[database]
+url = {url:?}
+run_migrations = true
+
+[smtp]
+enabled = false
+host = "127.0.0.1"
+port = {smtp}
+submission_port = {submission}
+smtps_port = 0
+
+[imap]
+enabled = false
+host = "127.0.0.1"
+port = {imap}
+imaps_port = 0
+
+[tls]
+enabled = false
+
+[dns]
+timeout_secs = 1
+attempts = 1
+
+[policy]
+spf_enabled = false
+dmarc_enabled = false
+add_auth_results = false
+
+[queue]
+enabled = false
+
+[api]
+enabled = false
+host = "127.0.0.1"
+port = {api}
+tls_port = 0
+base_path = "/api/v1"
+public_url = {public:?}
+webmail_dir = {webmail:?}
+admin_dir = {admin:?}
+shared_dir = {shared:?}
+jwt_secret = "acceptance-run-secret-that-is-at-least-32-bytes"
+secure_cookies = false
+serve_frontend = false
+
+[storage]
+fsync_on_write = false
+"#,
+        data = data.display().to_string(),
+        url = acceptance_url(database),
+        smtp = SMTP_PORT,
+        submission = SUBMISSION_PORT,
+        imap = IMAP_PORT,
+        api = API_PORT,
+        public = format!("http://127.0.0.1:{API_PORT}"),
+        webmail = workspace.join("web").display().to_string(),
+        admin = workspace.join("admin").display().to_string(),
+        shared = workspace.join("shared").display().to_string(),
+    );
+    std::fs::write(&config, toml).expect("write the configuration");
+    config
+}
+
+/// Point `pg_dump` / `pg_restore` at the development PostgreSQL, when it is unpacked.
+///
+/// The runtime image has them on `PATH`; this machine keeps them under `.cache/pgsql`
+/// with their shared library beside them, and the CLI inherits this environment.
+fn point_at_dev_pg_tools() {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the workspace root");
+    let bin = workspace.join(".cache/pgsql/usr/bin");
+    let lib = workspace.join(".cache/pgsql/usr/lib");
+    if bin.join("pg_dump").is_file() {
+        std::env::set_var("FERROMA_PG_DUMP", bin.join("pg_dump"));
+        std::env::set_var("FERROMA_PG_RESTORE", bin.join("pg_restore"));
+        std::env::set_var("LD_LIBRARY_PATH", &lib);
+    }
+}
+
 /// The Admin console is served by the same process that serves the API, so a
 /// deployment has one thing to expose (specification §36, §48).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1219,21 +1438,18 @@ fsync_on_write = false
 
     // --- bootstrap mode is up, and says so honestly ---------------------------
     let deadline = Instant::now() + Duration::from_secs(30);
-    let (mut status, mut body) = (0u16, String::new());
-    loop {
+    let (status, body) = loop {
         if Instant::now() > deadline {
             panic!(
                 "the bootstrap page did not answer within 30s\n--- captured output ---\n{}",
                 seen.lock().expect("seen lock")
             );
         }
-        let Some(answer) = http_request("GET", &bootstrap, None, None).await else {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            continue;
-        };
-        (status, body) = (answer.0, answer.1);
-        break;
-    }
+        if let Some(answer) = http_request("GET", &bootstrap, None, None).await {
+            break answer;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
     assert_eq!(status, 200, "the status endpoint: {body}");
     let status_json: serde_json::Value = serde_json::from_str(&body).expect("JSON status");
     assert_eq!(status_json["required"], true);

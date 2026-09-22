@@ -182,10 +182,22 @@ function findings(health, queueStats) {
     issues.push({ tone: 'danger', title: t('The database is not reachable'), detail: t('Mail cannot be stored or read until it recovers.') });
   }
   if (h && h.smtp && h.smtp.enabled === false) {
-    issues.push({ tone: 'warn', title: t('SMTP is disabled'), detail: t('No inbound mail is being accepted.') });
+    issues.push({
+      tone: 'warn',
+      title: t('SMTP is disabled'),
+      detail: t('No inbound mail is being accepted.'),
+      actionHref: '#/services',
+      actionLabel: t('Manage mail services'),
+    });
   }
   if (h && h.imap && h.imap.enabled === false) {
-    issues.push({ tone: 'warn', title: t('IMAP is disabled'), detail: t('Mail clients cannot connect.') });
+    issues.push({
+      tone: 'warn',
+      title: t('IMAP is disabled'),
+      detail: t('Mail clients cannot connect.'),
+      actionHref: '#/services',
+      actionLabel: t('Manage mail services'),
+    });
   }
   if (h && h.status && String(h.status).toLowerCase() === 'degraded') {
     issues.push({ tone: 'warn', title: t('The server reports itself as degraded') });

@@ -138,7 +138,8 @@ impl ClientInfo {
             client_version: client.as_deref().and_then(version_from_client_header),
             client,
             platform: header_string(headers, PLATFORM_HEADER),
-            protocol: header_string(headers, PROTOCOL_HEADER).and_then(|raw| raw.trim().parse().ok()),
+            protocol: header_string(headers, PROTOCOL_HEADER)
+                .and_then(|raw| raw.trim().parse().ok()),
             user_agent: header_string(headers, "user-agent"),
         }
     }
@@ -207,6 +208,26 @@ impl ClientAuth {
     }
 }
 
+/// An authenticated JMAP request.
+///
+/// JMAP accepts only bearer tokens minted for a JMAP session. This keeps its
+/// third-party protocol boundary separate from browser cookies and the existing REST
+/// and FCP token flows.
+#[derive(Debug, Clone)]
+pub struct JmapAuth(pub Authenticated);
+
+impl JmapAuth {
+    /// The account behind this JMAP credential.
+    pub fn user_id(&self) -> UserId {
+        self.0.user_id()
+    }
+
+    /// The authenticated account row.
+    pub fn user(&self) -> &ferroma_storage::models::User {
+        &self.0.user
+    }
+}
+
 /// Read one header as a trimmed `String`, ignoring an empty value.
 pub fn header_string(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
     headers
@@ -233,7 +254,10 @@ fn version_from_client_header(raw: &str) -> Option<String> {
 /// The scheme is matched case-insensitively, as RFC 7235 requires, and a non-bearer
 /// scheme yields `None` rather than an error so the cookie path can still be tried.
 pub fn bearer_token(headers: &axum::http::HeaderMap) -> Option<String> {
-    let raw = headers.get(axum::http::header::AUTHORIZATION)?.to_str().ok()?;
+    let raw = headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?;
     let (scheme, token) = raw.split_once(' ')?;
     if !scheme.eq_ignore_ascii_case("bearer") {
         return None;
@@ -274,7 +298,11 @@ pub async fn authenticate(
     cookie_allowed: bool,
 ) -> Result<Authenticated, ApiError> {
     if let Some(token) = bearer_token(headers) {
-        return state.auth.authenticate(&token).await.map_err(ApiError::from);
+        return state
+            .auth
+            .authenticate(&token)
+            .await
+            .map_err(ApiError::from);
     }
 
     if cookie_allowed {
@@ -354,6 +382,23 @@ impl FromRequestParts<AppState> for AuthUser {
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
         let auth = authenticate(state, &parts.headers, true).await?;
         Ok(AuthUser(auth))
+    }
+}
+
+impl FromRequestParts<AppState> for JmapAuth {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
+        let auth = authenticate(state, &parts.headers, false).await?;
+        if !matches!(
+            SessionKind::parse(&auth.session.kind),
+            Some(SessionKind::Jmap)
+        ) {
+            return Err(ApiError::new(FerromaError::Unauthorized(
+                "this endpoint requires a JMAP bearer token".to_string(),
+            )));
+        }
+        Ok(JmapAuth(auth))
     }
 }
 
@@ -750,7 +795,10 @@ mod tests {
         let map = headers(&[("x-ferroma-platform", "   ")]);
         assert_eq!(header_string(&map, PLATFORM_HEADER), None);
         let map = headers(&[("x-ferroma-platform", "linux")]);
-        assert_eq!(header_string(&map, PLATFORM_HEADER).as_deref(), Some("linux"));
+        assert_eq!(
+            header_string(&map, PLATFORM_HEADER).as_deref(),
+            Some("linux")
+        );
     }
 
     #[test]

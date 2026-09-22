@@ -156,9 +156,15 @@ mod tests {
     #[test]
     fn every_missing_row_reports_the_same_shape() {
         // The message must not distinguish "nobody's" from "somebody else's".
-        assert_eq!(not_found("message").to_string(), "not found: no such message");
+        assert_eq!(
+            not_found("message").to_string(),
+            "not found: no such message"
+        );
         assert_eq!(not_found("draft").to_string(), "not found: no such draft");
-        assert_eq!(not_found("mailbox").to_string(), "not found: no such mailbox");
+        assert_eq!(
+            not_found("mailbox").to_string(),
+            "not found: no such mailbox"
+        );
         assert_eq!(not_found("folder").to_string(), "not found: no such folder");
         assert_eq!(not_found("device").to_string(), "not found: no such device");
         assert_eq!(

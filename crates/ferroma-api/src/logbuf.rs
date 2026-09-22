@@ -126,7 +126,14 @@ pub fn scrub(value: &str) -> String {
         let boundary = out.is_empty()
             || matches!(
                 out.chars().last(),
-                Some(' ') | Some(':') | Some('=') | Some(',') | Some('"') | Some('\'') | Some('(') | Some('[')
+                Some(' ')
+                    | Some(':')
+                    | Some('=')
+                    | Some(',')
+                    | Some('"')
+                    | Some('\'')
+                    | Some('(')
+                    | Some('[')
             );
         match token_at(rest) {
             Some(len) if boundary => {
@@ -298,7 +305,11 @@ impl LogFilter {
             return false;
         }
         if let Some(target) = self.target.as_deref().filter(|t| !t.is_empty()) {
-            if !entry.target.to_ascii_lowercase().contains(&target.to_ascii_lowercase()) {
+            if !entry
+                .target
+                .to_ascii_lowercase()
+                .contains(&target.to_ascii_lowercase())
+            {
                 return false;
             }
         }
@@ -423,7 +434,9 @@ mod tests {
     use chrono::TimeZone;
 
     fn at(secs: i64) -> DateTime<Utc> {
-        Utc.timestamp_opt(secs, 0).single().expect("valid timestamp")
+        Utc.timestamp_opt(secs, 0)
+            .single()
+            .expect("valid timestamp")
     }
 
     fn entry(secs: i64, level: &str, target: &str, message: &str) -> LogEntry {
@@ -496,7 +509,12 @@ mod tests {
         let buffer = LogBuffer::new(16, Level::INFO);
         buffer.push(entry(10, "warn", "ferroma_smtp::client", "deferred 421"));
         buffer.push(entry(20, "error", "ferroma_api::routes", "handler blew up"));
-        buffer.push(entry(30, "info", "ferroma_smtp::server", "accepted connection"));
+        buffer.push(entry(
+            30,
+            "info",
+            "ferroma_smtp::server",
+            "accepted connection",
+        ));
 
         let mut filter = LogFilter {
             level: Level::INFO,
@@ -583,7 +601,10 @@ mod tests {
         // A short lookalike is not a token.
         assert_eq!(scrub("st_ab"), "st_ab");
         // A word containing the prefix inside prose is not rewritten.
-        assert_eq!(scrub("a stanza t_st_abcdefghij"), "a stanza t_st_abcdefghij");
+        assert_eq!(
+            scrub("a stanza t_st_abcdefghij"),
+            "a stanza t_st_abcdefghij"
+        );
     }
 
     #[test]
@@ -613,7 +634,10 @@ mod tests {
         let sink = LogSink::new(std::sync::Arc::clone(&buffer));
         let mut fields = serde_json::Map::new();
         fields.insert("queue_id".into(), serde_json::Value::from(91));
-        fields.insert("remote_mx".into(), serde_json::Value::from("mx1.example.net"));
+        fields.insert(
+            "remote_mx".into(),
+            serde_json::Value::from("mx1.example.net"),
+        );
         sink.record(Level::WARN, "ferroma_smtp::client", "deferred", fields);
 
         let entries = buffer.snapshot();
@@ -651,7 +675,10 @@ mod tests {
         );
         sink.record(Level::WARN, "t", "login used rt_abcdefghijklmnop", fields);
         let entries = buffer.snapshot();
-        assert!(!entries[0].message.contains("rt_abcdefghijklmnop"), "{entries:?}");
+        assert!(
+            !entries[0].message.contains("rt_abcdefghijklmnop"),
+            "{entries:?}"
+        );
         assert_eq!(entries[0].fields["token"], REDACTED);
     }
 

@@ -45,6 +45,8 @@ pub enum SessionKind {
     Api,
     /// An official Ferroma client.
     Client,
+    /// A JMAP client authenticated with a JMAP-specific bearer token.
+    Jmap,
     /// An IMAP session.
     Imap,
     /// An SMTP submission session.
@@ -58,6 +60,7 @@ impl SessionKind {
             SessionKind::Web => "web",
             SessionKind::Api => "api",
             SessionKind::Client => "client",
+            SessionKind::Jmap => "jmap",
             SessionKind::Imap => "imap",
             SessionKind::Smtp => "smtp",
         }
@@ -69,6 +72,7 @@ impl SessionKind {
             "web" => Some(SessionKind::Web),
             "api" => Some(SessionKind::Api),
             "client" => Some(SessionKind::Client),
+            "jmap" => Some(SessionKind::Jmap),
             "imap" => Some(SessionKind::Imap),
             "smtp" => Some(SessionKind::Smtp),
             _ => None,
@@ -77,7 +81,10 @@ impl SessionKind {
 
     /// Whether this kind is a long-lived, refreshable session.
     pub fn is_refreshable(self) -> bool {
-        matches!(self, SessionKind::Web | SessionKind::Api | SessionKind::Client)
+        matches!(
+            self,
+            SessionKind::Web | SessionKind::Api | SessionKind::Client | SessionKind::Jmap
+        )
     }
 }
 
@@ -177,7 +184,12 @@ impl std::fmt::Debug for AuthService {
 
 impl AuthService {
     /// Build the service.
-    pub fn new(repos: Repositories, tokens: TokenService, hasher: PasswordHasher, limits: Limits) -> Self {
+    pub fn new(
+        repos: Repositories,
+        tokens: TokenService,
+        hasher: PasswordHasher,
+        limits: Limits,
+    ) -> Self {
         AuthService {
             repos,
             tokens,
@@ -268,10 +280,21 @@ impl AuthService {
         current_password: &str,
         new_password: &str,
     ) -> Result<()> {
-        let user = self.repos.users.require_by_id(user_id).await.map_err(map_storage)?;
-        if !self.verify_password(current_password, &user.password_hash).await {
-            self.record_attempt(&user.email, None, "password", false).await;
-            return Err(FerromaError::Unauthorized("current password is incorrect".into()));
+        let user = self
+            .repos
+            .users
+            .require_by_id(user_id)
+            .await
+            .map_err(map_storage)?;
+        if !self
+            .verify_password(current_password, &user.password_hash)
+            .await
+        {
+            self.record_attempt(&user.email, None, "password", false)
+                .await;
+            return Err(FerromaError::Unauthorized(
+                "current password is incorrect".into(),
+            ));
         }
         validate_password(new_password)?;
         if current_password == new_password {
@@ -293,7 +316,11 @@ impl AuthService {
             .revoke_all_for_user(user_id)
             .await
             .map_err(map_storage)?;
-        tracing::info!(user_id = user_id.get(), revoked, "password changed; sessions revoked");
+        tracing::info!(
+            user_id = user_id.get(),
+            revoked,
+            "password changed; sessions revoked"
+        );
         Ok(())
     }
 
@@ -329,7 +356,8 @@ impl AuthService {
                 .map_err(map_storage)?;
             if failures >= i64::from(self.limits.max_failed_logins) * 3 {
                 tracing::warn!(ip = %ip_text, failures, "login throttled by source address");
-                self.record_attempt(&email, ip_str.as_deref(), "password", false).await;
+                self.record_attempt(&email, ip_str.as_deref(), "password", false)
+                    .await;
                 return Err(FerromaError::RateLimited);
             }
         }
@@ -343,17 +371,20 @@ impl AuthService {
 
         // Unknown account: same message and same cost profile as a wrong password.
         let Some(user) = user else {
-            self.record_attempt(&email, ip_str.as_deref(), "password", false).await;
+            self.record_attempt(&email, ip_str.as_deref(), "password", false)
+                .await;
             return Err(invalid_credentials());
         };
 
         if !user.enabled {
-            self.record_attempt(&email, ip_str.as_deref(), "password", false).await;
+            self.record_attempt(&email, ip_str.as_deref(), "password", false)
+                .await;
             tracing::warn!(user_id = user.id, "login refused: account disabled");
             return Err(invalid_credentials());
         }
         if !user.is_login_allowed(now) {
-            self.record_attempt(&email, ip_str.as_deref(), "password", false).await;
+            self.record_attempt(&email, ip_str.as_deref(), "password", false)
+                .await;
             tracing::warn!(user_id = user.id, "login refused: account locked");
             return Err(FerromaError::RateLimited);
         }
@@ -370,7 +401,8 @@ impl AuthService {
                 )
                 .await
                 .map_err(map_storage)?;
-            self.record_attempt(&email, ip_str.as_deref(), "password", false).await;
+            self.record_attempt(&email, ip_str.as_deref(), "password", false)
+                .await;
             if updated.locked_until.is_some() {
                 tracing::warn!(user_id = user.id, "account locked after repeated failures");
                 return Err(FerromaError::RateLimited);
@@ -382,11 +414,19 @@ impl AuthService {
         if self.hasher.needs_rehash(&user.password_hash) {
             match self.hash_password(password).await {
                 Ok(hash) => {
-                    if let Err(e) = self.repos.users.update_password(UserId::new(user.id), &hash).await {
+                    if let Err(e) = self
+                        .repos
+                        .users
+                        .update_password(UserId::new(user.id), &hash)
+                        .await
+                    {
                         // A failed upgrade must not fail the login.
                         tracing::warn!(user_id = user.id, error = %e, "password rehash failed");
                     } else {
-                        tracing::info!(user_id = user.id, "password hash upgraded to current parameters");
+                        tracing::info!(
+                            user_id = user.id,
+                            "password hash upgraded to current parameters"
+                        );
                     }
                 }
                 Err(e) => tracing::warn!(user_id = user.id, error = %e, "password rehash failed"),
@@ -422,7 +462,8 @@ impl AuthService {
             )
             .await?;
 
-        self.record_attempt(&email, ip_str.as_deref(), "password", true).await;
+        self.record_attempt(&email, ip_str.as_deref(), "password", true)
+            .await;
         tracing::info!(
             user_id = user.id,
             session_id = session.id,
@@ -505,11 +546,15 @@ impl AuthService {
             .ok_or_else(|| FerromaError::Unauthorized("session no longer exists".into()))?;
 
         if !session.is_valid_at(Utc::now()) {
-            return Err(FerromaError::Unauthorized("session expired or revoked".into()));
+            return Err(FerromaError::Unauthorized(
+                "session expired or revoked".into(),
+            ));
         }
         if session.user_id != claims.user_id.get() {
             // The token claims a different subject than the session it names.
-            return Err(FerromaError::Unauthorized("token does not match its session".into()));
+            return Err(FerromaError::Unauthorized(
+                "token does not match its session".into(),
+            ));
         }
 
         let user = self
@@ -518,7 +563,9 @@ impl AuthService {
             .require_by_id(claims.user_id)
             .await
             .map_err(|e| match e {
-                StorageError::NotFound(_) => FerromaError::Unauthorized("account no longer exists".into()),
+                StorageError::NotFound(_) => {
+                    FerromaError::Unauthorized("account no longer exists".into())
+                }
                 other => map_storage(other),
             })?;
 
@@ -574,7 +621,12 @@ impl AuthService {
             return Err(FerromaError::Unauthorized("refresh token expired".into()));
         }
 
-        let user = self.repos.users.require_by_id(user_id).await.map_err(map_storage)?;
+        let user = self
+            .repos
+            .users
+            .require_by_id(user_id)
+            .await
+            .map_err(map_storage)?;
         if !user.enabled {
             return Err(FerromaError::Unauthorized("account disabled".into()));
         }
@@ -588,7 +640,13 @@ impl AuthService {
 
         let kind = SessionKind::parse(&session.kind).unwrap_or(SessionKind::Api);
         let (new_session, mut pair) = self
-            .open_session(&user, kind, session.device_id, ip, session.user_agent.as_deref())
+            .open_session(
+                &user,
+                kind,
+                session.device_id,
+                ip,
+                session.user_agent.as_deref(),
+            )
             .await?;
 
         // Keep the caller's device association visible in the returned pair.
@@ -615,7 +673,11 @@ impl AuthService {
     }
 
     /// Sessions for the Admin "active sessions" view.
-    pub async fn list_sessions(&self, user_id: UserId, include_revoked: bool) -> Result<Vec<Session>> {
+    pub async fn list_sessions(
+        &self,
+        user_id: UserId,
+        include_revoked: bool,
+    ) -> Result<Vec<Session>> {
         self.repos
             .sessions
             .list_for_user(user_id, include_revoked)
@@ -667,7 +729,11 @@ impl AuthService {
     }
 
     /// Devices belonging to a user.
-    pub async fn list_devices(&self, user_id: UserId, include_revoked: bool) -> Result<Vec<Device>> {
+    pub async fn list_devices(
+        &self,
+        user_id: UserId,
+        include_revoked: bool,
+    ) -> Result<Vec<Device>> {
         self.repos
             .devices
             .list_for_user(user_id, include_revoked)
@@ -715,7 +781,12 @@ impl AuthService {
     // -------------------------------------------------------------------------
 
     async fn record_attempt(&self, email: &str, ip: Option<&str>, kind: &str, success: bool) {
-        if let Err(e) = self.repos.login_attempts.record(email, ip, kind, success).await {
+        if let Err(e) = self
+            .repos
+            .login_attempts
+            .record(email, ip, kind, success)
+            .await
+        {
             // Bookkeeping must never turn a login into a failure.
             tracing::warn!(error = %e, "could not record login attempt");
         }
@@ -723,7 +794,10 @@ impl AuthService {
 
     /// Whether an address is allowed to receive mail, used by SMTP `RCPT TO`.
     /// Kept here so every surface resolves addresses the same way.
-    pub async fn resolve_local_address(&self, address: &ferroma_core::EmailAddress) -> Result<Option<i64>> {
+    pub async fn resolve_local_address(
+        &self,
+        address: &ferroma_core::EmailAddress,
+    ) -> Result<Option<i64>> {
         let mailbox = self
             .repos
             .mailboxes
@@ -769,4 +843,16 @@ pub fn shared(service: AuthService) -> SharedAuth {
 /// chrono directly.
 pub fn now() -> DateTime<Utc> {
     Utc::now()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SessionKind;
+
+    #[test]
+    fn jmap_session_kind_round_trips_and_can_refresh() {
+        assert_eq!(SessionKind::Jmap.as_str(), "jmap");
+        assert_eq!(SessionKind::parse("jmap"), Some(SessionKind::Jmap));
+        assert!(SessionKind::Jmap.is_refreshable());
+    }
 }

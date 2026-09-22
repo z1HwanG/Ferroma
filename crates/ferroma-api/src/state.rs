@@ -204,6 +204,121 @@ impl Drop for ConnectionGuard {
     }
 }
 
+/// A protocol listener managed by the Admin console.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedListener {
+    /// SMTP's MX, submission and configured implicit-TLS listeners.
+    Smtp,
+    /// IMAP's plaintext and configured implicit-TLS listeners.
+    Imap,
+    /// The HTTP JMAP surface, including discovery, methods, uploads and downloads.
+    Jmap,
+}
+
+impl ManagedListener {
+    /// Stable key used in the settings table.
+    pub fn setting_key(self) -> &'static str {
+        match self {
+            ManagedListener::Smtp => "runtime.smtp.enabled",
+            ManagedListener::Imap => "runtime.imap.enabled",
+            ManagedListener::Jmap => "runtime.jmap.enabled",
+        }
+    }
+
+    /// Stable API path segment.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ManagedListener::Smtp => "smtp",
+            ManagedListener::Imap => "imap",
+            ManagedListener::Jmap => "jmap",
+        }
+    }
+}
+
+/// Runtime state of one listener family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ManagedListenerState {
+    /// Whether this process can start this protocol (not excluded by `--only` or config).
+    pub available: bool,
+    /// Whether it is accepting connections right now.
+    pub enabled: bool,
+}
+
+/// Runtime state of both protocol listener families.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ManagedListenerStates {
+    /// SMTP listener family.
+    pub smtp: ManagedListenerState,
+    /// IMAP listener family.
+    pub imap: ManagedListenerState,
+    /// JMAP HTTP surface.
+    pub jmap: ManagedListenerState,
+}
+
+/// The server-owned control plane for SMTP and IMAP listeners.
+///
+/// `ferroma-api` intentionally does not depend on the protocol crates. The binary owns
+/// sockets and implements this trait; routes only see this narrow, JSON-safe control
+/// seam, exactly as the outbound mail path uses [`MailSender`].
+pub trait ListenerControl: Send + Sync + std::fmt::Debug {
+    /// Current effective listener state.
+    fn states(&self) -> ManagedListenerStates;
+
+    /// Apply a persisted Admin choice to the running process.
+    fn set_enabled(
+        &self,
+        listener: ManagedListener,
+        enabled: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<ManagedListenerState>> + Send + '_>>;
+}
+
+/// The inert control used by unit tests and API-only embeddings.
+#[derive(Debug)]
+pub struct StaticListenerControl {
+    states: ManagedListenerStates,
+}
+
+impl StaticListenerControl {
+    /// Report the configuration's boot-time listener selection.
+    pub fn from_config(config: &Config) -> Self {
+        StaticListenerControl {
+            states: ManagedListenerStates {
+                smtp: ManagedListenerState {
+                    available: config.smtp.enabled,
+                    enabled: config.smtp.enabled,
+                },
+                imap: ManagedListenerState {
+                    available: config.imap.enabled,
+                    enabled: config.imap.enabled,
+                },
+                jmap: ManagedListenerState {
+                    available: config.api.enabled,
+                    enabled: config.api.enabled,
+                },
+            },
+        }
+    }
+}
+
+impl ListenerControl for StaticListenerControl {
+    fn states(&self) -> ManagedListenerStates {
+        self.states
+    }
+
+    fn set_enabled(
+        &self,
+        listener: ManagedListener,
+        _enabled: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<ManagedListenerState>> + Send + '_>> {
+        Box::pin(async move {
+            Err(FerromaError::Conflict(format!(
+                "{} is not runtime-controllable in this process",
+                listener.as_str()
+            )))
+        })
+    }
+}
+
 /// One in-flight chunked attachment upload (`fcp.md` §6).
 ///
 /// The chunks themselves live in memory: `client.attachment_chunk_size` is 1 MiB by
@@ -318,12 +433,7 @@ impl UploadRegistry {
     }
 
     /// Store one chunk against the attachment it belongs to.
-    pub fn put_chunk_for_attachment(
-        &self,
-        attachment_id: i64,
-        index: u64,
-        data: Vec<u8>,
-    ) -> bool {
+    pub fn put_chunk_for_attachment(&self, attachment_id: i64, index: u64, data: Vec<u8>) -> bool {
         let Some(token) = self.sessions.lock().ok().and_then(|guard| {
             guard
                 .iter()
@@ -410,10 +520,7 @@ pub const STUB_SUBJECT: &str = "\u{1}ferroma-upload-stub";
 
 impl MessageStub {
     /// The placeholder for `user`, created on first use.
-    pub async fn ensure(
-        app: &AppState,
-        user: UserId,
-    ) -> Result<MessageStub, FerromaError> {
+    pub async fn ensure(app: &AppState, user: UserId) -> Result<MessageStub, FerromaError> {
         let mailbox = app
             .repos
             .mailboxes
@@ -516,6 +623,8 @@ pub struct AppState {
     pub started_wall: DateTime<Utc>,
     /// Live SMTP/IMAP connection counts.
     pub connections: Arc<ConnTracker>,
+    /// Server-owned runtime control of SMTP and IMAP listeners.
+    pub listeners: Arc<dyn ListenerControl>,
     /// In-flight chunked attachment uploads.
     pub uploads: Arc<UploadRegistry>,
     /// The message operations every mail surface shares.
@@ -604,6 +713,7 @@ impl AppState {
             Arc::clone(&config),
             Arc::clone(&mail),
         );
+        let listeners: Arc<dyn ListenerControl> = Arc::new(StaticListenerControl::from_config(&config));
         AppState {
             repos,
             database: None,
@@ -618,6 +728,7 @@ impl AppState {
             started_at: Instant::now(),
             started_wall: Utc::now(),
             connections: Arc::new(ConnTracker::new()),
+            listeners,
             uploads: Arc::new(UploadRegistry::new()),
             mail_service,
             logs: crate::logbuf::LogSink::new(Arc::new(crate::logbuf::LogBuffer::default())),
@@ -654,6 +765,13 @@ impl AppState {
     #[must_use]
     pub fn with_connections(mut self, connections: Arc<ConnTracker>) -> Self {
         self.connections = connections;
+        self
+    }
+
+    /// Install the binary's runtime SMTP/IMAP listener controller.
+    #[must_use]
+    pub fn with_listener_control(mut self, listeners: Arc<dyn ListenerControl>) -> Self {
+        self.listeners = listeners;
         self
     }
 
@@ -944,6 +1062,30 @@ mod tests {
         assert_eq!(state.maildir.root(), dir.path().join("mail").as_path());
         assert_eq!(state.attachments.root(), dir.path().join("att").as_path());
         assert_eq!(state.connections.smtp_connections(), 0);
+    }
+
+    #[test]
+    fn static_listener_control_reports_configured_availability_and_refuses_changes() {
+        let mut config = Config::default();
+        config.smtp.enabled = true;
+        config.imap.enabled = false;
+        let control = StaticListenerControl::from_config(&config);
+        let states = control.states();
+        assert!(states.smtp.available && states.smtp.enabled);
+        assert!(!states.imap.available && !states.imap.enabled);
+        assert!(states.jmap.available && states.jmap.enabled);
+        assert_eq!(ManagedListener::Smtp.setting_key(), "runtime.smtp.enabled");
+        assert_eq!(ManagedListener::Imap.setting_key(), "runtime.imap.enabled");
+        assert_eq!(ManagedListener::Jmap.setting_key(), "runtime.jmap.enabled");
+    }
+
+    #[tokio::test]
+    async fn static_listener_control_never_claims_to_apply_a_runtime_change() {
+        let control = StaticListenerControl::from_config(&Config::default());
+        assert!(control
+            .set_enabled(ManagedListener::Smtp, false)
+            .await
+            .is_err());
     }
 
     #[test]

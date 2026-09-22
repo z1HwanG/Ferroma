@@ -239,8 +239,26 @@ export function normalizeAttachment(value) {
     contentType: String(pick(source, ['content_type', 'mime', 'type'], 'application/octet-stream')),
     sizeBytes: num(pick(source, ['size_bytes', 'size'], 0), 0),
     sha256: pick(source, ['sha256'], null),
+    isInline: bool(pick(source, ['is_inline', 'inline'], false)),
+    contentId: contentIdOf(pick(source, ['content_id', 'cid'], null)),
     raw: source,
   };
+}
+
+/**
+ * A Content-ID as it appears in a `cid:` URL: no angle brackets, no scheme.
+ *
+ * Delivery stores the bare id, but a message may quote it as `<logo@host>` and the
+ * HTML may write `cid:logo@host`. Comparing either side with the brackets still on
+ * misses every image.
+ *
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function contentIdOf(value) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim().replace(/^cid:/i, '').replace(/^<|>$/g, '').trim();
+  return text === '' ? null : text;
 }
 
 /* ------------------------------------------------------------------- messages */

@@ -31,7 +31,7 @@ use ferroma_sync::{ChangeKind, SyncPage, SyncRequest};
 use serde::{Deserialize, Serialize};
 
 use crate::error::ApiError;
-use crate::extract::{ClientAuth, Pagination, PaginationQuery, Page};
+use crate::extract::{ClientAuth, Page, Pagination, PaginationQuery};
 use crate::routes::mail::mailboxes::mailbox_tree;
 use crate::routes::mail::messages::{
     batch_messages, by_kind, detail_response, list_messages, parse_instant, summary_response,
@@ -221,12 +221,8 @@ pub async fn client_message_raw(
     client: ClientAuth,
     Path(id): Path<i64>,
 ) -> Result<axum::response::Response, ApiError> {
-    crate::routes::mail::messages::get_raw_message(
-        State(state),
-        management_view(&client),
-        Path(id),
-    )
-    .await
+    crate::routes::mail::messages::get_raw_message(State(state), management_view(&client), Path(id))
+        .await
 }
 
 /// The `POST /api/v1/client/messages` body.
@@ -359,23 +355,29 @@ pub async fn client_patch_message(
     Json(request): Json<ClientPatchRequest>,
 ) -> Result<Json<MessageSummaryResponse>, ApiError> {
     let user_id = client.user_id();
-    let updated = idempotent(&state, request.operation_id.as_deref(), user_id, "patch_message", || {
-        let state = state.clone();
-        let request = request.clone();
-        async move {
-            state
-                .mail_service
-                .set_message_flags(
-                    MessageId::new(id),
-                    user_id,
-                    request.seen,
-                    request.flagged,
-                    request.answered,
-                    request.deleted,
-                )
-                .await
-        }
-    })
+    let updated = idempotent(
+        &state,
+        request.operation_id.as_deref(),
+        user_id,
+        "patch_message",
+        || {
+            let state = state.clone();
+            let request = request.clone();
+            async move {
+                state
+                    .mail_service
+                    .set_message_flags(
+                        MessageId::new(id),
+                        user_id,
+                        request.seen,
+                        request.flagged,
+                        request.answered,
+                        request.deleted,
+                    )
+                    .await
+            }
+        },
+    )
     .await?;
     Ok(Json(summary_response(&state, &updated).await?))
 }
@@ -424,7 +426,14 @@ pub async fn client_star(
 ) -> Result<Json<MessageSummaryResponse>, ApiError> {
     let updated = state
         .mail_service
-        .set_message_flags(MessageId::new(id), client.user_id(), None, Some(true), None, None)
+        .set_message_flags(
+            MessageId::new(id),
+            client.user_id(),
+            None,
+            Some(true),
+            None,
+            None,
+        )
         .await?;
     Ok(Json(summary_response(&state, &updated).await?))
 }
@@ -682,13 +691,7 @@ pub async fn client_create_draft(
     state: State<AppState>,
     client: ClientAuth,
     request: Json<crate::routes::mail::drafts::DraftRequest>,
-) -> Result<
-    (
-        StatusCode,
-        Json<crate::routes::mail::shapes::DraftResponse>,
-    ),
-    ApiError,
-> {
+) -> Result<(StatusCode, Json<crate::routes::mail::shapes::DraftResponse>), ApiError> {
     crate::routes::mail::drafts::create_draft(state, management_view(&client), request).await
 }
 
@@ -753,12 +756,9 @@ pub async fn client_revoke_device(
     Path(id): Path<i64>,
 ) -> Result<Json<DeviceResponse>, ApiError> {
     let device_id = ferroma_core::DeviceId::new(id);
-    let device = crate::routes::mail::ownership::owned_device(
-        &state.repos,
-        device_id,
-        client.user_id(),
-    )
-    .await?;
+    let device =
+        crate::routes::mail::ownership::owned_device(&state.repos, device_id, client.user_id())
+            .await?;
 
     let revoked_sessions = state
         .auth
@@ -822,7 +822,14 @@ async fn set_seen(
 ) -> Result<Json<MessageSummaryResponse>, ApiError> {
     let updated = state
         .mail_service
-        .set_message_flags(MessageId::new(id), client.user_id(), Some(seen), None, None, None)
+        .set_message_flags(
+            MessageId::new(id),
+            client.user_id(),
+            Some(seen),
+            None,
+            None,
+            None,
+        )
         .await?;
     Ok(Json(summary_response(state, &updated).await?))
 }
@@ -1027,7 +1034,8 @@ mod tests {
             serde_json::from_value(serde_json::json!({})).expect("must parse");
         assert!(query.operation_id.is_none());
         let query: OperationQuery =
-            serde_json::from_value(serde_json::json!({ "operation_id": "op_1" })).expect("must parse");
+            serde_json::from_value(serde_json::json!({ "operation_id": "op_1" }))
+                .expect("must parse");
         assert_eq!(query.operation_id.as_deref(), Some("op_1"));
 
         let patch: ClientPatchRequest =
@@ -1052,7 +1060,9 @@ mod tests {
 
     #[test]
     fn the_device_list_wraps_the_devices() {
-        let response = DeviceList { devices: Vec::new() };
+        let response = DeviceList {
+            devices: Vec::new(),
+        };
         let json = serde_json::to_value(&response).expect("must serialise");
         assert_eq!(json["devices"], serde_json::json!([]));
     }

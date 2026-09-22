@@ -169,6 +169,7 @@ views.logs = async () => (await import('./views/logs.js')).render;
 views.storage = async () => (await import('./views/storage.js')).render;
 views.devices = async () => (await import('./views/devices.js')).render;
 views.tls = async () => (await import('./views/tls.js')).render;
+views.services = async () => (await import('./views/services.js')).render;
 views.audit = async () => (await import('./views/audit.js')).render;
 views.settings = async () => (await import('./views/settings.js')).render;
 views.setup = async () => (await import('./views/setup.js')).render;

@@ -212,8 +212,14 @@ pub async fn download_attachment(
         .unwrap_or_else(|| format!("\"att-{}\"", row.id));
     let etag_value = format!("\"{}\"", etag.trim_matches('"'));
 
-    if let Some(inm) = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()) {
-        if inm.split(',').any(|candidate| candidate.trim() == etag_value) {
+    if let Some(inm) = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+    {
+        if inm
+            .split(',')
+            .any(|candidate| candidate.trim() == etag_value)
+        {
             let mut response = StatusCode::NOT_MODIFIED.into_response();
             insert_header(&mut response, header::ETAG, &etag_value);
             return Ok(response);
@@ -229,7 +235,9 @@ pub async fn download_attachment(
     let mut response = match range {
         Some((start, end)) => {
             let length = (end - start + 1) as usize;
-            let bytes = state.attachments.read_range(&row.storage_path, start, length)?;
+            let bytes = state
+                .attachments
+                .read_range(&row.storage_path, start, length)?;
             let mut response = (StatusCode::PARTIAL_CONTENT, Body::from(bytes)).into_response();
             insert_header(
                 &mut response,
@@ -556,7 +564,10 @@ pub fn sanitize_filename(raw: &str) -> String {
 
 /// A `Content-Disposition` value that cannot break out of its quoting.
 fn content_disposition(filename: Option<&str>) -> String {
-    match filename.map(sanitize_filename).filter(|name| !name.is_empty()) {
+    match filename
+        .map(sanitize_filename)
+        .filter(|name| !name.is_empty())
+    {
         Some(name) => format!("attachment; filename=\"{name}\""),
         None => "attachment".to_string(),
     }
@@ -766,9 +777,8 @@ mod tests {
                 .expect("must parse");
         assert_eq!(request.size_bytes, 10);
         assert!(request.content_type.is_none());
-        let bad = serde_json::from_value::<UploadInitRequest>(
-            serde_json::json!({ "filename": "a.bin" }),
-        );
+        let bad =
+            serde_json::from_value::<UploadInitRequest>(serde_json::json!({ "filename": "a.bin" }));
         assert!(bad.is_err(), "size_bytes is required");
     }
 

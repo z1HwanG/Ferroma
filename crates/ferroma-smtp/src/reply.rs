@@ -176,6 +176,11 @@ impl Reply {
         Reply::line(421, "4.4.2 Idle timeout, closing connection")
     }
 
+    /// `421 4.3.2 Service disabled` — an administrator stopped this listener.
+    pub fn service_disabled() -> Self {
+        Reply::line(421, "4.3.2 Service disabled by administrator")
+    }
+
     // --- greetings ----------------------------------------------------
 
     /// The `EHLO` extension block.

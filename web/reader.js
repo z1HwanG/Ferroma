@@ -95,9 +95,165 @@ const FRAME_QUOTE_CSS = `<style>
 
 const FRAME_BASE = '<base target="_blank">' + FRAME_QUOTE_CSS;
 
-/** A message body ready for `srcdoc`, in the colour scheme currently in force. */
+/**
+ * A message body ready for `srcdoc`, in the colour scheme currently in force.
+ *
+ * `html` has already had its `cid:` images rewritten to `data:` URLs. The frame is an
+ * opaque origin, so it cannot fetch `/api/v1/attachments/…` with this page's session;
+ * the bytes have to travel inside the document.
+ *
+ * @param {string} html
+ */
 function frameSource(html) {
   return (darkMode() ? DARK_MESSAGE_CSS : '') + FRAME_BASE + html;
+}
+
+/** Inline images already fetched for the message currently on screen, keyed by attachment id. */
+const inlineImages = new Map();
+/** Attachment ids that were asked for and failed. They are not asked for again. */
+const inlineImagesFailed = new Set();
+/** The message those images belong to. A different message must not reuse them. */
+let inlineImagesFor = 0;
+
+/**
+ * Rewrite `cid:` image sources to data URLs of the matching inline parts.
+ *
+ * A `cid:` URL names an attachment by its Content-ID; a browser cannot fetch it, so an
+ * `<img src="cid:…">` renders as the broken-image box. The matching part is already
+ * stored, and the parent page (which holds the session) reads it and inlines the bytes.
+ * Remote `http:`/`https:` images are left untouched: loading them would confirm the
+ * message was opened.
+ *
+ * @param {string} html
+ * @param {Array<{id: number, contentId: string|null, contentType: string}>} attachments
+ */
+function inlineCidImages(html, attachments) {
+  const byCid = new Map();
+  for (const attachment of attachments) {
+    if (!attachment.contentId) continue;
+    const bytes = inlineImages.get(attachment.id);
+    if (!bytes) continue;
+    byCid.set(attachment.contentId.toLowerCase(), { attachment, bytes });
+  }
+  if (byCid.size === 0) return html;
+  return html.replace(
+    /(<img\b[^>]*?\bsrc\s*=\s*)(["'])cid:([^"']+)\2/gi,
+    (match, before, quote, cid) => {
+      const found = byCid.get(decodeCid(cid));
+      if (!found) return match;
+      const type = imageContentType(found.attachment.contentType);
+      if (!type) return match;
+      return `${before}${quote}data:${type};base64,${found.bytes}${quote}`;
+    },
+  );
+}
+
+/**
+ * A Content-ID as it is written inside `cid:`, comparable with the stored one.
+ *
+ * `decodeURIComponent` throws on a stray `%`, and this runs while painting the message,
+ * so a malformed id must come back as text rather than fail the whole body.
+ *
+ * @param {string} value
+ */
+function decodeCid(value) {
+  let text = String(value);
+  try {
+    text = decodeURIComponent(text);
+  } catch {
+    /* Keep the raw token; it simply will not match. */
+  }
+  return text.replace(/^<|>$/g, '').trim().toLowerCase();
+}
+
+/**
+ * An image content type safe to put in a `data:` URL.
+ *
+ * SVG is excluded on purpose: a `data:image/svg+xml` document can carry script, and the
+ * sanitiser already refuses that scheme. Anything that is not an image stays a download.
+ *
+ * @param {string} contentType
+ * @returns {string|null}
+ */
+function imageContentType(contentType) {
+  const type = String(contentType || '').split(';')[0].trim().toLowerCase();
+  if (!type.startsWith('image/') || type.includes('svg') || type.includes('script')) return null;
+  return type;
+}
+
+/**
+ * Fetch the inline images of the message on screen, then repaint the frame.
+ *
+ * Only parts the HTML actually references are fetched, and only image types. The result
+ * is cached per message so toggling Rich/Plain, or a theme change, does not download
+ * the same logo again.
+ *
+ * @param {object} message
+ */
+async function loadInlineImages(message) {
+  const wanted = referencedInlineImages(message);
+  if (wanted.length === 0) return;
+  inlineImagesFor = message.id;
+  const missing = wanted.filter(
+    (attachment) => !inlineImages.has(attachment.id) && !inlineImagesFailed.has(attachment.id),
+  );
+  await Promise.all(missing.map((attachment) => fetchInlineImage(message.id, attachment)));
+  if (inlineImagesFor !== message.id) return;
+  const current = getState().selected;
+  if (current && current.id === message.id) renderBody();
+}
+
+/**
+ * The inline image parts this message's HTML names with a `cid:` URL.
+ *
+ * @param {object} message
+ */
+function referencedInlineImages(message) {
+  if (typeof message.html !== 'string' || message.html === '') return [];
+  const wanted = new Set();
+  for (const match of message.html.matchAll(/\bsrc\s*=\s*["']cid:([^"']+)["']/gi)) {
+    wanted.add(decodeCid(match[1]));
+  }
+  return message.attachments.filter(
+    (attachment) =>
+      attachment.contentId &&
+      wanted.has(attachment.contentId.toLowerCase()) &&
+      imageContentType(attachment.contentType),
+  );
+}
+
+/**
+ * Read one inline image and remember its base64.
+ *
+ * A failure leaves the image as the broken box it already was; it must not fail the
+ * message, which is readable without its logo.
+ *
+ * @param {number} messageId
+ * @param {{id: number}} attachment
+ */
+async function fetchInlineImage(messageId, attachment) {
+  try {
+    const response = await request(`${API_BASE}/attachments/${attachment.id}`, { raw: true, toast: false });
+    const buffer = await response.arrayBuffer();
+    if (inlineImagesFor !== messageId) return;
+    inlineImages.set(attachment.id, bytesToBase64(new Uint8Array(buffer)));
+  } catch {
+    if (inlineImagesFor === messageId) inlineImagesFailed.add(attachment.id);
+  }
+}
+
+/**
+ * Base64 of a byte array, in chunks so a large image does not blow the call stack.
+ *
+ * @param {Uint8Array} bytes
+ */
+function bytesToBase64(bytes) {
+  let binary = '';
+  const chunk = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunk));
+  }
+  return btoa(binary);
 }
 
 /** @type {string} */
@@ -312,8 +468,23 @@ function renderBody() {
   if (showHtml) {
     setHidden(textNode, true);
     setHidden(frame, false);
-    const html = frameSource(message.html);
+    if (inlineImagesFor !== message.id) {
+      inlineImages.clear();
+      inlineImagesFailed.clear();
+      inlineImagesFor = message.id;
+    }
+    const html = frameSource(inlineCidImages(message.html, message.attachments));
     if (frame.getAttribute('srcdoc') !== html) frame.setAttribute('srcdoc', html);
+    // The first paint shows the message immediately; images arrive on the repaint that
+    // follows, once their bytes are in. A message with none never takes this path, and a
+    // part that failed to load is not requested again.
+    if (
+      referencedInlineImages(message).some(
+        (attachment) => !inlineImages.has(attachment.id) && !inlineImagesFailed.has(attachment.id),
+      )
+    ) {
+      loadInlineImages(message);
+    }
     return;
   }
 

@@ -13,7 +13,7 @@
 //! ferroma user create …             # administration
 //! ferroma domain create …
 //! ferroma dkim generate --domain example.com
-//! ferroma storage stats|gc|verify
+//! ferroma storage stats|gc|verify|export|import
 //! ferroma sync prune
 //! ferroma healthcheck --url http://127.0.0.1:8080/api/v1/health
 //! ferroma version
@@ -379,6 +379,38 @@ pub enum StorageCommand {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Write one archive containing both halves of the store.
+    ///
+    /// The database dump and the `ferroma-data` volume — Maildir, attachment blobs,
+    /// `dkim/`, `<data_dir>/database.json` and the generated `jwt_secret` — are taken
+    /// together, because neither half alone is a backup. `--to` is a local path or
+    /// an `s3://` / `webdav://` URL; S3 and WebDAV are destinations for that same
+    /// archive, not a second backup system.
+    Export {
+        /// Where the archive goes: a local path, or an `s3://` / `webdav://` URL.
+        #[arg(long, value_name = "DEST")]
+        to: String,
+        /// Allow exporting while `ferroma serve` is running.
+        ///
+        /// The archive is labelled `live` in its manifest: a running copy can miss a
+        /// delivery in progress, but Maildir's atomic rename means it cannot contain
+        /// a half-written message.
+        #[arg(long)]
+        live: bool,
+    },
+    /// Restore an archive into an empty database and an empty data directory.
+    ///
+    /// The server must be stopped. A non-empty target is refused unless `--replace`,
+    /// because restoring over an existing store is a merge — which is how a week of
+    /// mail gets lost.
+    Import {
+        /// The archive: a local path, or an `s3://` / `webdav://` URL.
+        #[arg(long, value_name = "SRC")]
+        from: String,
+        /// Replace a non-empty database and data directory instead of refusing.
+        #[arg(long)]
+        replace: bool,
+    },
 }
 
 /// `ferroma sync …`
@@ -532,6 +564,10 @@ mod tests {
             vec!["ferroma", "storage", "stats"],
             vec!["ferroma", "storage", "verify", "--details"],
             vec!["ferroma", "storage", "gc", "--dry-run"],
+            vec!["ferroma", "storage", "export", "--to", "backup.tar"],
+            vec!["ferroma", "storage", "export", "--to", "s3://bucket/key", "--live"],
+            vec!["ferroma", "storage", "import", "--from", "backup.tar"],
+            vec!["ferroma", "storage", "import", "--from", "backup.tar", "--replace"],
             vec!["ferroma", "sync", "prune"],
             vec!["ferroma", "healthcheck"],
             vec!["ferroma", "version"],
@@ -575,6 +611,18 @@ mod tests {
         assert!(matches!(
             Cli::try_parse_from(["ferroma", "storage", "gc", "--dry-run"]).unwrap().command,
             Command::Storage(StorageCommand::Gc { dry_run: true })
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["ferroma", "storage", "export", "--to", "backup.tar", "--live"])
+                .unwrap()
+                .command,
+            Command::Storage(StorageCommand::Export { live: true, .. })
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["ferroma", "storage", "import", "--from", "backup.tar", "--replace"])
+                .unwrap()
+                .command,
+            Command::Storage(StorageCommand::Import { replace: true, .. })
         ));
         assert!(matches!(
             Cli::try_parse_from(["ferroma", "user", "set-enabled", "alice@example.com", "false"])

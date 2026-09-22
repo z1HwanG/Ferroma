@@ -123,8 +123,7 @@ impl ReplayGapFrame {
 
     /// Render the frame as JSON text.
     pub fn to_text(&self) -> String {
-        serde_json::to_string(self)
-            .unwrap_or_else(|_| format!("{{\"{REPLAY_GAP_TYPE}\":true}}"))
+        serde_json::to_string(self).unwrap_or_else(|_| format!("{{\"{REPLAY_GAP_TYPE}\":true}}"))
     }
 
     /// The frame as a WebSocket text message.
@@ -159,9 +158,9 @@ pub fn parse_client_frame(text: &str) -> Option<ClientFrame> {
 
 /// Build the frame that carries one event.
 pub fn event_frame(envelope: &EventEnvelope) -> Message {
-    let value = envelope
-        .to_wire()
-        .unwrap_or_else(|_| serde_json::json!({ "type": envelope.wire_type(), "seq": envelope.seq }));
+    let value = envelope.to_wire().unwrap_or_else(
+        |_| serde_json::json!({ "type": envelope.wire_type(), "seq": envelope.seq }),
+    );
     Message::Text(Utf8Bytes::from(value.to_string()))
 }
 
@@ -206,11 +205,7 @@ impl FrameBuilder {
     ///
     /// Returns `(gap, frames)`: `gap` is true when the client's cursor predates the
     /// oldest buffered event, so it must run a sync regardless of what is replayed.
-    pub fn replay(
-        &self,
-        bus: &ferroma_events::EventBus,
-        cursor: i64,
-    ) -> (bool, Vec<Message>) {
+    pub fn replay(&self, bus: &ferroma_events::EventBus, cursor: i64) -> (bool, Vec<Message>) {
         let oldest = oldest_buffered_seq(bus);
         let gap = match oldest {
             Some(oldest) => cursor < oldest.saturating_sub(1),
@@ -459,9 +454,18 @@ mod tests {
 
     #[test]
     fn client_frames_parse_and_unknown_ones_are_ignored() {
-        assert_eq!(parse_client_frame("{\"type\":\"ping\"}"), Some(ClientFrame::Ping));
-        assert_eq!(parse_client_frame("{\"type\":\"pong\"}"), Some(ClientFrame::Pong));
-        assert_eq!(parse_client_frame("{\"type\":\"close\"}"), Some(ClientFrame::Close));
+        assert_eq!(
+            parse_client_frame("{\"type\":\"ping\"}"),
+            Some(ClientFrame::Ping)
+        );
+        assert_eq!(
+            parse_client_frame("{\"type\":\"pong\"}"),
+            Some(ClientFrame::Pong)
+        );
+        assert_eq!(
+            parse_client_frame("{\"type\":\"close\"}"),
+            Some(ClientFrame::Close)
+        );
         assert_eq!(parse_client_frame("{\"type\":\"teleport\"}"), None);
         assert_eq!(parse_client_frame("not json"), None);
         assert_eq!(parse_client_frame(""), None);
@@ -474,7 +478,9 @@ mod tests {
         assert_ne!(builder.filter(), EventFilter::All);
         assert_eq!(builder.scope(), EventScope::User(UserId::new(7)));
         // The filter is exact: a mailbox scope is not delivered.
-        assert!(!builder.filter().matches(&EventScope::Mailbox(MailboxId::new(3))));
+        assert!(!builder
+            .filter()
+            .matches(&EventScope::Mailbox(MailboxId::new(3))));
         assert!(!builder.filter().matches(&EventScope::User(UserId::new(8))));
         assert!(!builder.filter().matches(&EventScope::System));
     }

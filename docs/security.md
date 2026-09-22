@@ -894,18 +894,20 @@ away.
 
 | Secret | Where it must live | Where it must not |
 |---|---|---|
-| `api.jwt_secret` / `FERROMA_JWT_SECRET` | environment, or a secret manager injected as an environment variable; when neither is set, the server generates one into `<data_dir>/jwt_secret` | the config file in version control; `.env` or a `ferroma-data` archive left readable by others — no backup tooling ships, so nothing excludes credentials for you |
+| `api.jwt_secret` / `FERROMA_JWT_SECRET` | environment, or a secret manager injected as an environment variable; when neither is set, the server generates one into `<data_dir>/jwt_secret` | the config file in version control; `.env` or a `ferroma storage export` archive left readable by others — the command excludes nothing, so the archive holds the secret |
 | `POSTGRES_PASSWORD` | `.env`, gitignored, or a secret manager | the compose files, which interpolate `${POSTGRES_PASSWORD:?…}` and refuse to start without it |
 | DKIM private key | `dkim.private_key_path` on a read-only mount, or `domains.dkim_private_key` | the public `GET /api/v1/domains/:id/dkim` response, which returns only the `p=` public key |
 | TLS private key | `tls.key_path`, mounted read-only (`./tls:/etc/ferroma/tls:ro`) | the image |
 | User passwords | nowhere, ever | — |
 
-No backup tooling ships any more, so the protection of a backup is entirely the
-operator's. That matters because a backup of the data volume is secret-bearing: it
-contains the DKIM private key and, when the secret was generated rather than
-configured, `<data_dir>/jwt_secret`; the volume's `<data_dir>/database.json`
-remembers the database address, including any password carried in the URL. Encrypt
-the archive, or restrict it as tightly as the database itself.
+`ferroma storage export` writes one archive of both halves and excludes nothing from
+it, so the protection of that archive is entirely the operator's. That matters
+because the archive is secret-bearing: it contains the DKIM private key and, when
+the secret was generated rather than configured, `<data_dir>/jwt_secret`; the
+volume's `<data_dir>/database.json` remembers the database address, including any
+password carried in the URL. S3 and WebDAV credentials are read from the
+environment and are not written into the archive. Encrypt the archive, or restrict
+it as tightly as the database itself.
 
 Practices the repository already enforces:
 

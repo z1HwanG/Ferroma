@@ -12,7 +12,7 @@ a section a release has nothing for is left out rather than written empty.
 
 The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
-## [Unreleased]
+## [0.1.9] — 2026-09-22
 
 ### Fixed
 
@@ -36,7 +36,37 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
   directly in `the_sync_cursor_sees_the_delivery`, and a client speaking FCP end to end belongs to the
   client's own repository.
 
+- **A narrow window shows the message, not a strip of header.** Below 900px the folder and list
+  panes are hidden, but the grid kept their columns, so the reading pane — the only box left — was
+  placed in the 200px first column and the rest of the window stayed empty. Subject, addresses and
+  the action row stacked into a vertical strip and the body sat below the fold. Opening a message
+  at that width is now a single column that takes the window.
+
+- **An inline image in a message is the image, not a broken box.** An `<img src="cid:…">` names an
+  attachment by its Content-ID, and a browser cannot fetch that. The reading frame is an opaque
+  origin, so it also cannot fetch `/api/v1/attachments/…` with the page's session. The parent page
+  now reads the matching image part and rewrites the `cid:` source to a `data:` URL before the
+  frame is composed. Remote `http:`/`https:` images are still not loaded — that would confirm the
+  message was opened — and SVG stays out, because a `data:image/svg+xml` document can carry script.
+
+- **The account menu's Admin console looks like the other items.** It is the only link in a menu of
+  buttons, and the page-wide link colour painted it blue between Settings and Sign out. Menu items
+  now share the body's colour and carry no underline.
+
 ### Added
+
+- **`ferroma storage export` / `ferroma storage import` — one archive, both halves.** A manual backup
+  and a move to a new server are the same operation, and neither half alone is a backup. `export --to`
+  writes one tar: a PostgreSQL custom-format dump, the Maildir, the attachment blobs, `dkim/`,
+  `<data_dir>/database.json`, the generated `jwt_secret`, and a `manifest.json` (Ferroma version, time,
+  `pg_dump` major version, file counts, a SHA-256 of every member). `--to` is a local path or an
+  `s3://` / `webdav://` URL; S3 and WebDAV are destinations for that same archive, not a second backup
+  system, and their credentials come from the environment. Export refuses while `ferroma serve` is up
+  unless `--live`, which the manifest records. Import verifies the manifest, refuses a target that
+  already has accounts or files unless `--replace`, refuses a dump whose `pg_dump` major version is not
+  the server's, and runs `ferroma storage verify` afterwards — a mismatch exits non-zero. The runtime
+  image now ships `postgresql-client-16`, which is what the command shells out to. Scheduling and
+  off-site retention stay the operator's job: the retired backup sidecar is not back.
 
 - **The bootstrap setup page has the acceptance test it lacked.** A new e2e run starts a real server
   with no database configured and walks the whole first-run path over real sockets: the setup code is
@@ -46,6 +76,37 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
   an accepted POST migrates the database it is given, writes `database.json` into the data directory,
   and the same process comes up as a healthy `ferroma serve` on the same port — where the bootstrap
   endpoint no longer exists. Previously this mode was held only by in-memory unit tests of the router.
+
+- **JMAP is a session kind an existing database can grow into.** `sessions.kind` is a
+  check constraint, and a database created before JMAP does not list `jmap` in it, so
+  minting a JMAP token failed the insert. `migrations/0004_sessions_allow_jmap.sql`
+  drops that check and adds it back with `jmap` included. The kind is deliberately
+  not added to `0001_initial.sql`: sqlx checksums a migration's bytes, and editing
+  migration 1 makes every database that already applied it refuse to start with
+  `VersionMismatch`. A fresh database runs 0001 and then 0004, and ends at the same
+  constraint.
+
+- **A front-end file the image cannot read.** `admin/views/services.js` was mode
+  `0600`. `COPY` keeps the mode it is given, and the service runs as uid 10001, so
+  the file is a 404 and an Admin page that imports it never boots. A checkout
+  bind-mounted as `FERROMA__API__WEBMAIL_DIR` has the same problem, because that
+  path never passes through the Dockerfile's `chmod`. The file is `0644`, which is
+  what `tools/check-deploy.mjs` requires of everything under `web/`, `admin/`,
+  `shared/` and `config/`.
+
+- **`cargo clippy --workspace` is clean on 1.98, not merely free of errors.** The
+  two `manual_is_multiple_of` notes in the SMTP connection limiter, the needless
+  `as_deref_mut` on the IMAP shutdown watch, the nested `if` and the slice-from-clone
+  in the DNS report, the five-vector return of the JMAP address splitter, and the
+  SigV4 helper's ten arguments are all gone. The e2e bootstrap wait no longer
+  assigns a status it immediately overwrites.
+
+### Changed
+
+- **The storage document names the migrations that actually exist.** It claimed a
+  single 440-line file. There are four: 0001 creates the schema, 0002 comments it,
+  0003 lets a folder tombstone outlive its row, and 0004 admits `jmap`. It also
+  says why 0001 cannot be edited after it has been applied.
 
 ## [0.1.8] — 2026-09-21
 

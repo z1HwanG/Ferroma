@@ -393,10 +393,10 @@ impl ConnectionLimiter {
     fn prune_locked(&self, map: &mut HashMap<IpAddr, IpState>, now: DateTime<Utc>) {
         let ops = self.inner.ops_since_prune.fetch_add(1, Ordering::Relaxed) + 1;
         let crowded = map.len() >= self.tracked_ips;
-        if ops % PRUNE_EVERY as usize != 0 && !crowded {
+        if !ops.is_multiple_of(PRUNE_EVERY as usize) && !crowded {
             return;
         }
-        if ops % PRUNE_EVERY as usize == 0 {
+        if ops.is_multiple_of(PRUNE_EVERY as usize) {
             self.inner.ops_since_prune.store(0, Ordering::Relaxed);
         }
         map.retain(|_, state| !state.is_expired(now));

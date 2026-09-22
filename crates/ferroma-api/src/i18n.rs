@@ -116,11 +116,7 @@ impl Locale {
 
     /// Map one language tag onto a catalog, if this build has one.
     fn from_tag(tag: &str) -> Option<Locale> {
-        let primary = tag
-            .split(['-', '_'])
-            .next()?
-            .trim()
-            .to_ascii_lowercase();
+        let primary = tag.split(['-', '_']).next()?.trim().to_ascii_lowercase();
         match primary.as_str() {
             "zh" => Some(Locale::ZhCn),
             "en" => Some(Locale::En),
@@ -252,7 +248,10 @@ static EXACT: std::sync::LazyLock<std::collections::HashMap<&'static str, &'stat
             ("token expired", "令牌已过期"),
             ("token does not match its session", "令牌与会话不匹配"),
             ("rate limited", "请求过于频繁"),
-            ("the server could not complete the request", "服务器无法完成该请求"),
+            (
+                "the server could not complete the request",
+                "服务器无法完成该请求",
+            ),
             // Registration and credentials.
             ("password must not be blank", "密码不能为空"),
             ("device_uid must not be empty", "device_uid 不能为空"),
@@ -269,8 +268,14 @@ static EXACT: std::sync::LazyLock<std::collections::HashMap<&'static str, &'stat
                 "domain literals are not valid mailbox domains",
                 "不能使用域名标识（[..]）作为邮箱域名",
             ),
-            ("control character in quoted local part", "引号本地部分中含有控制字符"),
-            ("this server already has an administrator", "本服务器已存在管理员账号"),
+            (
+                "control character in quoted local part",
+                "引号本地部分中含有控制字符",
+            ),
+            (
+                "this server already has an administrator",
+                "本服务器已存在管理员账号",
+            ),
             (
                 "the setup wizard is disabled by api.enable_setup_wizard",
                 "初始化向导已被 api.enable_setup_wizard 关闭",
@@ -284,10 +289,22 @@ static EXACT: std::sync::LazyLock<std::collections::HashMap<&'static str, &'stat
 ///
 /// The value is substituted for `{}` in the template.
 static TEMPLATES: &[(&str, &str, &str)] = &[
-    ("upload chunk ", " has not been received", "上传分块 {} 尚未收到"),
-    ("from is not a valid address: ", "", "发件人不是有效地址：{}"),
+    (
+        "upload chunk ",
+        " has not been received",
+        "上传分块 {} 尚未收到",
+    ),
+    (
+        "from is not a valid address: ",
+        "",
+        "发件人不是有效地址：{}",
+    ),
     ("request body must be JSON: ", "", "请求体必须是 JSON：{}"),
-    ("malformed multipart body: ", "", "multipart 请求体格式错误：{}"),
+    (
+        "malformed multipart body: ",
+        "",
+        "multipart 请求体格式错误：{}",
+    ),
     ("invalid base64: ", "", "base64 无效：{}"),
     ("message body missing at ", "", "以下位置缺少邮件正文：{}"),
     ("malformed address: ", "", "地址格式错误：{}"),
@@ -351,7 +368,10 @@ mod tests {
 
     #[test]
     fn an_unsupported_language_falls_back_to_english() {
-        assert_eq!(Locale::from_accept_language(Some("fr-FR,de;q=0.9")), Locale::En);
+        assert_eq!(
+            Locale::from_accept_language(Some("fr-FR,de;q=0.9")),
+            Locale::En
+        );
         assert_eq!(Locale::from_accept_language(Some("*")), Locale::En);
     }
 
@@ -383,10 +403,7 @@ mod tests {
             Locale::ZhCn.message("unauthorized: current password is incorrect"),
             "未授权：当前密码不正确"
         );
-        assert_eq!(
-            Locale::ZhCn.message("rate limited"),
-            "请求过于频繁"
-        );
+        assert_eq!(Locale::ZhCn.message("rate limited"), "请求过于频繁");
         assert_eq!(
             Locale::ZhCn.message("invalid input: domain longer than 253 bytes"),
             "输入无效：域名长度超过 253 字节"
@@ -413,9 +430,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_scope_makes_the_locale_visible_to_the_handler_below_it() {
-        let seen = LOCALE
-            .scope(Locale::ZhCn, async { current() })
-            .await;
+        let seen = LOCALE.scope(Locale::ZhCn, async { current() }).await;
         assert_eq!(seen, Locale::ZhCn);
         // …and it does not leak out of the scope.
         assert_eq!(current(), Locale::En);

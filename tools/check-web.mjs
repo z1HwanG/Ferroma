@@ -50,6 +50,11 @@ const GLOBALS = new Set([
   'Notification', 'crypto', 'performance', 'history', 'location', 'navigator',
   'matchMedia', 'getComputedStyle', 'alert', 'confirm', 'prompt', 'TextEncoder',
   'TextDecoder', 'atob', 'btoa', 'define', 'require',
+  // Typed arrays are language built-ins. `new Uint8Array(buffer)` is how an
+  // inline image becomes base64; without these names the call looks undeclared.
+  'Uint8Array', 'Uint8ClampedArray', 'Uint16Array', 'Uint32Array', 'BigUint64Array',
+  'Int8Array', 'Int16Array', 'Int32Array', 'BigInt64Array', 'Float32Array',
+  'Float64Array', 'ArrayBuffer', 'DataView', 'SharedArrayBuffer',
 ]);
 
 const problems = [];

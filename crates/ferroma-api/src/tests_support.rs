@@ -90,8 +90,7 @@ impl MailSender for RecordingMailSender {
         message_id: MessageId,
         sender: String,
         recipients: Vec<String>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<SendOutcome>> + Send + '_>>
-    {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<SendOutcome>> + Send + '_>> {
         Box::pin(async move {
             if let Some(message) = &self.fail_with {
                 return Err(FerromaError::Network(message.clone()));

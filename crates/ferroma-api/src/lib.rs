@@ -59,21 +59,21 @@ pub mod tests_support;
 pub mod ws;
 
 pub use error::{ApiError, ErrorBody, ErrorDetail};
-pub use i18n::Locale;
 pub use extract::{
-    AdminUser, AuthUser, ClientAuth, ClientInfo, Page, Pagination, DEFAULT_LIMIT, MAX_LIMIT,
-    SESSION_COOKIE,
+    AdminUser, AuthUser, ClientAuth, ClientInfo, JmapAuth, Page, Pagination, DEFAULT_LIMIT,
+    MAX_LIMIT, SESSION_COOKIE,
 };
+pub use i18n::Locale;
 pub use logbuf::{floor_for, LogBuffer, LogEntry, LogFilter, LogSink, DEFAULT_CAPACITY};
 pub use router::{
-    body_limit, build, build_with_root, client_api, cors_layer, frontends_for_bootstrap,
+    body_limit, build, build_with_root, client_api, cors_layer, frontends_for_bootstrap, jmap_api,
     management_api, route_table, RootApp,
 };
 pub use routes::admin::system::setup_required;
 pub use service::{MessageService, SendRequest, SendResult};
 pub use state::{
-    AppState, ConnTracker, ConnectionGuard, MailSender, QueueMailSender, RestartSignal, SendOutcome,
-    UploadRegistry, UploadSession,
+    AppState, ConnTracker, ConnectionGuard, MailSender, QueueMailSender, RestartSignal,
+    SendOutcome, UploadRegistry, UploadSession,
 };
 
 /// The protocol version this crate's routes negotiate over.

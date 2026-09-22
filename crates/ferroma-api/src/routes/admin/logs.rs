@@ -23,7 +23,7 @@ use ferroma_core::{DeviceId, FerromaError, UserId};
 use serde::{Deserialize, Serialize};
 
 use crate::error::ApiError;
-use crate::extract::{AdminUser, DEFAULT_LIMIT, Pagination};
+use crate::extract::{AdminUser, Pagination, DEFAULT_LIMIT};
 use crate::logbuf::{LogEntry, LogFilter};
 use crate::routes::admin::domains::audit;
 use crate::routes::mail::shapes::DeviceResponse;
@@ -153,7 +153,11 @@ pub async fn list_logs(
     let limit = query.limit.unwrap_or(100).clamp(1, 1000);
     let offset = query.offset.unwrap_or(0).max(0);
 
-    if let Some(raw) = query.level.as_deref().filter(|level| !level.trim().is_empty()) {
+    if let Some(raw) = query
+        .level
+        .as_deref()
+        .filter(|level| !level.trim().is_empty())
+    {
         if crate::logbuf::parse_level(raw).is_none() {
             return Err(ApiError::new(FerromaError::Invalid(format!(
                 "unknown log level {raw:?}; expected error, warn, info, debug or trace"

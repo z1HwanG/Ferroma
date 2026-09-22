@@ -30,7 +30,7 @@ This image is the server binary, `ferroma`, on a minimal Debian base.
 | Entry point | `ferroma`, default command `serve --config /etc/ferroma/ferroma.toml` |
 | Runs as | uid/gid `10001` (`ferroma`), never root — `NET_BIND_SERVICE` is granted as a file capability so it can still bind 25/587/143 |
 | Ports | `25` SMTP (inbound MX), `587` submission, `465` SMTPS, `143` IMAP, `993` IMAPS, `8080` HTTP API + Webmail + Admin — `465` and `993` are off in the shipped configuration |
-| Volume | `/var/lib/ferroma` — the Maildir, the attachment blobs, the DKIM private key at `/var/lib/ferroma/dkim/<selector>.private`, and `<data_dir>/database.json` (the remembered database address, mode 0600; it holds the database password). **This is the volume to back up**, and backing it up is the operator's job: the image ships no backup tooling |
+| Volume | `/var/lib/ferroma` — the Maildir, the attachment blobs, the DKIM private key at `/var/lib/ferroma/dkim/<selector>.private`, and `<data_dir>/database.json` (the remembered database address, mode 0600; it holds the database password). **This is the volume to back up.** `ferroma storage export` writes it and the database into one archive; scheduling and keeping that archive off the machine stay the operator's job |
 | Config | read from `/etc/ferroma/ferroma.toml`; the image sets `FERROMA_CONFIG` and `FERROMA_DATA_DIR` |
 | Health check | `ferroma healthcheck --url http://127.0.0.1:8080/api/v1/health` |
 | Frontends | Webmail and Admin are baked in at `/usr/share/ferroma/{web,admin}`, with the modules both import at `/usr/share/ferroma/shared` |
@@ -51,7 +51,7 @@ driven by [`scripts/deploy.sh`](https://github.com/z1HwanG/Ferroma/blob/main/scr
 ```bash
 git clone https://github.com/z1HwanG/Ferroma && cd Ferroma
 cp .env.example .env      # set POSTGRES_PASSWORD; FERROMA_VERSION picks the release tag
-FERROMA_VERSION=0.1.8 docker compose -f docker-compose.prod.yml up -d
+FERROMA_VERSION=0.1.9 docker compose -f docker-compose.prod.yml up -d
 ```
 
 A bare `docker run` works, but PostgreSQL has to be reachable from the container and the
@@ -71,7 +71,7 @@ docker run -d --name ferroma \
   -p 25:25 -p 587:587 -p 143:143 -p 8080:8080 \
   -e DATABASE_URL=postgres://ferroma:secret@db:5432/ferroma \
   -v ferroma-data:/var/lib/ferroma \
-  wesukilaye/ferroma:0.1.8
+  wesukilaye/ferroma:0.1.9
 ```
 
 The full first-run path — migrations, the first domain, the first administrator, DKIM,
@@ -86,7 +86,7 @@ records is a mail server whose mail lands in Junk.
 
 | Tag | Meaning |
 |---|---|
-| `0.1.8` | an exact release — pin this in production |
+| `0.1.9` | an exact release — pin this in production |
 | `latest` | the newest release |
 
 Built for `linux/amd64` and `linux/arm64`. A release publishes `X.Y.Z` and `latest` and
@@ -128,7 +128,7 @@ AGPL-3.0-only — free to run, modify and self-host. The condition that matters 
 | 入口 | `ferroma`，默认命令 `serve --config /etc/ferroma/ferroma.toml` |
 | 运行身份 | uid/gid `10001`（`ferroma`），绝不以 root 运行。`NET_BIND_SERVICE` 以文件能力授予，因此仍能绑定 25/587/143 |
 | 端口 | `25` SMTP（收信 MX）、`587` 提交、`465` SMTPS、`143` IMAP、`993` IMAPS、`8080` HTTP API + Webmail + Admin。`465` 与 `993` 在随附配置中处于关闭状态 |
-| 数据卷 | `/var/lib/ferroma`：Maildir、附件的二进制存储、DKIM 私钥 `/var/lib/ferroma/dkim/<selector>.private`，以及 `<data_dir>/database.json`（记住的数据库地址，权限 0600，内含数据库密码）。**这是需要备份的数据卷**，备份由运维自己负责，因为镜像不提供任何备份工具 |
+| 数据卷 | `/var/lib/ferroma`：Maildir、附件的二进制存储、DKIM 私钥 `/var/lib/ferroma/dkim/<selector>.private`，以及 `<data_dir>/database.json`（记住的数据库地址，权限 0600，内含数据库密码）。**这是需要备份的数据卷。** `ferroma storage export` 把它和数据库写成一份归档；定时，以及把这份归档带离这台机器，仍由运维自己负责 |
 | 配置 | 从 `/etc/ferroma/ferroma.toml` 读取；镜像设置了 `FERROMA_CONFIG` 与 `FERROMA_DATA_DIR` |
 | 健康检查 | `ferroma healthcheck --url http://127.0.0.1:8080/api/v1/health` |
 | 前端 | Webmail 与 Admin 已内置在 `/usr/share/ferroma/{web,admin}`，两者共用的模块在 `/usr/share/ferroma/shared` |
@@ -141,7 +141,7 @@ AGPL-3.0-only — free to run, modify and self-host. The condition that matters 
 ```bash
 git clone https://github.com/z1HwanG/Ferroma && cd Ferroma
 cp .env.example .env      # 设置 POSTGRES_PASSWORD；FERROMA_VERSION 决定发布标签
-FERROMA_VERSION=0.1.8 docker compose -f docker-compose.prod.yml up -d
+FERROMA_VERSION=0.1.9 docker compose -f docker-compose.prod.yml up -d
 ```
 
 单独 `docker run` 也可以，但 PostgreSQL 必须能从容器内访问，并且 schema 已经存在。它需要的唯一环境变量是数据库地址：不设置 `DATABASE_URL` 时容器仍会启动，并在 `/` 提供一个询问地址的页面，一次性代码打印在日志里。其余由首次运行向导收集，邮件域、主机名、公开 URL 都归向导所有；未设置 `FERROMA_JWT_SECRET` 时，JWT 密钥会生成到数据卷（`<data_dir>/jwt_secret`）。隐式 TLS 端口是刻意不发布的：`465` 与 `993` 在随附配置中**处于关闭状态**（`smtps_port = 0`、`imaps_port = 0`），在这里发布它们只会映射到没人监听的端口，连接被拒绝，而不是给出任何人能读懂的错误。`docker-compose.prod.yml` 会把它们连同所需证书一起打开：
@@ -151,7 +151,7 @@ docker run -d --name ferroma \
   -p 25:25 -p 587:587 -p 143:143 -p 8080:8080 \
   -e DATABASE_URL=postgres://ferroma:secret@db:5432/ferroma \
   -v ferroma-data:/var/lib/ferroma \
-  wesukilaye/ferroma:0.1.8
+  wesukilaye/ferroma:0.1.9
 ```
 
 完整的首次运行流程（迁移、第一个域、第一位管理员、DKIM，以及你必须发布的 DNS 记录）见 [`docs/deployment.md`](https://github.com/z1HwanG/Ferroma/blob/main/docs/deployment.md)，其余文档在 [`docs/`](https://github.com/z1HwanG/Ferroma/tree/main/docs) 目录。DNS 部分不是可选项：SPF、DKIM、DMARC 或 PTR 记录写错的 Ferroma 再正确，邮件也会落进 Junk。
@@ -160,7 +160,7 @@ docker run -d --name ferroma \
 
 | 标签 | 含义 |
 |---|---|
-| `0.1.8` | 精确版本，生产环境请固定此标签 |
+| `0.1.9` | 精确版本，生产环境请固定此标签 |
 | `latest` | 最新发布版 |
 
 为 `linux/amd64` 与 `linux/arm64` 构建。一次发布会推送 `X.Y.Z` 与 `latest` 两个标签，别无其他：刻意没有滚动的 `X.Y` 标签，也没有 `buildcache` 标签。预发布版只推送自己的精确标签，`latest` 永远不会指向候选发布版。

@@ -763,6 +763,63 @@ pub fn dkim(config: &Config, command: &DkimCommand) -> Result<ExitCode> {
 // storage
 // -----------------------------------------------------------------------------
 
+/// Check that every message row has its file, and report orphans.
+///
+/// Returns `Ok(true)` when the store is consistent. A mismatch is not an error of
+/// the check itself — the caller decides whether that is a failed command — so
+/// `ferroma storage import` can run the same check after a restore and exit
+/// non-zero when the two halves do not agree.
+async fn storage_verify(
+    db: &Database,
+    maildir: &Maildir,
+    details: bool,
+) -> Result<bool> {
+    // Every row must have its file, and every file should have its row.
+    // A row without a file is a message the user can see but not open;
+    // a file without a row is space nobody will ever reclaim.
+    let rows: Vec<(i64, String, i64)> =
+        sqlx::query_as("SELECT id, storage_path, size_bytes FROM messages")
+            .fetch_all(db.pool())
+            .await?;
+
+    let mut missing = Vec::new();
+    let mut size_mismatch = Vec::new();
+    for (id, path, expected) in &rows {
+        match std::fs::metadata(maildir.absolute(path)?) {
+            Ok(meta) => {
+                if meta.len() != *expected as u64 {
+                    size_mismatch.push((*id, path.clone(), *expected, meta.len()));
+                }
+            }
+            Err(_) => missing.push((*id, path.clone())),
+        }
+    }
+
+    println!("checked   {} message row(s)", rows.len());
+    println!("missing   {}", missing.len());
+    println!("size      {} mismatch(es)", size_mismatch.len());
+
+    if details {
+        for (id, path) in missing.iter().take(50) {
+            println!("  missing: message {id} -> {path}");
+        }
+        for (id, path, expected, actual) in size_mismatch.iter().take(50) {
+            println!("  size: message {id} {path}: row {expected}, file {actual}");
+        }
+    }
+
+    let swept = maildir.sweep_tmp(3600)?;
+    println!("swept     {swept} abandoned tmp/ file(s)");
+
+    if missing.is_empty() && size_mismatch.is_empty() {
+        println!("\nmail store is consistent");
+        Ok(true)
+    } else {
+        println!("\nmail store is NOT consistent; see the entries above");
+        Ok(false)
+    }
+}
+
 /// `ferroma storage …`
 pub fn storage(config: &Config, command: &StorageCommand) -> Result<ExitCode> {
     let runtime = tokio::runtime::Runtime::new()?;
@@ -801,48 +858,56 @@ pub fn storage(config: &Config, command: &StorageCommand) -> Result<ExitCode> {
                 Ok(ExitCode::SUCCESS)
             }
             StorageCommand::Verify { details } => {
-                // Every row must have its file, and every file should have its row.
-                // A row without a file is a message the user can see but not open;
-                // a file without a row is space nobody will ever reclaim.
-                let rows: Vec<(i64, String, i64)> =
-                    sqlx::query_as("SELECT id, storage_path, size_bytes FROM messages")
-                        .fetch_all(db.pool())
-                        .await?;
-
-                let mut missing = Vec::new();
-                let mut size_mismatch = Vec::new();
-                for (id, path, expected) in &rows {
-                    match std::fs::metadata(maildir.absolute(path)?) {
-                        Ok(meta) => {
-                            if meta.len() != *expected as u64 {
-                                size_mismatch.push((*id, path.clone(), *expected, meta.len()));
-                            }
-                        }
-                        Err(_) => missing.push((*id, path.clone())),
-                    }
-                }
-
-                println!("checked   {} message row(s)", rows.len());
-                println!("missing   {}", missing.len());
-                println!("size      {} mismatch(es)", size_mismatch.len());
-
-                if *details {
-                    for (id, path) in missing.iter().take(50) {
-                        println!("  missing: message {id} -> {path}");
-                    }
-                    for (id, path, expected, actual) in size_mismatch.iter().take(50) {
-                        println!("  size: message {id} {path}: row {expected}, file {actual}");
-                    }
-                }
-
-                let swept = maildir.sweep_tmp(3600)?;
-                println!("swept     {swept} abandoned tmp/ file(s)");
-
-                if missing.is_empty() && size_mismatch.is_empty() {
-                    println!("\nmail store is consistent");
+                let ok = storage_verify(&db, &maildir, *details).await?;
+                if ok {
                     Ok(ExitCode::SUCCESS)
                 } else {
-                    println!("\nmail store is NOT consistent; see the entries above");
+                    Ok(ExitCode::FAILURE)
+                }
+            }
+            StorageCommand::Export { to, live } => {
+                let report = crate::backup::export(config, to, *live).await?;
+                println!("archive written to {}", report.destination);
+                println!("  ferroma     {}", report.ferroma_version);
+                println!("  created     {}", report.created_at);
+                println!("  pg_dump     major {}", report.pg_dump_major);
+                println!("  live        {}", if report.live { "yes" } else { "no" });
+                println!(
+                    "  members     {} file(s), {}",
+                    report.members,
+                    human_bytes(report.bytes as i64)
+                );
+                println!(
+                    "  volume      {} maildir, {} attachment, {} dkim, {} data file(s)",
+                    report.counts.maildir_files,
+                    report.counts.attachment_files,
+                    report.counts.dkim_files,
+                    report.counts.data_files
+                );
+                if report.live {
+                    println!();
+                    println!("this archive was taken while the server was running. It can miss a");
+                    println!("delivery in progress, but Maildir's atomic rename means it cannot");
+                    println!("contain a half-written message.");
+                }
+                Ok(ExitCode::SUCCESS)
+            }
+            StorageCommand::Import { from, replace } => {
+                crate::backup::import(config, from, *replace).await?;
+                println!();
+                println!("running ferroma storage verify…");
+                let db = open(config, false).await?;
+                let maildir = Maildir::new(
+                    config.maildir_root(),
+                    config.storage.fsync_on_write,
+                    config.storage.layout,
+                );
+                let ok = storage_verify(&db, &maildir, true).await?;
+                if ok {
+                    Ok(ExitCode::SUCCESS)
+                } else {
+                    println!();
+                    println!("the restored store is NOT consistent; the import is not a backup until it is");
                     Ok(ExitCode::FAILURE)
                 }
             }

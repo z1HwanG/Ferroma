@@ -761,7 +761,9 @@ mod tests {
     use chrono::TimeZone;
 
     fn at(secs: i64) -> DateTime<Utc> {
-        Utc.timestamp_opt(secs, 0).single().expect("valid timestamp")
+        Utc.timestamp_opt(secs, 0)
+            .single()
+            .expect("valid timestamp")
     }
 
     fn mailbox_row() -> Mailbox {
@@ -993,7 +995,10 @@ mod tests {
         let json = serde_json::to_value(DeliveryAttemptResponse::from_row(&attempt)).expect("json");
         assert_eq!(json["attempt"], 2);
         assert_eq!(json["duration_ms"], 1200);
-        assert!(json.get("queue_id").is_none(), "the parent id is the envelope");
+        assert!(
+            json.get("queue_id").is_none(),
+            "the parent id is the envelope"
+        );
     }
 
     #[test]

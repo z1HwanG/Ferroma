@@ -26,10 +26,11 @@ use ferroma_storage::repository::MessageSearch;
 use serde::{Deserialize, Serialize};
 
 use crate::error::ApiError;
-use crate::extract::{AuthUser, IdempotencyKey, Pagination, Page};
+use crate::extract::{AuthUser, IdempotencyKey, Page, Pagination};
 use crate::routes::mail::ownership::{owned_folder, owned_live_message, owned_mailbox};
 use crate::routes::mail::shapes::{
-    AddressResponse, AttachmentResponse, MessageDetailResponse, MessageSummaryResponse, SendResponse,
+    AddressResponse, AttachmentResponse, MessageDetailResponse, MessageSummaryResponse,
+    SendResponse,
 };
 use crate::routes::mail::store;
 use crate::service::SendRequest;
@@ -240,15 +241,19 @@ async fn resolve_scope(
 ) -> Result<(Option<MailboxId>, Option<MailboxId>), ApiError> {
     let folder_scope = match query.folder_id {
         Some(id) => {
-            let (folder, _mailbox) = owned_folder(&state.repos, MailboxId::new(id), user.user_id())
-                .await?;
+            let (folder, _mailbox) =
+                owned_folder(&state.repos, MailboxId::new(id), user.user_id()).await?;
             Some(folder.folder_id())
         }
         None => None,
     };
 
     let mailbox_scope = match query.mailbox_id {
-        Some(id) => Some(owned_mailbox(&state.repos, MailboxId::new(id), user.user_id()).await?.mailbox_id()),
+        Some(id) => Some(
+            owned_mailbox(&state.repos, MailboxId::new(id), user.user_id())
+                .await?
+                .mailbox_id(),
+        ),
         None => match folder_scope {
             Some(_) => None,
             None => {
@@ -284,13 +289,10 @@ pub async fn summary_response(
         folder_id: row.folder_id,
         mailbox_id: row.mailbox_id,
         subject: row.subject.clone(),
-        from: row
-            .sender
-            .as_ref()
-            .map(|address| AddressResponse {
-                address: address.clone(),
-                name: row.sender_name.clone(),
-            }),
+        from: row.sender.as_ref().map(|address| AddressResponse {
+            address: address.clone(),
+            name: row.sender_name.clone(),
+        }),
         to: by_kind(&recipients, "to"),
         cc: by_kind(&recipients, "cc"),
         bcc: by_kind(&recipients, "bcc"),
@@ -393,7 +395,10 @@ pub async fn detail_response(
         is_draft: row.is_draft,
         has_attachments: row.has_attachments,
         attachment_count: row.attachment_count,
-        attachments: attachments.iter().map(AttachmentResponse::from_row).collect(),
+        attachments: attachments
+            .iter()
+            .map(AttachmentResponse::from_row)
+            .collect(),
     })
 }
 
@@ -414,9 +419,9 @@ pub async fn get_raw_message(
         header::HeaderValue::from_static("message/rfc822"),
     );
     let filename = format!("message-{}.eml", message.id);
-    if let Ok(value) = header::HeaderValue::from_str(&format!(
-        "attachment; filename=\"{filename}\""
-    )) {
+    if let Ok(value) =
+        header::HeaderValue::from_str(&format!("attachment; filename=\"{filename}\""))
+    {
         headers.insert(header::CONTENT_DISPOSITION, value);
     }
     if let Some(etag) = message.checksum_sha256.as_deref() {
@@ -509,7 +514,11 @@ pub async fn move_message(
         async move {
             state
                 .mail_service
-                .move_message(MessageId::new(id), user_id, MailboxId::new(request.folder_id))
+                .move_message(
+                    MessageId::new(id),
+                    user_id,
+                    MailboxId::new(request.folder_id),
+                )
                 .await
         }
     })
@@ -531,7 +540,11 @@ pub async fn copy_message(
         async move {
             state
                 .mail_service
-                .copy_message(MessageId::new(id), user_id, MailboxId::new(request.folder_id))
+                .copy_message(
+                    MessageId::new(id),
+                    user_id,
+                    MailboxId::new(request.folder_id),
+                )
                 .await
         }
     })
@@ -606,34 +619,26 @@ pub async fn batch_messages(
     for raw_id in &request.ids {
         let id = MessageId::new(*raw_id);
         let outcome = match operation.as_str() {
-            "read" => {
-                state
-                    .mail_service
-                    .set_message_flags(id, user.user_id(), Some(true), None, None, None)
-                    .await
-                    .map(|_| ())
-            }
-            "unread" => {
-                state
-                    .mail_service
-                    .set_message_flags(id, user.user_id(), Some(false), None, None, None)
-                    .await
-                    .map(|_| ())
-            }
-            "flag" => {
-                state
-                    .mail_service
-                    .set_message_flags(id, user.user_id(), None, Some(true), None, None)
-                    .await
-                    .map(|_| ())
-            }
-            "unflag" => {
-                state
-                    .mail_service
-                    .set_message_flags(id, user.user_id(), None, Some(false), None, None)
-                    .await
-                    .map(|_| ())
-            }
+            "read" => state
+                .mail_service
+                .set_message_flags(id, user.user_id(), Some(true), None, None, None)
+                .await
+                .map(|_| ()),
+            "unread" => state
+                .mail_service
+                .set_message_flags(id, user.user_id(), Some(false), None, None, None)
+                .await
+                .map(|_| ()),
+            "flag" => state
+                .mail_service
+                .set_message_flags(id, user.user_id(), None, Some(true), None, None)
+                .await
+                .map(|_| ()),
+            "unflag" => state
+                .mail_service
+                .set_message_flags(id, user.user_id(), None, Some(false), None, None)
+                .await
+                .map(|_| ()),
             "move" => {
                 let Some(folder_id) = request.folder_id else {
                     return Err(ApiError::new(FerromaError::Invalid(

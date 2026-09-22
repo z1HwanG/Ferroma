@@ -25,7 +25,7 @@ use ferroma_storage::repository::NewMailbox;
 use serde::{Deserialize, Serialize};
 
 use crate::error::ApiError;
-use crate::extract::{AdminUser, Pagination, PaginationQuery, Page};
+use crate::extract::{AdminUser, Page, Pagination, PaginationQuery};
 use crate::routes::admin::domains::audit;
 use crate::routes::mail::shapes::{FolderResponse, MailboxResponse, UserResponse};
 use crate::state::AppState;
@@ -144,7 +144,12 @@ pub async fn list_users(
 
     // The repository pages but does not filter; a bounded fetch plus an in-memory
     // filter keeps `total` honest for the `?query=` case without a second SQL path.
-    let (rows, total) = match query.query.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+    let (rows, total) = match query
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|q| !q.is_empty())
+    {
         Some(needle) => {
             let all = state.repos.users.list(i64::MAX, 0).await?;
             let needle = needle.to_ascii_lowercase();
@@ -184,7 +189,12 @@ pub async fn list_users(
     // list, which is a different answer from "this response did not say".
     let ids: Vec<UserId> = rows.iter().map(|user| UserId::new(user.id)).collect();
     let mut by_owner: HashMap<i64, Vec<MailboxResponse>> = HashMap::new();
-    for row in state.repos.mailboxes.list_by_users_with_domain(&ids).await? {
+    for row in state
+        .repos
+        .mailboxes
+        .list_by_users_with_domain(&ids)
+        .await?
+    {
         by_owner
             .entry(row.mailbox.user_id)
             .or_default()
@@ -263,7 +273,9 @@ pub async fn create_user(
                 }
             }
         }
-        Err(err) => tracing::warn!(user_id = user.id, error = %err, "account address is not parsable"),
+        Err(err) => {
+            tracing::warn!(user_id = user.id, error = %err, "account address is not parsable")
+        }
     }
 
     audit(
@@ -356,11 +368,7 @@ pub async fn update_user(
     )
     .await;
 
-    let user = state
-        .repos
-        .users
-        .require_by_id(user_id)
-        .await?;
+    let user = state.repos.users.require_by_id(user_id).await?;
     Ok(Json(UserResponse::from_row(&user)))
 }
 
@@ -380,20 +388,27 @@ pub async fn delete_user(
 
     // Deleting the account cascades in the database, but the Maildir tree is not the
     // database's to remove, so the addresses are collected first.
-    let addresses = state.repos.mailboxes.list_by_user_with_domain(user_id).await?;
+    let addresses = state
+        .repos
+        .mailboxes
+        .list_by_user_with_domain(user_id)
+        .await?;
     let removed = state.repos.users.delete(user_id).await?;
     if !removed {
         return Err(ApiError::new(FerromaError::NotFound(format!("user {id}"))));
     }
 
     for address in &addresses {
-        if let Err(err) = state
-            .maildir
-            .delete_folder(&address.domain, &address.mailbox.local_part, "INBOX")
+        if let Err(err) =
+            state
+                .maildir
+                .delete_folder(&address.domain, &address.mailbox.local_part, "INBOX")
         {
             tracing::warn!(error = %err, "could not remove a mailbox tree");
         }
-        if let Ok(mailbox_dir) = state.maildir.mailbox_dir(&address.domain, &address.mailbox.local_part)
+        if let Ok(mailbox_dir) = state
+            .maildir
+            .mailbox_dir(&address.domain, &address.mailbox.local_part)
         {
             let _ = std::fs::remove_dir_all(mailbox_dir);
         }
@@ -425,7 +440,11 @@ pub async fn list_user_mailboxes(
         .await?
         .ok_or_else(|| ApiError::new(FerromaError::NotFound(format!("user {id}"))))?;
 
-    let rows = state.repos.mailboxes.list_by_user_with_domain(user_id).await?;
+    let rows = state
+        .repos
+        .mailboxes
+        .list_by_user_with_domain(user_id)
+        .await?;
     let mut items = Vec::with_capacity(rows.len());
     for row in &rows {
         let used = state
@@ -468,8 +487,9 @@ pub async fn create_user_mailbox(
         ))));
     }
     let local_part = request.local_part.trim().to_ascii_lowercase();
-    ferroma_core::address::validate_local_part(&local_part)
-        .map_err(|err| ApiError::new(err).with_details(serde_json::json!({ "field": "local_part" })))?;
+    ferroma_core::address::validate_local_part(&local_part).map_err(|err| {
+        ApiError::new(err).with_details(serde_json::json!({ "field": "local_part" }))
+    })?;
 
     let domain = state
         .repos
@@ -565,7 +585,11 @@ async fn create_address(
 }
 
 /// A page of users, for callers that build the response themselves.
-pub fn paged_users(items: Vec<UserResponse>, total: i64, pagination: Pagination) -> Page<UserResponse> {
+pub fn paged_users(
+    items: Vec<UserResponse>,
+    total: i64,
+    pagination: Pagination,
+) -> Page<UserResponse> {
     pagination.page(items, total)
 }
 
@@ -615,10 +639,12 @@ mod tests {
 
     #[test]
     fn the_create_body_requires_email_and_password() {
-        assert!(serde_json::from_value::<CreateUserRequest>(serde_json::json!({
-            "email": "a@b.c"
-        }))
-        .is_err());
+        assert!(
+            serde_json::from_value::<CreateUserRequest>(serde_json::json!({
+                "email": "a@b.c"
+            }))
+            .is_err()
+        );
         let request: CreateUserRequest = serde_json::from_value(serde_json::json!({
             "email": "a@b.c",
             "password": "secret123"
@@ -649,10 +675,12 @@ mod tests {
 
     #[test]
     fn the_mailbox_body_requires_a_domain_and_a_local_part() {
-        assert!(serde_json::from_value::<CreateMailboxRequest>(serde_json::json!({
-            "domain": "example.com"
-        }))
-        .is_err());
+        assert!(
+            serde_json::from_value::<CreateMailboxRequest>(serde_json::json!({
+                "domain": "example.com"
+            }))
+            .is_err()
+        );
         let request: CreateMailboxRequest = serde_json::from_value(serde_json::json!({
             "domain": "example.com",
             "local_part": "alice"

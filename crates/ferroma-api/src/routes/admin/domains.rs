@@ -28,7 +28,7 @@ use ferroma_storage::repository::NewAuditLog;
 use serde::{Deserialize, Serialize};
 
 use crate::error::ApiError;
-use crate::extract::{AdminUser, Pagination, PaginationQuery, Page};
+use crate::extract::{AdminUser, Page, Pagination, PaginationQuery};
 use crate::routes::mail::shapes::{AliasResponse, DomainResponse};
 use crate::state::AppState;
 
@@ -210,7 +210,10 @@ impl DnsChecks {
 
     /// The DKIM record value for a public key.
     pub fn dkim_record_value(public_key: &str) -> String {
-        format!("v=DKIM1; k=rsa; p={}", public_key.replace(['\r', '\n', ' '], ""))
+        format!(
+            "v=DKIM1; k=rsa; p={}",
+            public_key.replace(['\r', '\n', ' '], "")
+        )
     }
 }
 
@@ -224,12 +227,18 @@ pub async fn check_domain(domain: &str, checks: &DnsChecks) -> Vec<DnsRecord> {
     // MX.
     records.push(match lookup(domain, "MX").await {
         Ok(values) => {
-            let matched = values
-                .iter()
-                .any(|value| value.to_ascii_lowercase().contains(&checks.mail_host.to_ascii_lowercase()));
+            let matched = values.iter().any(|value| {
+                value
+                    .to_ascii_lowercase()
+                    .contains(&checks.mail_host.to_ascii_lowercase())
+            });
             DnsRecord::new(
                 "MX",
-                if matched { RecordStatus::Ok } else { RecordStatus::Warn },
+                if matched {
+                    RecordStatus::Ok
+                } else {
+                    RecordStatus::Warn
+                },
                 Some(checks.mail_host.clone()),
                 values,
             )
@@ -250,11 +259,17 @@ pub async fn check_domain(domain: &str, checks: &DnsChecks) -> Vec<DnsRecord> {
                 .iter()
                 .find_map(|value| value.trim().parse::<IpAddr>().ok());
             let matched = checks.expected_address.is_none_or(|expected| {
-                values.iter().any(|value| value.contains(&expected.to_string()))
+                values
+                    .iter()
+                    .any(|value| value.contains(&expected.to_string()))
             });
             DnsRecord::new(
                 "A",
-                if matched { RecordStatus::Ok } else { RecordStatus::Warn },
+                if matched {
+                    RecordStatus::Ok
+                } else {
+                    RecordStatus::Warn
+                },
                 checks.expected_address.map(|ip| ip.to_string()),
                 values,
             )
@@ -327,7 +342,11 @@ pub async fn check_domain(domain: &str, checks: &DnsChecks) -> Vec<DnsRecord> {
                     .any(|value| value.to_ascii_lowercase().contains("v=dkim1"));
                 DnsRecord::new(
                     "DKIM",
-                    if published { RecordStatus::Ok } else { RecordStatus::Warn },
+                    if published {
+                        RecordStatus::Ok
+                    } else {
+                        RecordStatus::Warn
+                    },
                     Some(dkim_name.clone()),
                     values,
                 )
@@ -565,14 +584,15 @@ pub fn extract_records(output: &str, kind: &str) -> Vec<String> {
         // the A row reported no address on a host that publishes one, and the PTR check had
         // nothing to reverse-resolve. The banner's own `Address:` line is above the answer
         // section, which the gate above has already excluded.
-        if keyword == "a" || keyword == "aaaa" {
-            if lower.starts_with("address:") {
-                let value = trimmed["address:".len()..].trim().trim_end_matches("#53").trim();
-                if !value.is_empty() && !out.contains(&value.to_string()) {
-                    out.push(value.to_string());
-                }
-                continue;
+        if (keyword == "a" || keyword == "aaaa") && lower.starts_with("address:") {
+            let value = trimmed["address:".len()..]
+                .trim()
+                .trim_end_matches("#53")
+                .trim();
+            if !value.is_empty() && !out.contains(&value.to_string()) {
+                out.push(value.to_string());
             }
+            continue;
         }
 
         // A TXT answer: `name  text = "…"`. The record type is spelled `text` here and never
@@ -803,7 +823,9 @@ pub async fn get_domain(
         .await
         .map(|mailboxes| mailboxes.len() as i64)
         .unwrap_or(0);
-    Ok(Json(DomainResponse::from_row(&domain).with_mailbox_count(count)))
+    Ok(Json(
+        DomainResponse::from_row(&domain).with_mailbox_count(count),
+    ))
 }
 
 /// `PATCH /api/v1/domains/:id`
@@ -1303,7 +1325,11 @@ mod tests {
     fn skipped_records_carry_their_reason_as_a_hint() {
         let record = DnsRecord::skipped("MX", Some("mail.example.com".into()), "no resolver tool");
         assert_eq!(record.status, "skip");
-        assert!(record.hint.as_deref().unwrap_or_default().contains("no resolver"));
+        assert!(record
+            .hint
+            .as_deref()
+            .unwrap_or_default()
+            .contains("no resolver"));
         assert!(record.found.is_empty());
     }
 
@@ -1365,9 +1391,13 @@ example.com     MX preference = 10, mail exchanger = mx1.example.com
 example.com     MX preference = 20, mail exchanger = mx2.example.com
 ";
         let values = extract_records(output, "MX");
-        assert!(values.iter().any(|value| value.contains("mx1.example.com")), "{values:?}");
+        assert!(
+            values.iter().any(|value| value.contains("mx1.example.com")),
+            "{values:?}"
+        );
 
-        let parsed = parse_windows_mx("example.com MX preference = 10, mail exchanger = mx1.example.com");
+        let parsed =
+            parse_windows_mx("example.com MX preference = 10, mail exchanger = mx1.example.com");
         assert_eq!(parsed.as_deref(), Some("mx1.example.com"));
         assert_eq!(parse_windows_mx("nothing here"), None);
     }
@@ -1412,7 +1442,6 @@ key.example\ttext = \"v=DKIM1; k=rsa; p=MIIB\" \"AABB\"\n";
         let address = "Server:\t\t127.0.0.53\nAddress:\t127.0.0.53#53\n\n\
 Non-authoritative answer:\nName:\tmail.example.com\nAddress: 203.0.113.10\n";
         assert_eq!(extract_records(address, "A"), vec!["203.0.113.10"]);
-
     }
 
     #[test]
@@ -1449,13 +1478,18 @@ Non-authoritative answer:\nName:\tmail.example.com\nAddress: 203.0.113.10\n";
 
         // The record the expectation names is what direct delivery needs.
         assert_eq!(
-            spf_verdict(&[expected.clone()], &expected, None).0,
+            spf_verdict(std::slice::from_ref(&expected), &expected, None).0,
             RecordStatus::Ok
         );
         // A direct sender whose record authorises somebody else is warned: the mail host is what
         // its own deliveries go out from.
         assert_eq!(
-            spf_verdict(&["v=spf1 include:relay.example ~all".into()], &expected, None).0,
+            spf_verdict(
+                &["v=spf1 include:relay.example ~all".into()],
+                &expected,
+                None
+            )
+            .0,
             RecordStatus::Warn
         );
         // A relayed instance that delegates sending is not: which `include` its provider needs is
@@ -1567,10 +1601,12 @@ Non-authoritative answer:\nName:\tmail.example.com\nAddress: 203.0.113.10\n";
     #[test]
     fn the_create_bodies_require_their_essential_fields() {
         assert!(serde_json::from_value::<CreateDomainRequest>(serde_json::json!({})).is_err());
-        assert!(serde_json::from_value::<CreateAliasRequest>(serde_json::json!({
-            "local_part": "sales"
-        }))
-        .is_err());
+        assert!(
+            serde_json::from_value::<CreateAliasRequest>(serde_json::json!({
+                "local_part": "sales"
+            }))
+            .is_err()
+        );
         let request: CreateAliasRequest = serde_json::from_value(serde_json::json!({
             "local_part": "sales",
             "target": "alice@example.com"

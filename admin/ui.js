@@ -300,7 +300,7 @@ export function statTile(options) {
  * the caller derives the findings, and an empty list is reported as good news
  * instead of an empty box.
  *
- * @param {Array<{tone: 'warn'|'danger', title: string, detail?: string}>} issues
+ * @param {Array<{tone: 'warn'|'danger', title: string, detail?: string, actionHref?: string, actionLabel?: string}>} issues
  */
 export function attentionList(issues) {
   if (issues.length === 0) {
@@ -315,6 +315,9 @@ export function attentionList(issues) {
       el('li', { class: `attention-item attention-${issue.tone}` }, [
         el('p', { class: 'attention-title', text: issue.title }),
         issue.detail ? el('p', { class: 'attention-detail', text: issue.detail }) : null,
+        issue.actionHref && issue.actionLabel
+          ? el('a', { class: 'btn btn-small', href: issue.actionHref, text: issue.actionLabel })
+          : null,
       ]),
     ),
   );

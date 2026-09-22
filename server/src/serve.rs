@@ -34,12 +34,12 @@ use ferroma_api::state::AppState;
 use ferroma_auth::{AuthService, TokenService};
 use ferroma_core::config::Config;
 use ferroma_events::{EventBus, EventBusConfig};
-use ferroma_imap::{ImapServer, ImapServerConfig};
+use ferroma_imap::ImapServerConfig;
 use ferroma_smtp::client::{SmtpClient, SmtpClientConfig};
 use ferroma_smtp::delivery::DeliveryService;
 use ferroma_smtp::mx::{HickoryResolver, MxResolver};
 use ferroma_smtp::queue::{QueueConfigView, QueueWorker};
-use ferroma_smtp::server::{SmtpServer, SmtpServerConfig};
+use ferroma_smtp::server::SmtpServerConfig;
 use ferroma_storage::{AttachmentStore, Database, Maildir, Repositories};
 use ferroma_sync::SyncService;
 
@@ -530,7 +530,10 @@ async fn serve(config: &Config, args: &ServeArgs, log_sink: ferroma_api::LogSink
         .with_event_bus((*events).clone()),
     );
 
-    if selection.smtp {
+    // Socket ownership belongs to the runtime supervisor below. It retains this factory
+    // so an Admin switch can bind the exact same MX, submission and configured SMTPS ports
+    // again without restarting the HTTP API.
+    let smtp_factory = if selection.smtp {
         let mut smtp_config = SmtpServerConfig::new(
             config.clone(),
             repos.clone(),
@@ -542,34 +545,13 @@ async fn serve(config: &Config, args: &ServeArgs, log_sink: ferroma_api::LogSink
             smtp_config = smtp_config.with_tls(acceptor);
         }
         if let Some(resolver) = resolver.clone() {
-            // Turns on the inbound policy step: SPF, DKIM verification, DMARC and the
-            // `Authentication-Results:` header. Without it, mail is still delivered —
-            // it is simply not authenticated, which is why this is not an error.
             smtp_config = smtp_config.with_resolver(resolver);
         }
-
-        let handle = SmtpServer::new(smtp_config)
-            .start()
-            .await
-            .context("starting the SMTP listeners")?;
-
-        let addresses: Vec<String> = handle.local_addrs().iter().map(|a| a.to_string()).collect();
-        tracing::info!(listeners = ?addresses, "SMTP listening");
-        println!("smtp      {}", addresses.join(", "));
-
-        // The listener threads own their own shutdown watch; subscribing here keeps
-        // the handle alive for the lifetime of the process.
-        let mut smtp_shutdown = handle.subscribe_shutdown();
-        tasks.push((
-            "smtp",
-            tokio::spawn(async move {
-                let _ = smtp_shutdown.changed().await;
-                handle.shutdown();
-            }),
-        ));
+        Some(smtp_config)
     } else {
-        tracing::info!("SMTP is disabled");
-    }
+        tracing::info!("SMTP is disabled by the startup selection");
+        None
+    };
 
     // --- outbound queue -----------------------------------------------------
     if selection.queue {
@@ -607,41 +589,54 @@ async fn serve(config: &Config, args: &ServeArgs, log_sink: ferroma_api::LogSink
         ));
     }
 
-    // --- IMAP ---------------------------------------------------------------
-    if selection.imap {
-        let imap_config = imap_server_config(&config);
+    // --- IMAP and runtime listener control ---------------------------------
+    let imap_factory = if selection.imap {
+        Some(imap_server_config(&config))
+    } else {
+        tracing::info!("IMAP is disabled by the startup selection");
+        None
+    };
 
-        let mut server = ImapServer::new(
-            imap_config,
-            Arc::new(repos.clone()),
-            Arc::new(maildir.clone()),
-        )
-        .context("configuring the IMAP server")?
-        .with_events(Arc::clone(&events));
-        if let Some(acceptor) = acceptor.clone() {
-            server = server.with_tls(acceptor);
-        }
-
+    // A stored switch overrides the ordinary boot default for this listener family. The
+    // setting exists only after an Admin action; without it `ferroma.toml` retains its
+    // documented role as the initial deployment default.
+    let smtp_enabled = selection.smtp
+        && stored_bool(&repos, ferroma_api::state::ManagedListener::Smtp.setting_key())
+            .await
+            .unwrap_or(true);
+    let imap_enabled = selection.imap
+        && stored_bool(&repos, ferroma_api::state::ManagedListener::Imap.setting_key())
+            .await
+            .unwrap_or(true);
+    let jmap_enabled = stored_bool(&repos, ferroma_api::state::ManagedListener::Jmap.setting_key())
+        .await
+        .unwrap_or(true);
+    let listener_control = crate::listeners::start(
+        crate::listeners::ListenerFactories {
+            smtp: smtp_factory,
+            imap: imap_factory,
+            repos: repos.clone(),
+            maildir: maildir.clone(),
+            tls: acceptor.clone(),
+            events: Arc::clone(&events),
+        },
+        smtp_enabled,
+        imap_enabled,
+        jmap_enabled,
+    )
+    .await
+    .context("starting the protocol listener supervisor")?;
+    if smtp_enabled {
+        println!(
+            "smtp      {}:{} (mx), {}:{} (submission)",
+            config.smtp.host, config.smtp.port, config.smtp.host, config.smtp.submission_port
+        );
+    }
+    if imap_enabled {
         println!(
             "imap      {}:{} (starttls), {}:{} (tls)",
             config.imap.host, config.imap.port, config.imap.host, config.imap.imaps_port
         );
-
-        let server = Arc::new(server);
-        let mut imap_shutdown = shutdown_rx.clone();
-        tasks.push((
-            "imap",
-            tokio::spawn(async move {
-                if let Err(err) = server
-                    .serve(async move {
-                        let _ = imap_shutdown.changed().await;
-                    })
-                    .await
-                {
-                    tracing::error!(error = %err, "the IMAP server stopped with an error");
-                }
-            }),
-        ));
     }
 
     // --- HTTP API -----------------------------------------------------------
@@ -658,6 +653,7 @@ async fn serve(config: &Config, args: &ServeArgs, log_sink: ferroma_api::LogSink
         // The ring the `tracing` layer at boot is filling, so `GET /api/v1/logs`
         // answers with what this process has actually logged.
         .with_log_sink(log_sink)
+        .with_listener_control(listener_control)
         .with_restart(restart);
 
         // Which app answers at `/` is decided here, because the answer is a fact about the

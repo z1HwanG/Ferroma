@@ -79,7 +79,11 @@ pub fn not_found(message: &str) -> Response {
 /// The envelope for a path that exists but not for this method.
 #[must_use]
 pub fn method_not_allowed(message: &str) -> Response {
-    envelope_response(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", message)
+    envelope_response(
+        StatusCode::METHOD_NOT_ALLOWED,
+        "method_not_allowed",
+        message,
+    )
 }
 
 /// Anything a handler can return as a failure.
@@ -267,7 +271,9 @@ impl From<JsonRejection> for ApiError {
 
 impl From<axum::extract::multipart::MultipartError> for ApiError {
     fn from(err: axum::extract::multipart::MultipartError) -> Self {
-        ApiError::new(FerromaError::Parse(format!("malformed multipart body: {err}")))
+        ApiError::new(FerromaError::Parse(format!(
+            "malformed multipart body: {err}"
+        )))
     }
 }
 
@@ -310,8 +316,7 @@ mod tests {
         let bytes = to_bytes(response.into_body(), 64 * 1024)
             .await
             .expect("body must be readable");
-        let json: serde_json::Value =
-            serde_json::from_slice(&bytes).expect("body must be JSON");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("body must be JSON");
         (status, json)
     }
 
@@ -352,12 +357,24 @@ mod tests {
             (FerromaError::Forbidden("x".into()), 403, "forbidden"),
             (FerromaError::NotFound("x".into()), 404, "not_found"),
             (FerromaError::Conflict("x".into()), 409, "conflict"),
-            (FerromaError::LimitExceeded("x".into()), 413, "limit_exceeded"),
+            (
+                FerromaError::LimitExceeded("x".into()),
+                413,
+                "limit_exceeded",
+            ),
             (FerromaError::MailboxFull("x".into()), 413, "mailbox_full"),
             (FerromaError::RateLimited, 429, "rate_limited"),
-            (FerromaError::Storage(Box::new(std::io::Error::other("db"))), 500, "storage_error"),
+            (
+                FerromaError::Storage(Box::new(std::io::Error::other("db"))),
+                500,
+                "storage_error",
+            ),
             (FerromaError::Internal("x".into()), 500, "internal_error"),
-            (FerromaError::Io(std::io::Error::other("x")), 500, "io_error"),
+            (
+                FerromaError::Io(std::io::Error::other("x")),
+                500,
+                "io_error",
+            ),
             (FerromaError::Config("x".into()), 500, "config_error"),
             (FerromaError::Dns("x".into()), 502, "dns_error"),
             (FerromaError::Network("x".into()), 502, "network_error"),
@@ -440,8 +457,8 @@ mod tests {
 
     #[tokio::test]
     async fn unique_violations_surface_as_conflicts() {
-        let api: ApiError = StorageError::Conflict("user alice@example.com already exists".into())
-            .into();
+        let api: ApiError =
+            StorageError::Conflict("user alice@example.com already exists".into()).into();
         let (status, json) = body_json(api).await;
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(json["error"]["code"], "conflict");
@@ -471,7 +488,9 @@ mod tests {
     #[test]
     fn api_error_keeps_its_source_chain() {
         use std::error::Error as _;
-        let err = ApiError::new(FerromaError::Storage(Box::new(std::io::Error::other("boom"))));
+        let err = ApiError::new(FerromaError::Storage(Box::new(std::io::Error::other(
+            "boom",
+        ))));
         assert!(err.source().is_some());
         assert!(format!("{err}").contains("storage_error"));
     }

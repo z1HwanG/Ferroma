@@ -211,11 +211,7 @@ pub async fn client_login(
             other => ApiError::new(other),
         })?;
 
-    let device_id = outcome
-        .device
-        .as_ref()
-        .map(|device| device.id)
-        .unwrap_or(0);
+    let device_id = outcome.device.as_ref().map(|device| device.id).unwrap_or(0);
 
     let body = ClientLoginResponse {
         access_token: outcome.tokens.access_token,
@@ -258,7 +254,11 @@ pub async fn client_refresh(
 
     // A rotated refresh token must keep belonging to the installation that asked for
     // it; a rotation that switched devices would be a silent takeover.
-    if let Some(device_uid) = request.device_uid.as_deref().filter(|uid| !uid.trim().is_empty()) {
+    if let Some(device_uid) = request
+        .device_uid
+        .as_deref()
+        .filter(|uid| !uid.trim().is_empty())
+    {
         if let Some(device_id) = session.device_id {
             let device = state
                 .repos
@@ -400,7 +400,14 @@ mod tests {
     fn the_features_list_is_the_documented_one() {
         assert_eq!(
             FEATURES.to_vec(),
-            vec!["sync", "events", "drafts", "attachments", "devices", "search"]
+            vec![
+                "sync",
+                "events",
+                "drafts",
+                "attachments",
+                "devices",
+                "search"
+            ]
         );
     }
 

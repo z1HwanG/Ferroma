@@ -95,7 +95,10 @@ impl OutgoingMessage {
         for value in self.to.iter().chain(&self.cc).chain(&self.bcc) {
             for mailbox in ferroma_mail::address::parse_address_list(value) {
                 let address = mailbox.address.to_string();
-                if !out.iter().any(|seen: &String| seen.eq_ignore_ascii_case(&address)) {
+                if !out
+                    .iter()
+                    .any(|seen: &String| seen.eq_ignore_ascii_case(&address))
+                {
                     out.push(address);
                 }
             }
@@ -299,10 +302,7 @@ pub struct ParsedBody {
 }
 
 /// Parse the bytes we just built, to fill the row's denormalised columns.
-pub fn describe_built_message(
-    bytes: &[u8],
-    outgoing: &OutgoingMessage,
-) -> ParsedBody {
+pub fn describe_built_message(bytes: &[u8], outgoing: &OutgoingMessage) -> ParsedBody {
     let parsed = ferroma_mail::ParsedMessage::parse(bytes).ok();
     let message_id = parsed
         .as_ref()
@@ -354,9 +354,8 @@ pub async fn resolve_sender(
     from: &str,
     user: UserId,
 ) -> Result<(Mailbox, String), FerromaError> {
-    let address = EmailAddress::parse(from).map_err(|_| {
-        FerromaError::Invalid(format!("from is not a valid address: {from}"))
-    })?;
+    let address = EmailAddress::parse(from)
+        .map_err(|_| FerromaError::Invalid(format!("from is not a valid address: {from}")))?;
     let mailbox = repos
         .mailboxes
         .find_by_address(address.domain(), address.local_part())
@@ -486,17 +485,65 @@ pub fn split_message_ids(raw: &str) -> Vec<String> {
 
 /// The tags [`sanitize_html`] leaves in place.
 const ALLOWED_TAGS: &[&str] = &[
-    "a", "abbr", "b", "blockquote", "br", "caption", "cite", "code", "col", "colgroup",
-    "dd", "del", "div", "dl", "dt", "em", "figcaption", "figure", "h1", "h2", "h3", "h4",
-    "h5", "h6", "hr", "i", "img", "ins", "kbd", "li", "mark", "ol", "p", "pre", "q", "s",
-    "samp", "small", "span", "strike", "strong", "sub", "sup", "table", "tbody", "td",
-    "tfoot", "th", "thead", "tr", "u", "ul", "var",
+    "a",
+    "abbr",
+    "b",
+    "blockquote",
+    "br",
+    "caption",
+    "cite",
+    "code",
+    "col",
+    "colgroup",
+    "dd",
+    "del",
+    "div",
+    "dl",
+    "dt",
+    "em",
+    "figcaption",
+    "figure",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "hr",
+    "i",
+    "img",
+    "ins",
+    "kbd",
+    "li",
+    "mark",
+    "ol",
+    "p",
+    "pre",
+    "q",
+    "s",
+    "samp",
+    "small",
+    "span",
+    "strike",
+    "strong",
+    "sub",
+    "sup",
+    "table",
+    "tbody",
+    "td",
+    "tfoot",
+    "th",
+    "thead",
+    "tr",
+    "u",
+    "ul",
+    "var",
 ];
 
 /// Attributes kept when their tag is kept. Everything not listed is dropped.
 const ALLOWED_ATTRIBUTES: &[&str] = &[
-    "alt", "class", "colspan", "dir", "height", "href", "lang", "rel", "rowspan", "src",
-    "style", "title", "width",
+    "alt", "class", "colspan", "dir", "height", "href", "lang", "rel", "rowspan", "src", "style",
+    "title", "width",
 ];
 
 /// Sanitise an HTML body for storage.
@@ -622,7 +669,10 @@ fn find_tag_end(chars: &[char], start: usize) -> Option<usize> {
 /// is kept: showing a stray title is recoverable, showing nothing is not.
 fn skip_element(chars: &[char], from: usize, name: &str) -> usize {
     let closer = format!("</{name}");
-    let text: String = chars[from..].iter().collect::<String>().to_ascii_lowercase();
+    let text: String = chars[from..]
+        .iter()
+        .collect::<String>()
+        .to_ascii_lowercase();
     match text.find(&closer) {
         Some(offset) => {
             // Advance past the closer's own `>`.
@@ -883,7 +933,10 @@ mod tests {
         let input = r#"<p class="lead">Hi <strong>Alice</strong></p><a href="https://example.com">link</a>"#;
         let cleaned = sanitize_html(input);
         assert!(cleaned.contains("<strong>Alice</strong>"), "{cleaned}");
-        assert!(cleaned.contains(r#"href="https://example.com""#), "{cleaned}");
+        assert!(
+            cleaned.contains(r#"href="https://example.com""#),
+            "{cleaned}"
+        );
     }
 
     #[test]
@@ -921,7 +974,10 @@ mod tests {
             cleaned.contains("Body after an unclosed head."),
             "the body was swallowed: {cleaned:?}"
         );
-        assert!(!cleaned.contains("color:red"), "the CSS leaked: {cleaned:?}");
+        assert!(
+            !cleaned.contains("color:red"),
+            "the CSS leaked: {cleaned:?}"
+        );
     }
 
     #[test]
@@ -956,7 +1012,10 @@ mod tests {
         let ids = split_message_ids("<a@b.c> <d@e.f>\r\n <g@h.i>");
         assert_eq!(ids, vec!["<a@b.c>", "<d@e.f>", "<g@h.i>"]);
         assert!(split_message_ids("").is_empty());
-        assert_eq!(split_message_ids("bare@example.com"), vec!["bare@example.com"]);
+        assert_eq!(
+            split_message_ids("bare@example.com"),
+            vec!["bare@example.com"]
+        );
     }
 
     #[test]
@@ -985,7 +1044,10 @@ mod tests {
         assert!(headers.in_reply_to.is_none());
         assert!(headers.references.is_empty());
         // Garbage in, empty out — never a panic.
-        assert_eq!(threading_headers(b"\xff\xfe not a message").message_id, None);
+        assert_eq!(
+            threading_headers(b"\xff\xfe not a message").message_id,
+            None
+        );
     }
 
     #[test]

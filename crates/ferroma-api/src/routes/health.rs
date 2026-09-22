@@ -138,6 +138,7 @@ pub async fn health(State(state): State<AppState>) -> Response {
     };
 
     let ok = database.ok;
+    let listeners = state.listeners.states();
     let body = HealthResponse {
         status: if ok { "ok".into() } else { "degraded".into() },
         version: VERSION.to_string(),
@@ -145,11 +146,11 @@ pub async fn health(State(state): State<AppState>) -> Response {
         uptime_secs: state.uptime_secs(),
         database,
         smtp: ListenerHealth {
-            enabled: state.config.smtp.enabled,
+            enabled: listeners.smtp.enabled,
             connections: state.connections.smtp_connections(),
         },
         imap: ListenerHealth {
-            enabled: state.config.imap.enabled,
+            enabled: listeners.imap.enabled,
             connections: state.connections.imap_connections(),
         },
         clients,
@@ -238,12 +239,7 @@ async fn count_queue_since(state: &AppState, since: chrono::DateTime<chrono::Utc
     for status in crate::routes::admin::queue::QUEUE_STATUSES {
         let mut offset = 0i64;
         loop {
-            let Ok(rows) = state
-                .repos
-                .queue
-                .list_by_status(status, 500, offset)
-                .await
-            else {
+            let Ok(rows) = state.repos.queue.list_by_status(status, 500, offset).await else {
                 break;
             };
             if rows.is_empty() {
@@ -301,10 +297,7 @@ async fn count_inbound_since(state: &AppState, since: chrono::DateTime<chrono::U
                 let Ok(folders) = state.repos.folders.list(mailbox.mailbox_id()).await else {
                     continue;
                 };
-                for folder in folders
-                    .iter()
-                    .filter(|folder| folder.special_use.is_none())
-                {
+                for folder in folders.iter().filter(|folder| folder.special_use.is_none()) {
                     let Ok(messages) = state
                         .repos
                         .messages

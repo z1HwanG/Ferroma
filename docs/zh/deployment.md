@@ -310,7 +310,7 @@ git clone … && cd Ferroma
 | 2. 收集配置 | 交互式问：邮件域、MX 主机名、管理员邮箱、数据库地址、API 端口（默认 `127.0.0.1:18080`） |
 | 3. 写 `.env` | 生成随机数据库密码与 `FERROMA_JWT_SECRET`，权限 600；**它是唯一的配置文件** |
 | 4. 建角色与库 | 依次尝试：`sudo -u postgres`（peer 认证）、本机 PostgreSQL **容器**里的 `psql`（1Panel 这类面板的常见形态，用 `docker exec`）、`--pg-password` 给出的超级用户；都做不到就打印可直接粘贴的 SQL（容器场景给 `docker exec` 形式）并停下 |
-| 5. 构建镜像 | 本机 `docker build`（首次 10–30 分钟）。加上 `--image wesukilaye/ferroma:0.1.8` 改为拉取已发布版本——同一条命令会完全跳过构建 |
+| 5. 构建镜像 | 本机 `docker build`（首次 10–30 分钟）。加上 `--image wesukilaye/ferroma:0.1.9` 改为拉取已发布版本——同一条命令会完全跳过构建 |
 | 6. 建表 | 在容器里跑 `ferroma database init`（库不存在时也会建） |
 | 7. 装证书 | 把证书以 uid 10001 装进 `./tls` 供 465/993 使用，并检查 SAN 是否覆盖 MX 主机名 |
 | 8. 启动 | `docker compose up -d`，最多等 3 分钟健康检查，超时自动打印日志 |
@@ -492,7 +492,7 @@ No database is connected yet. Open http://0.0.0.0:8080/ and enter:
 这三项只要在环境里声明就优先于向导——这正是设计意图：清楚自己身份的部署声明一次，
 手工搭建的实例则被逐个询问。`scripts/deploy.sh --wizard`不写其中任何一项，因此全新
 容器只需要发布 web 端口，另加`POSTGRES_PASSWORD`（该脚本会自动生成）。
-| `FERROMA_VERSION` | `0.1.8` | prod（`:?`） | 已发布的镜像标签；prod 从不构建 |
+| `FERROMA_VERSION` | `0.1.9` | prod（`:?`） | 已发布的镜像标签；prod 从不构建 |
 
 ### 4.2 常设变量
 
@@ -1021,11 +1021,54 @@ docker compose -f docker-compose.prod.yml exec postgres \
 
 ## 8. 备份与恢复
 
-**Ferroma 不再随附任何备份工具。** 没有 `scripts/backup.sh`，没有 `scripts/restore.sh`，
-两个 compose 文件里都没有 `backup` 或 `restore` 服务，也没有 `ferroma-backups` 卷；
-`scripts/deploy.sh` 同样没有 `backup` 与 `restore` 子命令。备份这套部署是运维者的工作，
-用宿主机自带的工具完成：`pg_dump`、`tar` 或 `rsync`、`restic`/`borg`、文件系统或虚拟机
-快照、你已有的备份产品。
+**一条命令写出两半，一条命令把它们放回去。** `ferroma storage export --to <路径>`
+写出一份归档：PostgreSQL custom-format 转储、Maildir、附件二进制对象、`dkim/`、
+`<data_dir>/database.json`、生成的 `jwt_secret`，以及一份 `manifest.json`，记录
+Ferroma 版本、时间、`pg_dump` 大版本、文件数和每一段的 SHA-256。
+`ferroma storage import --from <路径>` 先核对这份清单，再恢复进一个空库和一个空的
+数据目录。
+
+仍然没有 `scripts/backup.sh`，没有 `scripts/restore.sh`，两个 compose 文件里都没有
+`backup` 或 `restore` 服务，也没有 `ferroma-backups` 卷；`scripts/deploy.sh` 同样没有
+`backup` 与 `restore` 子命令。定时、保留期，以及把归档带离这台机器，仍是运维者的工作：
+把 `restic`、`borg` 或已有的备份产品指向这条命令写出的文件。
+
+```bash
+# 先停服务器。不带 --live 时，导出若发现 `ferroma serve` 仍在运行就拒绝，
+# 因为运行中的副本可能漏掉一封正在投递的信。
+docker compose -f docker-compose.prod.yml stop ferroma
+docker compose -f docker-compose.prod.yml run --rm ferroma \
+  storage export --to /var/lib/ferroma/ferroma.tar
+
+# 或者，停机不可接受时。归档会在清单里标明 `live`：Maildir 的原子改名保证
+# 拷不到半封信，但可能漏掉一封正在投递的。
+docker compose -f docker-compose.prod.yml exec ferroma \
+  storage export --live --to /var/lib/ferroma/ferroma.tar
+```
+
+`--to` 也可以是 `s3://bucket/key` 或 `webdav://host/path`。它们只是同一份归档的目的地，
+不是第二套备份系统。凭证来自环境变量 —— S3 用 `AWS_ACCESS_KEY_ID` 与
+`AWS_SECRET_ACCESS_KEY`（以及 `AWS_REGION`，默认 `us-east-1`），WebDAV 用
+`WEBDAV_USERNAME` 与 `WEBDAV_PASSWORD` —— 绝不从 `ferroma.toml` 读取，也绝不写进归档。
+传输沿用服务器其余部分的 rustls，不引入 `native-tls`、`openssl` 或 `schannel`。
+
+运行镜像带的是 `postgresql-client-16` 的 `pg_dump` 与 `pg_restore`，与 compose 文件
+运行的 `postgres:16` 一致。导入会拒绝 `pg_dump` 大版本与服务器不一致的归档：较新客户端
+写出的转储无法灌进较旧的服务器，而版本对不上的一对正是“恢复成功了、结果什么都用不了”
+的来源。
+
+```bash
+# 在新主机上，服务器已停、数据库为空。
+docker compose -f docker-compose.prod.yml run --rm ferroma \
+  storage import --from /var/lib/ferroma/ferroma.tar
+```
+
+目标里已经有账户，或数据目录里已经有文件，都会被拒绝，除非 `--replace`。往已有的存储上
+恢复是合并，那正是运维丢掉一周邮件的方式。灌完之后这条命令自己运行
+`ferroma storage verify`，对不上就非零退出。
+
+下面的步骤是这条命令在做的事，写给宁可自己跑 `pg_dump` 的运维 —— 给数据卷做快照、
+集群不是 PostgreSQL 16、或者取副本的不是这个二进制。它们产出的是归档里装着的同样两半。
 
 ### 8.1 备份必须包含什么
 
@@ -1291,14 +1334,15 @@ docker volume rm ferroma-backups
 ```
 
 `database.run_migrations = true` 时迁移在启动时运行。它们只向前：`migrations/` 是一个
-有序列表（目前一个文件，`0001_initial.sql`），按顺序应用，没有向下迁移。这就是第 1 步
-之所以是第 1 步的原因。
+有序列表（从 `0001_initial.sql` 到 `0004_sessions_allow_jmap.sql`），按顺序应用，没有
+向下迁移。已应用的文件也是冻结的：sqlx 会给它做校验，所以之后的改动是一个新文件，
+而不是去改旧的。这就是第 1 步之所以是第 1 步的原因。
 
 ### 9.2 回滚
 
 ```bash
 # 把镜像回滚。
-sed -i 's/^FERROMA_VERSION=.*/FERROMA_VERSION=0.1.8/' .env
+sed -i 's/^FERROMA_VERSION=.*/FERROMA_VERSION=0.1.9/' .env
 docker compose -f docker-compose.prod.yml pull ferroma
 docker compose -f docker-compose.prod.yml up -d ferroma
 ```
@@ -1348,7 +1392,7 @@ git push origin main v0.2.0
 ```
 
 `.github/workflows/docker-publish.yml` 会先核对标签与 `Cargo.toml` 是否一致——在写着
-`0.1.8` 的树上打 `v0.2.0` 标签会在构建任何东西之前失败——再跑
+`0.1.9` 的树上打 `v0.2.0` 标签会在构建任何东西之前失败——再跑
 `node tools/check-deploy.mjs`，然后用 GitHub Actions 层缓存构建两个架构，推送 `0.2.0`
 与 `latest`。一次发布只推这两个标签：刻意没有滚动的次版本标签（`0.2`、`0.3`…），也没有
 `buildcache` 标签。预发布版本（`0.2.0-rc.1`）只推它自己的精确标签，并且绝不移动 `latest`：
@@ -1440,7 +1484,7 @@ characters` 结束——尽管镜像其实已经推上 Docker Hub 了。脚本�
 ```json
 {
   "status": "ok",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "protocol_version": 1,
   "uptime_secs": 84213,
   "database": { "ok": true, "server_version": "PostgreSQL 16.15",

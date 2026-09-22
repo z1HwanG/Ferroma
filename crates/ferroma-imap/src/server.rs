@@ -1,4 +1,4 @@
-﻿//! The IMAP listener: accept loops, TLS, and the per-connection driver.
+//! The IMAP listener: accept loops, TLS, and the per-connection driver.
 //!
 //! Four things happen here and nowhere else:
 //!
@@ -205,6 +205,41 @@ impl ImapServer {
         }
     }
 
+    /// Serve with a watch channel that also asks idle connections to close.
+    ///
+    /// The ordinary [`Self::serve`] API remains useful for one-shot callers. Runtime
+    /// listener control uses this variant so turning IMAP off releases its port and sends
+    /// `BYE` to sessions blocked waiting for their next command.
+    pub async fn serve_with_shutdown(
+        self: Arc<Self>,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<(), FerromaError> {
+        let (plain, imaps) = self.bind().await?;
+        loop {
+            tokio::select! {
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        tracing::info!("imap listener stopping");
+                        return Ok(());
+                    }
+                }
+                accepted = plain.accept() => {
+                    let (stream, peer) = accepted.map_err(FerromaError::Io)?;
+                    self.spawn_connection_with_shutdown(stream, peer, false, shutdown.clone());
+                }
+                accepted = async {
+                    match &imaps {
+                        Some(listener) => listener.accept().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    let (stream, peer) = accepted.map_err(FerromaError::Io)?;
+                    self.spawn_connection_with_shutdown(stream, peer, true, shutdown.clone());
+                }
+            }
+        }
+    }
+
     /// Serve one already-accepted stream. Exposed so tests and the `ferroma`
     /// binary can drive a connection without the accept loop.
     pub async fn serve_stream(
@@ -219,7 +254,7 @@ impl ImapServer {
         let connection_id = self.next_connection_id.fetch_add(1, Ordering::Relaxed);
         self.connections.fetch_add(1, Ordering::Relaxed);
         let result = self
-            .handle_connection(stream, peer.clone(), connection_id, implicit_tls)
+            .handle_connection(stream, peer.clone(), connection_id, implicit_tls, None)
             .await;
         self.connections.fetch_sub(1, Ordering::Relaxed);
         if let Err(err) = &result {
@@ -240,7 +275,7 @@ impl ImapServer {
             let connection_id = server.next_connection_id.fetch_add(1, Ordering::Relaxed);
             server.connections.fetch_add(1, Ordering::Relaxed);
             let result = server
-                .handle_connection(stream, peer.to_string(), connection_id, implicit_tls)
+                .handle_connection(stream, peer.to_string(), connection_id, implicit_tls, None)
                 .await;
             server.connections.fetch_sub(1, Ordering::Relaxed);
             if let Err(err) = result {
@@ -254,6 +289,28 @@ impl ImapServer {
         });
     }
 
+    /// Spawn a connection that receives the listener's graceful-close signal.
+    fn spawn_connection_with_shutdown(
+        self: &Arc<Self>,
+        stream: TcpStream,
+        peer: std::net::SocketAddr,
+        implicit_tls: bool,
+        shutdown: tokio::sync::watch::Receiver<bool>,
+    ) {
+        let server = self.clone();
+        tokio::spawn(async move {
+            let connection_id = server.next_connection_id.fetch_add(1, Ordering::Relaxed);
+            server.connections.fetch_add(1, Ordering::Relaxed);
+            let result = server
+                .handle_connection(stream, peer.to_string(), connection_id, implicit_tls, Some(shutdown))
+                .await;
+            server.connections.fetch_sub(1, Ordering::Relaxed);
+            if let Err(err) = result {
+                tracing::debug!(connection_id, remote_ip = %peer, error = %err, "imap connection ended with an error");
+            }
+        });
+    }
+
     /// The whole life of one connection.
     async fn handle_connection(
         &self,
@@ -261,6 +318,7 @@ impl ImapServer {
         remote_ip: String,
         connection_id: u64,
         implicit_tls: bool,
+        mut shutdown: Option<tokio::sync::watch::Receiver<bool>>,
     ) -> Result<(), FerromaError> {
         let _ = stream.set_nodelay(true);
         let context = self.context(remote_ip, connection_id);
@@ -292,7 +350,7 @@ impl ImapServer {
         connection.greet(&session).await?;
 
         loop {
-            let flow = connection.run_session(&mut session).await?;
+            let flow = connection.run_session(&mut session, shutdown.as_mut()).await?;
 
             match flow {
                 SessionFlow::Close | SessionFlow::Continue => return Ok(()),
@@ -375,7 +433,11 @@ impl Connection {
     /// The read half is moved into a reader task (which is what keeps the
     /// session's read future `Send`) and handed back when the pass ends, so the
     /// connection keeps its halves across passes.
-    async fn run_session(&mut self, session: &mut ImapSession) -> Result<SessionFlow, FerromaError> {
+    async fn run_session(
+        &mut self,
+        session: &mut ImapSession,
+        shutdown: Option<&mut tokio::sync::watch::Receiver<bool>>,
+    ) -> Result<SessionFlow, FerromaError> {
         match self {
             Connection::Plain { halves } => {
                 let Some(halves) = halves.as_mut() else {
@@ -394,7 +456,21 @@ impl Connection {
                     // reply to a waiting client instead of holding the bytes
                     // until the connection ends.
                     let mut output = BufferedOutput::new(Some(&mut write));
-                    session.run(&mut input, &mut output).await
+                    match shutdown {
+                        Some(signal) => tokio::select! {
+                            result = session.run(&mut input, &mut output) => result,
+                            changed = signal.changed() => {
+                                if changed.is_err() || *signal.borrow() {
+                                    session.shutdown(&mut output);
+                                    output.flush().await?;
+                                    Ok(SessionFlow::Close)
+                                } else {
+                                    Ok(SessionFlow::Continue)
+                                }
+                            }
+                        },
+                        None => session.run(&mut input, &mut output).await,
+                    }
                 };
                 halves.read = input.take_reader().await;
                 halves.write = Some(write);
@@ -413,7 +489,21 @@ impl Connection {
                 let mut input = TcpInput::new(read);
                 let flow = {
                     let mut output = BufferedOutput::new(Some(&mut write));
-                    session.run(&mut input, &mut output).await
+                    match shutdown {
+                        Some(signal) => tokio::select! {
+                            result = session.run(&mut input, &mut output) => result,
+                            changed = signal.changed() => {
+                                if changed.is_err() || *signal.borrow() {
+                                    session.shutdown(&mut output);
+                                    output.flush().await?;
+                                    Ok(SessionFlow::Close)
+                                } else {
+                                    Ok(SessionFlow::Continue)
+                                }
+                            }
+                        },
+                        None => session.run(&mut input, &mut output).await,
+                    }
                 };
                 halves.reader = input.take_reader().await;
                 halves.writer = Some(write);

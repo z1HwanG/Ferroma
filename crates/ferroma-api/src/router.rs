@@ -63,12 +63,14 @@ pub fn build(state: AppState) -> Router {
 pub fn build_with_root(state: AppState, root: RootApp) -> Router {
     let api = management_api();
     let client = client_api(&state.config);
+    let jmap = jmap_api();
     let discovery = discovery_routes();
 
     let mut router = Router::new()
         .merge(discovery)
         .nest("/api/v1", api)
         .nest("/api/v1/client", client)
+        .nest("/api/jmap", jmap)
         // `/api/v1/health` and `/api/v1/version` live on this router, not inside the
         // `/api/v1` nest, so a wrong method on them is refused here. The nested
         // management and client routers carry the same fallback for their own paths.
@@ -154,8 +156,22 @@ pub fn discovery_routes() -> Router<AppState> {
     Router::new()
         .route("/.well-known/ferroma", get(routes::health::well_known))
         .route("/.well-known/mta-sts.txt", get(routes::health::mta_sts))
+        .route("/.well-known/jmap", get(routes::jmap::session))
         .route("/api/v1/health", get(routes::health::health))
         .route("/api/v1/version", get(routes::health::version))
+}
+
+/// The JMAP HTTP surface.
+pub fn jmap_api() -> Router<AppState> {
+    Router::new()
+        .route("/", post(routes::jmap::api))
+        .route("/upload/{account}", post(routes::jmap::upload))
+        .route("/download/{account}/{blob_id}", get(routes::jmap::download))
+        .route("/auth/token", post(routes::auth::jmap_login))
+        .fallback(|| async { crate::error::not_found("no such JMAP endpoint") })
+        .method_not_allowed_fallback(|| async {
+            crate::error::method_not_allowed("this JMAP endpoint does not accept that method")
+        })
 }
 
 /// The management surface (`docs/api.md` §3–§5).
@@ -167,8 +183,10 @@ pub fn management_api() -> Router<AppState> {
         .route("/auth/me", get(routes::auth::me))
         .route("/auth/password", post(routes::auth::change_password));
 
-    let setup = Router::new()
-        .route("/setup", get(routes::admin::system::setup_status).post(routes::admin::system::setup));
+    let setup = Router::new().route(
+        "/setup",
+        get(routes::admin::system::setup_status).post(routes::admin::system::setup),
+    );
 
     let users = Router::new()
         .route(
@@ -183,7 +201,8 @@ pub fn management_api() -> Router<AppState> {
         )
         .route(
             "/users/{id}/mailboxes",
-            get(routes::admin::users::list_user_mailboxes).post(routes::admin::users::create_user_mailbox),
+            get(routes::admin::users::list_user_mailboxes)
+                .post(routes::admin::users::create_user_mailbox),
         );
 
     let domains = Router::new()
@@ -208,14 +227,22 @@ pub fn management_api() -> Router<AppState> {
         )
         .route(
             "/aliases/{id}",
-            patch(routes::admin::domains::update_alias).delete(routes::admin::domains::delete_alias),
+            patch(routes::admin::domains::update_alias)
+                .delete(routes::admin::domains::delete_alias),
         );
 
     let queue = Router::new()
         .route("/queue", get(routes::admin::queue::list_queue))
         .route("/queue/stats", get(routes::admin::queue::queue_stats))
-        .route("/queue/{id}", get(routes::admin::queue::get_queue_entry).delete(routes::admin::queue::cancel_queue_entry))
-        .route("/queue/{id}/retry", post(routes::admin::queue::retry_queue_entry));
+        .route(
+            "/queue/{id}",
+            get(routes::admin::queue::get_queue_entry)
+                .delete(routes::admin::queue::cancel_queue_entry),
+        )
+        .route(
+            "/queue/{id}/retry",
+            post(routes::admin::queue::retry_queue_entry),
+        );
 
     let system = Router::new()
         .route("/storage", get(routes::admin::system::storage_overview))
@@ -223,14 +250,16 @@ pub fn management_api() -> Router<AppState> {
         .route("/audit", get(routes::admin::system::list_audit))
         .route("/settings", get(routes::admin::system::list_settings))
         .route("/settings/{key}", put(routes::admin::system::put_setting))
+        .route("/services", get(routes::admin::system::services))
+        .route("/services/{service}", put(routes::admin::system::update_service))
         .route("/logs", get(routes::admin::logs::list_logs))
         .route("/tls", get(routes::admin::tls::tls_status))
         .route("/devices", get(routes::admin::logs::list_devices))
+        .route("/devices/{id}", delete(routes::admin::logs::delete_device))
         .route(
-            "/devices/{id}",
-            delete(routes::admin::logs::delete_device),
-        )
-        .route("/devices/{id}/revoke", post(routes::admin::logs::revoke_device));
+            "/devices/{id}/revoke",
+            post(routes::admin::logs::revoke_device),
+        );
 
     let mail = Router::new()
         .route("/mailboxes", get(routes::mail::mailboxes::list_mailboxes))
@@ -240,26 +269,52 @@ pub fn management_api() -> Router<AppState> {
         )
         .route(
             "/folders/{id}",
-            patch(routes::mail::mailboxes::update_folder).delete(routes::mail::mailboxes::delete_folder),
+            patch(routes::mail::mailboxes::update_folder)
+                .delete(routes::mail::mailboxes::delete_folder),
         )
-        .route("/messages", get(routes::mail::messages::list_messages).post(routes::mail::messages::send_message))
-        .route("/messages/batch", post(routes::mail::messages::batch_messages))
+        .route(
+            "/messages",
+            get(routes::mail::messages::list_messages).post(routes::mail::messages::send_message),
+        )
+        .route(
+            "/messages/batch",
+            post(routes::mail::messages::batch_messages),
+        )
         .route(
             "/messages/{id}",
             get(routes::mail::messages::get_message)
                 .patch(routes::mail::messages::patch_message)
                 .delete(routes::mail::messages::delete_message),
         )
-        .route("/messages/{id}/raw", get(routes::mail::messages::get_raw_message))
-        .route("/messages/{id}/move", post(routes::mail::messages::move_message))
-        .route("/messages/{id}/copy", post(routes::mail::messages::copy_message))
-        .route("/attachments", post(routes::mail::attachments::upload_attachment))
+        .route(
+            "/messages/{id}/raw",
+            get(routes::mail::messages::get_raw_message),
+        )
+        .route(
+            "/messages/{id}/move",
+            post(routes::mail::messages::move_message),
+        )
+        .route(
+            "/messages/{id}/copy",
+            post(routes::mail::messages::copy_message),
+        )
+        .route(
+            "/attachments",
+            post(routes::mail::attachments::upload_attachment),
+        )
         .route(
             "/attachments/{id}",
-            get(routes::mail::attachments::download_attachment).delete(routes::mail::attachments::delete_attachment),
+            get(routes::mail::attachments::download_attachment)
+                .delete(routes::mail::attachments::delete_attachment),
         )
-        .route("/attachments/{id}/meta", get(routes::mail::attachments::attachment_meta))
-        .route("/drafts", get(routes::mail::drafts::list_drafts).post(routes::mail::drafts::create_draft))
+        .route(
+            "/attachments/{id}/meta",
+            get(routes::mail::attachments::attachment_meta),
+        )
+        .route(
+            "/drafts",
+            get(routes::mail::drafts::list_drafts).post(routes::mail::drafts::create_draft),
+        )
         .route(
             "/drafts/{id}",
             get(routes::mail::drafts::get_draft)
@@ -314,34 +369,63 @@ pub fn client_api(config: &Config) -> Router<AppState> {
         .route("/account", get(routes::client::auth::client_account));
 
     let sync = Router::new()
-        .route("/mailboxes", get(routes::client::resources::client_mailboxes))
+        .route(
+            "/mailboxes",
+            get(routes::client::resources::client_mailboxes),
+        )
         .route("/sync", get(routes::client::resources::client_sync))
         .route("/search", get(routes::client::resources::client_search));
 
     let messages = Router::new()
         .route(
             "/messages",
-            get(routes::client::resources::client_messages).post(routes::client::resources::client_send_message),
+            get(routes::client::resources::client_messages)
+                .post(routes::client::resources::client_send_message),
         )
-        .route("/messages/batch", post(routes::client::resources::client_batch))
+        .route(
+            "/messages/batch",
+            post(routes::client::resources::client_batch),
+        )
         .route(
             "/messages/{id}",
             get(routes::client::resources::client_message)
                 .patch(routes::client::resources::client_patch_message)
                 .delete(routes::client::resources::client_delete_message),
         )
-        .route("/messages/{id}/raw", get(routes::client::resources::client_message_raw))
-        .route("/messages/{id}/read", post(routes::client::resources::client_mark_read))
-        .route("/messages/{id}/unread", post(routes::client::resources::client_mark_unread))
-        .route("/messages/{id}/star", post(routes::client::resources::client_star))
-        .route("/messages/{id}/archive", post(routes::client::resources::client_archive))
-        .route("/messages/{id}/trash", post(routes::client::resources::client_trash))
-        .route("/messages/{id}/move", post(routes::client::resources::client_move));
+        .route(
+            "/messages/{id}/raw",
+            get(routes::client::resources::client_message_raw),
+        )
+        .route(
+            "/messages/{id}/read",
+            post(routes::client::resources::client_mark_read),
+        )
+        .route(
+            "/messages/{id}/unread",
+            post(routes::client::resources::client_mark_unread),
+        )
+        .route(
+            "/messages/{id}/star",
+            post(routes::client::resources::client_star),
+        )
+        .route(
+            "/messages/{id}/archive",
+            post(routes::client::resources::client_archive),
+        )
+        .route(
+            "/messages/{id}/trash",
+            post(routes::client::resources::client_trash),
+        )
+        .route(
+            "/messages/{id}/move",
+            post(routes::client::resources::client_move),
+        );
 
     let drafts = Router::new()
         .route(
             "/drafts",
-            get(routes::client::resources::client_list_drafts).post(routes::client::resources::client_create_draft),
+            get(routes::client::resources::client_list_drafts)
+                .post(routes::client::resources::client_create_draft),
         )
         .route(
             "/drafts/{id}",
@@ -361,17 +445,36 @@ pub fn client_api(config: &Config) -> Router<AppState> {
         )
         .route(
             "/attachments/{id}",
-            get(routes::mail::attachments::download_attachment).delete(routes::mail::attachments::delete_attachment),
+            get(routes::mail::attachments::download_attachment)
+                .delete(routes::mail::attachments::delete_attachment),
         )
-        .route("/attachments/{id}/meta", get(routes::mail::attachments::attachment_meta))
-        .route("/attachments/{id}/chunk", put(routes::mail::attachments::upload_chunk))
-        .route("/attachments/{id}/complete", post(routes::mail::attachments::complete_upload))
-        .route("/attachments/{id}/status", get(routes::mail::attachments::upload_status));
+        .route(
+            "/attachments/{id}/meta",
+            get(routes::mail::attachments::attachment_meta),
+        )
+        .route(
+            "/attachments/{id}/chunk",
+            put(routes::mail::attachments::upload_chunk),
+        )
+        .route(
+            "/attachments/{id}/complete",
+            post(routes::mail::attachments::complete_upload),
+        )
+        .route(
+            "/attachments/{id}/status",
+            get(routes::mail::attachments::upload_status),
+        );
 
     let devices = Router::new()
         .route("/devices", get(routes::client::resources::client_devices))
-        .route("/devices/{id}", delete(routes::client::resources::client_revoke_device))
-        .route("/devices/{id}/revoke", post(routes::client::resources::client_revoke_device));
+        .route(
+            "/devices/{id}",
+            delete(routes::client::resources::client_revoke_device),
+        )
+        .route(
+            "/devices/{id}/revoke",
+            post(routes::client::resources::client_revoke_device),
+        );
 
     Router::new()
         .merge(auth)
@@ -520,7 +623,11 @@ pub enum RootApp {
 /// `/main.js` and from `/admin/main.js` both resolve to `/shared/api.js`.
 ///
 /// `root` picks the app at `/`; the console is always mounted at `/admin/` as well.
-pub fn with_frontends(router: Router<AppState>, config: &Config, root: RootApp) -> Router<AppState> {
+pub fn with_frontends(
+    router: Router<AppState>,
+    config: &Config,
+    root: RootApp,
+) -> Router<AppState> {
     frontends(router, config, root)
 }
 
@@ -636,7 +743,10 @@ async fn redirect_admin_to_slash(request: Request, next: Next) -> Response {
 
 /// Resolve a frontend directory: the configured one, or the first conventional
 /// candidate that exists.
-pub fn resolve_dir(configured: Option<&std::path::PathBuf>, candidates: &[&str]) -> Option<std::path::PathBuf> {
+pub fn resolve_dir(
+    configured: Option<&std::path::PathBuf>,
+    candidates: &[&str],
+) -> Option<std::path::PathBuf> {
     if let Some(path) = configured {
         if path.join("index.html").is_file() {
             return Some(path.clone());
@@ -652,7 +762,10 @@ pub fn resolve_dir(configured: Option<&std::path::PathBuf>, candidates: &[&str])
 ///
 /// The shared module directory is imported by the apps rather than opened as a
 /// page, so it has no entry document and [`resolve_dir`] would reject it.
-pub fn resolve_asset_dir(configured: Option<&std::path::PathBuf>, candidates: &[&str]) -> Option<std::path::PathBuf> {
+pub fn resolve_asset_dir(
+    configured: Option<&std::path::PathBuf>,
+    candidates: &[&str],
+) -> Option<std::path::PathBuf> {
     if let Some(path) = configured {
         if path.is_dir() {
             return Some(path.clone());
@@ -676,6 +789,12 @@ pub fn route_table() -> Vec<(&'static str, &'static str)> {
         ("GET", "/api/v1/version"),
         ("GET", "/.well-known/ferroma"),
         ("GET", "/.well-known/mta-sts.txt"),
+        // §8 JMAP
+        ("GET", "/.well-known/jmap"),
+        ("POST", "/api/jmap/"),
+        ("POST", "/api/jmap/auth/token"),
+        ("POST", "/api/jmap/upload/{accountId}"),
+        ("GET", "/api/jmap/download/{accountId}/{blobId}"),
         // §3 auth
         ("POST", "/api/v1/auth/login"),
         ("POST", "/api/v1/auth/refresh"),
@@ -717,6 +836,8 @@ pub fn route_table() -> Vec<(&'static str, &'static str)> {
         ("GET", "/api/v1/audit"),
         ("GET", "/api/v1/settings"),
         ("PUT", "/api/v1/settings/{key}"),
+        ("GET", "/api/v1/services"),
+        ("PUT", "/api/v1/services/{service}"),
         // §4.7 setup
         ("GET", "/api/v1/setup"),
         ("POST", "/api/v1/setup"),
@@ -931,8 +1052,14 @@ mod tests {
         };
 
         let response = get("/").await;
-        assert_eq!(response.status(), StatusCode::OK, "the console must answer at /");
-        let body = to_bytes(response.into_body(), usize::MAX).await.expect("a body");
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "the console must answer at /"
+        );
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("a body");
         let body = String::from_utf8_lossy(&body);
         assert!(
             body.contains("Ferroma Admin"),
@@ -940,7 +1067,9 @@ mod tests {
         );
 
         let response = get("/main.js").await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.expect("a body");
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("a body");
         let body = String::from_utf8_lossy(&body);
         assert!(
             body.contains("Admin console shell"),
@@ -975,7 +1104,12 @@ mod tests {
 
         let response = app
             .clone()
-            .oneshot(HttpRequest::builder().uri("/admin").body(Body::empty()).unwrap())
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .expect("the router answers");
         assert_eq!(
@@ -987,7 +1121,12 @@ mod tests {
 
         // `/admin/` itself still serves the app, so the redirect cannot loop.
         let response = app
-            .oneshot(HttpRequest::builder().uri("/admin/").body(Body::empty()).unwrap())
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/admin/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .expect("the router answers");
         assert_eq!(response.status(), StatusCode::OK);
@@ -1000,7 +1139,10 @@ mod tests {
         assert!(table.contains(&("GET", "/api/v1/health")));
         assert!(table.contains(&("GET", "/.well-known/ferroma")));
         assert!(table.contains(&("POST", "/api/v1/auth/login")));
-        assert!(table.contains(&("POST", "/api/v1/messages/:id/move")) || table.contains(&("POST", "/api/v1/messages/{id}/move")));
+        assert!(
+            table.contains(&("POST", "/api/v1/messages/:id/move"))
+                || table.contains(&("POST", "/api/v1/messages/{id}/move"))
+        );
         assert!(table.contains(&("GET", "/api/v1/client/events")));
         assert!(table.contains(&("GET", "/api/v1/logs")));
         assert!(table.contains(&("GET", "/api/v1/devices")));
@@ -1008,7 +1150,10 @@ mod tests {
         // `docs/api.md` §5.2's `?permanent=true` variant of the delete is part of the
         // frozen index.
         assert!(table.contains(&("DELETE", "/api/v1/messages/{id}?permanent=true")));
-        assert!(table.contains(&("GET", "/api/v1/drafts")) || table.contains(&("POST", "/api/v1/drafts")));
+        assert!(
+            table.contains(&("GET", "/api/v1/drafts"))
+                || table.contains(&("POST", "/api/v1/drafts"))
+        );
     }
 
     #[test]

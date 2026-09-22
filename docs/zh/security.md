@@ -805,16 +805,17 @@ sender          recipient   message_id   result   duration
 
 | 密钥 | 必须放在哪里 | 绝不能放在哪里 |
 |---|---|---|
-| `api.jwt_secret` / `FERROMA_JWT_SECRET` | 环境变量，或由密钥管理器以环境变量注入；两者都没有配置时，服务器会生成一个并写入 `<data_dir>/jwt_secret` | 版本控制里的配置文件；放在别人可读位置的 `.env` 或 `ferroma-data` 归档 —— 不再有随附的备份工具，因此没有任何东西替你排除凭据 |
+| `api.jwt_secret` / `FERROMA_JWT_SECRET` | 环境变量，或由密钥管理器以环境变量注入；两者都没有配置时，服务器会生成一个并写入 `<data_dir>/jwt_secret` | 版本控制里的配置文件；放在别人可读位置的 `.env` 或 `ferroma storage export` 归档 —— 这条命令什么都不排除，因此归档里带着这份密钥 |
 | `POSTGRES_PASSWORD` | `.env`，已 gitignore，或密钥管理器 | compose 文件，它们会插值`${POSTGRES_PASSWORD:?…}`并在缺少它时拒绝启动 |
 | DKIM 私钥 | 只读挂载上的`dkim.private_key_path`，或`domains.dkim_private_key` | 公开的`GET /api/v1/domains/:id/dkim`响应，它只返回`p=`公钥 |
 | TLS 私钥 | `tls.key_path`，只读挂载（`./tls:/etc/ferroma/tls:ro`） | 镜像里 |
 | 用户密码 | 任何地方都不放，永远不放 | — |
 
-不再有随附的备份工具，因此一份备份的保护完全由运维者负责。这一点要紧，因为数据卷的
-备份是含密的：里面有 DKIM 私钥，以及当密钥是被生成而非配置时的 `<data_dir>/jwt_secret`；
-卷里的 `<data_dir>/database.json` 记住了数据库地址，URL 里可能就带着凭据。请加密这份
-归档，或像对待数据库本身一样严格控制它的访问。
+`ferroma storage export` 把两半写成一份归档，并且什么都不从里面排除，因此这份归档的
+保护完全由运维者负责。这一点要紧，因为归档是含密的：里面有 DKIM 私钥，以及当密钥是被
+生成而非配置时的 `<data_dir>/jwt_secret`；卷里的 `<data_dir>/database.json` 记住了
+数据库地址，URL 里可能就带着凭据。S3 与 WebDAV 的凭证从环境变量读取，不会写进归档。
+请加密这份归档，或像对待数据库本身一样严格控制它的访问。
 
 仓库已经强制执行的实践：
 

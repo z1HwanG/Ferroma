@@ -58,17 +58,17 @@ docker compose logs -f ferroma
 每个发布版本都以 `wesukilaye/ferroma` 发布到 Docker Hub，覆盖 `linux/amd64` 与 `linux/arm64`。上面首次 `docker compose up -d` 会在容器里把整个 Rust 工作区编译一遍——10–30 分钟，外加数 GB 构建缓存——所以在服务器上直接拉取要快得多：
 
 ```bash
-docker pull wesukilaye/ferroma:0.1.8
+docker pull wesukilaye/ferroma:0.1.9
 ```
 
 `docker-compose.prod.yml` 与 `docker-compose.external-db.yml` 的默认仓库已经是它，在 `.env` 里锁定版本即可：
 
 ```bash
-FERROMA_VERSION=0.1.8                      # docker-compose.prod.yml：要拉取的标签
-# FERROMA_IMAGE=wesukilaye/ferroma:0.1.8   # docker-compose.external-db.yml：整串引用
+FERROMA_VERSION=0.1.9                      # docker-compose.prod.yml：要拉取的标签
+# FERROMA_IMAGE=wesukilaye/ferroma:0.1.9   # docker-compose.external-db.yml：整串引用
 ```
 
-可用标签只有 `0.1.8`（一个精确版本）与 `latest`（最新发布）——每次发布只产出这两个，所以一个标签永远只对应一个具体版本。要可复现的部署请锁定精确版本，不要用 `latest`。
+可用标签只有 `0.1.9`（一个精确版本）与 `latest`（最新发布）——每次发布只产出这两个，所以一个标签永远只对应一个具体版本。要可复现的部署请锁定精确版本，不要用 `latest`。
 
 ### 服务器上已经有 PostgreSQL 和反向代理？
 
@@ -171,9 +171,9 @@ ferroma config check --dns-domain example.com
 上表最后一行以上的全部内容，都由下面的测试体系验证，其中包括一项验收测试：启动真实服务器、通过 SMTP 投递一封信、用 IMAP 读回来、再通过 API 找到它、跟着同步游标走一遍，并驱动 bootstrap 设置页——无数据库的服务器、setup code、向导的 POST、健康的 API——全程走真实 socket。
 
 ```text
-cargo test --workspace    →  2136 通过，0 失败，0 跳过
-cargo clippy --workspace  →  0 错误（clippy 1.98 下多 2 条 `manual_is_multiple_of`；
-                              该 lint 比钉住的 1.88 工具链更新）
+cargo test --workspace    →  通过，0 失败，0 跳过（0.1.9，rustc 1.98）
+cargo clippy --workspace  →  clippy 1.98 下 0 警告（钉住的 1.88 仍能构建；
+                              `manual_is_multiple_of` 是 1.98 的 lint，且已修复）
 ```
 
 ### 带入 0.1.9 的待办

@@ -12,7 +12,10 @@ Ferroma 使用两个存储。PostgreSQL 保存应用要查询的每一个事实�
 > **状态：** 描述已实现的代码。`ferroma-storage` 已完成：
 > `crates/ferroma-storage/src/{database,maildir,attachment,error,models}.rs` 与
 > `crates/ferroma-storage/src/repository/*.rs`。schema 是
-> `migrations/0001_initial.sql`，它是仓库中唯一的迁移，也是下文每一个表与列的来源。
+> `migrations/0001_initial.sql` 以及其后的三次迁移。0001 创建下文每一个表；0002 为列加上
+> 注释，0003 让文件夹墓碑比它所指向的行活得更久，0004 放宽 `sessions.kind` 以接纳 `jmap`。
+> 0001 的字节是每个已有数据库都已记录的校验和，所以此后对 schema 的改动是一个新文件，
+> 而不是去改那一个。
 > `ferroma storage stats|verify|gc` 与 API 的 `GET /api/v1/storage`、
 > `POST /api/v1/storage/gc` 今天都已存在。凡给出 `pg_dump`/`psql` 命令的地方，都是
 > 今天就能运行的真实命令。
@@ -81,9 +84,15 @@ Ferroma 使用两个存储。PostgreSQL 保存应用要查询的每一个事实�
 
 ## 2. schema，逐表说明
 
-只有一个迁移：`migrations/0001_initial.sql`，440 行，在 `database.run_migrations = true`
-时于启动阶段应用。它面向 PostgreSQL 14+，只使用核心的 `gen_random_uuid()` 时代特性，
+四次迁移，在 `database.run_migrations = true` 时于启动阶段按序应用。
+`migrations/0001_initial.sql`（440 行）创建 schema；`0002` 补上列注释，`0003` 去掉那个
+让已删除文件夹的墓碑写不进去的外键，`0004` 放宽 `sessions.kind`，使 JMAP 令牌与其他会话
+一样成为一行。它们面向 PostgreSQL 14+，只使用核心的 `gen_random_uuid()` 时代特性，
 不需要安装任何扩展。
+
+**已应用的迁移是冻结的。** sqlx 为每个文件记录 SHA-384，文件与记录不一致时拒绝启动
+（`VersionMismatch`）。为了加上 `jmap` 而去改 0001，会让每一个已经应用过它的数据库都无法
+启动，所以这个 kind 由 0004 添加。全新的数据库会把两次都跑完，最终停在同一条约束上。
 
 ### 2.1 身份
 
@@ -306,10 +315,12 @@ expunged        expunged_at IS NOT NULL   (IMAP EXPUNGE, API DELETE ?permanent=t
 
 #### `sessions`
 
-`id`、`user_id`、`kind`（`web`、`api`、`client`、`imap`、`smtp`，由
-`sessions_kind_known` 限制）、`token_hash TEXT`、`device_id BIGINT REFERENCES
+`id`、`user_id`、`kind`（`web`、`api`、`client`、`imap`、`smtp`，以及
+`0004_sessions_allow_jmap.sql` 放宽 `sessions_kind_known` 之后的 `jmap`）、`token_hash TEXT`、
+`device_id BIGINT REFERENCES
 devices(id) ON DELETE SET NULL`、`ip`、`user_agent`、`created_at`、`last_seen_at`、
-`expires_at`、`revoked_at`。
+`expires_at`、`revoked_at`。0001 创建的检查不含 `jmap`；0004 删掉它再补上这个 kind，
+于是已有数据库与全新数据库接受的是同一组值。
 
 **原始令牌从不存储。** `sessions.token_hash` 是某个不透明刷新令牌的 SHA-256
 （`TokenService::hash`），因此数据库转储不会把可用的会话直接交给攻击者。访问令牌是无状态
@@ -777,12 +788,12 @@ assert!(s.absolute("../../secret").is_err());
 
 ## 8. 备份与恢复
 
-**Ferroma 不再随附任何备份工具。** 没有任何 compose 文件定义 `backup` 或
-`restore` 服务，不再有 `ferroma-backups` 卷，`scripts/deploy.sh` 也不再提供
-`backup` 或 `restore` 子命令：备份是运维者自己的事，用主机已有的工具完成 ——
-`pg_dump`/`pg_dumpall`、`tar`、`rsync`、`restic`、`borg`，或存储层快照。属于本文档
-的是：这样一份备份必须包含什么、为什么两半不能分开，以及按什么顺序恢复；逐步的操作
-流程在 [deployment.md](deployment.md) §8。
+**Ferroma 只为这两半提供一条命令，除此之外什么都没有。** `ferroma storage export`
+写出一份归档 —— 数据库转储与数据卷取自同一时刻 —— `ferroma storage import` 把这份
+归档放回去。两个 compose 文件仍然没有 `backup` 服务，没有 `ferroma-backups` 卷，
+`scripts/deploy.sh` 也没有 `backup` 或 `restore` 子命令：定时与异地保留期仍由运维
+自己负责。属于本文档的是：这份归档包含什么、为什么两半不能分开，以及恢复按什么顺序
+进行；逐步的操作流程在 [deployment.md](deployment.md) §8。
 
 ### 8.1 两半，以及为什么单独任何一半都不是备份
 

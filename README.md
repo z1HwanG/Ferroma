@@ -68,18 +68,18 @@ inside the container — 10–30 minutes, and several gigabytes of build cache �
 is the faster path onto a server:
 
 ```bash
-docker pull wesukilaye/ferroma:0.1.8
+docker pull wesukilaye/ferroma:0.1.9
 ```
 
 `docker-compose.prod.yml` and `docker-compose.external-db.yml` already default to that
 repository; pin the release you want in `.env`:
 
 ```bash
-FERROMA_VERSION=0.1.8                      # docker-compose.prod.yml: the tag to pull
-# FERROMA_IMAGE=wesukilaye/ferroma:0.1.8   # docker-compose.external-db.yml: the whole reference
+FERROMA_VERSION=0.1.9                      # docker-compose.prod.yml: the tag to pull
+# FERROMA_IMAGE=wesukilaye/ferroma:0.1.9   # docker-compose.external-db.yml: the whole reference
 ```
 
-Available tags are `0.1.8` (an exact release) and `latest` (the newest release) — a
+Available tags are `0.1.9` (an exact release) and `latest` (the newest release) — a
 release publishes those two and nothing else, so a tag always names one specific
 version. For a reproducible deployment pin the exact release, never `latest`.
 
@@ -216,9 +216,9 @@ finds it through the API, follows the sync cursor, and drives the bootstrap setu
 — server with no database, code, wizard POST, healthy API — over real sockets.
 
 ```text
-cargo test --workspace    →  2136 passed, 0 failed, 0 skipped
-cargo clippy --workspace  →  0 errors (2 `manual_is_multiple_of` notes with clippy 1.98;
-                              that lint is newer than the pinned 1.88 toolchain)
+cargo test --workspace    →  passed, 0 failed, 0 skipped (0.1.9, rustc 1.98)
+cargo clippy --workspace  →  0 warnings on clippy 1.98 (the 1.88 pin still builds;
+                              `manual_is_multiple_of` is a 1.98 lint, and it is fixed)
 ```
 
 ### Carried into 0.1.9

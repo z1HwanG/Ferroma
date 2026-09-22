@@ -3,7 +3,7 @@
  * parameters, e.g. `#/queue?status=failed` or `#/users?query=alice&offset=50`.
  *
  *   #/dashboard   #/domains   #/users   #/aliases    #/queue
- *   #/logs        #/storage   #/devices #/audit      #/settings   #/setup
+ *   #/logs        #/storage   #/devices #/services  #/audit #/settings #/setup
  *
  * The order is the order of the sidebar, and it follows specification §36: the
  * System Logs, Storage and Devices sections sit with the other operator surfaces.
@@ -26,6 +26,7 @@ export const SECTIONS = [
   { id: 'storage', label: t('Storage'), title: t('Storage'), group: t('System'), icon: 'storage' },
   { id: 'devices', label: t('Devices'), title: t('Devices'), group: t('System'), icon: 'devices' },
   { id: 'tls', label: t('TLS certificates'), title: t('TLS certificates'), group: t('System'), icon: 'tls' },
+  { id: 'services', label: t('Mail services'), title: t('Mail services'), group: t('System'), icon: 'settings' },
   { id: 'audit', label: t('Audit log'), title: t('Audit log'), group: t('Operator'), icon: 'audit' },
   { id: 'settings', label: t('Settings'), title: t('Settings'), group: t('Operator'), icon: 'settings' },
   { id: 'setup', label: t('Setup'), title: t('First-run setup'), group: t('Operator'), icon: 'setup' },

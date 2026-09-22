@@ -340,6 +340,17 @@ UTC 下的 RFC 3339 / ISO 8601，例如`2026-09-16T12:00:00Z`。除
 | `GET` | `/api/v1/audit` | `?actor_user_id=&action=&since=&limit=&offset=` |
 | `GET` | `/api/v1/settings` | 由数据库支撑的设置 |
 | `PUT` | `/api/v1/settings/:key` | `{ "value": … }` |
+| `GET` | `/api/v1/services` | SMTP 与 IMAP 监听器的实时状态 |
+| `PUT` | `/api/v1/services/:service` | `service`为`smtp`、`imap`或`jmap`；`{ "enabled": true\|false }` |
+
+`GET /api/v1/services`返回`{ "smtp": { "available": true, "enabled": true },
+"imap": { "available": true, "enabled": true }, "jmap": { "available": true, "enabled": true } }`。当进程没有随该子系统启动
+（`--only`或静态配置）时，`available`为 false；这类监听器不能通过 API 打开。`PUT`
+仅限管理员，会把选择作为专门的运行时设置持久化，并在返回前应用。关闭 SMTP 会停止其
+MX、submission 与已配置的 SMTPS 监听器；关闭 IMAP 会停止其明文与已配置的 IMAPS
+监听器。空闲会话会收到协议的关闭响应并断开，而已存储的邮件不受影响。关闭 JMAP 会撤下
+`/.well-known/jmap`以及 JMAP API、上传和下载，但 Webmail 与管理 API 继续在线。TLS 端口仍由
+`smtps_port`、`imaps_port`和`tls.enabled`决定；此端点不增加 TLS 专用开关。
 
 `GET /api/v1/storage`服务 Admin 的「Storage」界面与看板卡片：
 
@@ -691,3 +702,34 @@ Webmail UI 与官方客户端都遵循的流程：
    `{message_id, queued, recipients}`。
 5. 用`GET /api/v1/queue?status=retry,failed`（或客户端自己的发件箱（Outbox）视图）
    观察投递；每次尝试完成时，服务器通过 socket 推送`delivery.updated`事件。
+
+
+---
+
+## 8. JMAP
+
+Ferroma 也提供 RFC 8620 与 RFC 8621 的首批 JMAP 邮件接口。它复用既有的邮箱、
+Maildir 文件、仓储、事件和变更日志；不会另建第二套邮箱或邮件存储。JMAP 与 IMAP、
+FCP 并存，并不取代其中任何一个。
+
+客户端先调用 `POST /api/jmap/auth/token`（`email`、`password`、`device_name`）
+获得可单独撤销的 JMAP Bearer 令牌会话。该访问令牌只被 JMAP 端点接受；浏览器
+cookie、普通 REST 令牌和 FCP 令牌都会被拒绝。携带该令牌访问
+`GET /.well-known/jmap` 会得到 RFC 8620 Session 对象及 API、上传和下载 URL 模板。
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| `GET` | `/.well-known/jmap` | 已认证的 JMAP Session 发现 |
+| `POST` | `/api/jmap/` | JMAP 方法调用端点 |
+| `POST` | `/api/jmap/auth/token` | 创建独立的 JMAP 令牌会话 |
+| `POST` | `/api/jmap/upload/:accountId` | 上传一个原始二进制对象 |
+| `GET` | `/api/jmap/download/:accountId/:blobId` | 下载当前账户拥有的对象 |
+
+方法端点当前支持 `Mailbox/get`、`Email/query`、`Email/get`、`Email/set` 和
+`Email/import`。`Email/set` 经由共享邮件服务修改标准的已读/旗标关键字，或删除邮件，
+因此变更会进入 IMAP 与 FCP 游标同步所用的同一条变更日志。`Email/import` 使用上传端点
+返回的对象，并将解析后的 RFC 5322 邮件存入选定的既有文件夹。
+
+首批实现刻意不宣称支持推送、日历、联系人、Sieve、Mailbox 写操作、任意自定义关键字
+补丁、多邮箱 Email 成员关系，或完整 MIME 正文属性集。客户端必须轮询 Session 与方法
+响应返回的 JMAP state；上述未实现部分不构成完整 RFC 8621 支持。

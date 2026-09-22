@@ -65,6 +65,27 @@ pub struct RefreshRequest {
     pub refresh_token: String,
 }
 
+/// The `POST /api/v1/auth/jmap-token` body.
+///
+/// A JMAP token is deliberately minted from an already authenticated Ferroma session;
+/// it is a distinct, revocable session rather than a second password database.
+#[derive(Debug, Clone, Deserialize)]
+pub struct JmapTokenRequest {
+    /// A human-readable device name for the Admin session list.
+    pub device_name: String,
+}
+
+/// The password grant for a separately revocable JMAP bearer-token session.
+#[derive(Debug, Clone, Deserialize)]
+pub struct JmapLoginRequest {
+    /// The account login address.
+    pub email: String,
+    /// The account password.
+    pub password: String,
+    /// A human-readable name for this JMAP client installation.
+    pub device_name: String,
+}
+
 /// The `POST /api/v1/auth/password` body.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PasswordChangeRequest {
@@ -192,6 +213,91 @@ pub async fn login(
     Ok(response)
 }
 
+/// `POST /api/v1/jmap/auth/token`.
+///
+/// This password grant creates a separately revocable JMAP bearer-token session. It
+/// does not set a browser cookie and it never exposes a password to another protocol.
+pub async fn jmap_login(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<JmapLoginRequest>,
+) -> Result<Json<TokenResponse>, ApiError> {
+    if !state.listeners.states().jmap.enabled {
+        return Err(ApiError::new(FerromaError::NotFound(
+            "the JMAP service is disabled by the administrator".to_string(),
+        )));
+    }
+    let device_name = request.device_name.trim();
+    if device_name.is_empty() || device_name.len() > 255 {
+        return Err(ApiError::new(FerromaError::Invalid(
+            "device_name must contain 1 to 255 characters".to_string(),
+        )));
+    }
+    let ip = peer_ip(&state, &headers);
+    let user_agent = headers
+        .get(header::USER_AGENT)
+        .and_then(|value| value.to_str().ok());
+    let outcome = state
+        .auth
+        .login(
+            &request.email,
+            &request.password,
+            SessionKind::Jmap,
+            ip,
+            user_agent,
+            Some(ferroma_auth::DeviceInfo {
+                device_uid: format!("jmap:{device_name}"),
+                name: Some(device_name.to_string()),
+                platform: None,
+                client_version: None,
+                protocol_version: None,
+            }),
+        )
+        .await
+        .map_err(|err| match err {
+            FerromaError::RateLimited => ApiError::new(FerromaError::RateLimited)
+                .with_retry_after(state.config.limits.login_lockout_secs),
+            other => ApiError::new(other),
+        })?;
+    Ok(Json(TokenResponse {
+        access_token: outcome.tokens.access_token,
+        refresh_token: outcome.tokens.refresh_token,
+        token_type: "Bearer".to_string(),
+        expires_in: outcome.tokens.expires_in,
+        user: UserResponse::from_row(&outcome.user),
+    }))
+}
+
+/// `POST /api/v1/auth/jmap-token`.
+///
+/// The returned bearer token is accepted only by the JMAP endpoints. Its refresh token
+/// uses the existing rotating-session mechanism, so revocation and expiry remain shared
+/// with every other Ferroma authentication surface.
+pub async fn create_jmap_token(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(request): Json<JmapTokenRequest>,
+) -> Result<Json<TokenResponse>, ApiError> {
+    let name = request.device_name.trim();
+    if name.is_empty() || name.len() > 255 {
+        return Err(ApiError::new(FerromaError::Invalid(
+            "device_name must contain 1 to 255 characters".to_string(),
+        )));
+    }
+    let (_session, tokens) = state
+        .auth
+        .open_session(user.user(), SessionKind::Jmap, None, None, Some(name))
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(TokenResponse {
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        token_type: "Bearer".to_string(),
+        expires_in: tokens.expires_in,
+        user: UserResponse::from_row(user.user()),
+    }))
+}
+
 /// `POST /api/v1/auth/refresh`
 pub async fn refresh(
     State(state): State<AppState>,
@@ -245,10 +351,7 @@ pub async fn refresh(
 }
 
 /// `POST /api/v1/auth/logout` — revokes the session and clears the cookie.
-pub async fn logout(
-    State(state): State<AppState>,
-    user: AuthUser,
-) -> Result<Response, ApiError> {
+pub async fn logout(State(state): State<AppState>, user: AuthUser) -> Result<Response, ApiError> {
     state
         .auth
         .logout(user.session_id())
@@ -280,7 +383,8 @@ pub async fn me(
     let mut mailboxes = Vec::with_capacity(rows.len());
     for row in rows {
         let domain = crate::routes::mail::store::domain_name(&state.repos, row.domain_id).await?;
-        mailboxes.push(crate::routes::mail::mailboxes::mailbox_response(&state, &row, &domain).await);
+        mailboxes
+            .push(crate::routes::mail::mailboxes::mailbox_response(&state, &row, &domain).await);
     }
 
     Ok(Json(MeResponse {
@@ -416,10 +520,12 @@ mod tests {
 
     #[test]
     fn the_password_body_requires_both_passwords() {
-        assert!(serde_json::from_value::<PasswordChangeRequest>(serde_json::json!({
-            "current_password": "a"
-        }))
-        .is_err());
+        assert!(
+            serde_json::from_value::<PasswordChangeRequest>(serde_json::json!({
+                "current_password": "a"
+            }))
+            .is_err()
+        );
         let request: PasswordChangeRequest = serde_json::from_value(serde_json::json!({
             "current_password": "a",
             "new_password": "b"

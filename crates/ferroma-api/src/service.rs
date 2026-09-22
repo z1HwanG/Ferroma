@@ -24,6 +24,7 @@ use ferroma_core::config::Config;
 use ferroma_core::{FerromaError, MailboxId, MessageId, UserId};
 use ferroma_events::{Event, EventBus, EventScope};
 use ferroma_storage::models::{Mailbox, Message};
+use ferroma_storage::repository::{NewAttachment, NewMessage, Recipient};
 use ferroma_storage::{AttachmentStore, Maildir, Repositories};
 use ferroma_sync::SyncService;
 use serde::{Deserialize, Serialize};
@@ -192,7 +193,9 @@ impl MessageService {
         folders
             .into_iter()
             .find(|folder| folder.special_use.as_deref() == Some(special_use))
-            .ok_or_else(|| FerromaError::NotFound(format!("no folder with special_use {special_use}")))
+            .ok_or_else(|| {
+                FerromaError::NotFound(format!("no folder with special_use {special_use}"))
+            })
     }
 
     /// The `Trash` folder of an address, creating the standard set if it is missing.
@@ -206,7 +209,11 @@ impl MessageService {
         {
             return Ok(folder);
         }
-        let folders = self.repos.folders.ensure_standard(mailbox.mailbox_id()).await?;
+        let folders = self
+            .repos
+            .folders
+            .ensure_standard(mailbox.mailbox_id())
+            .await?;
         folders
             .into_iter()
             .find(|folder| folder.special_use.as_deref() == Some("\\Trash"))
@@ -224,7 +231,11 @@ impl MessageService {
         {
             return Ok(folder);
         }
-        let folders = self.repos.folders.ensure_standard(mailbox.mailbox_id()).await?;
+        let folders = self
+            .repos
+            .folders
+            .ensure_standard(mailbox.mailbox_id())
+            .await?;
         folders
             .into_iter()
             .find(|folder| folder.special_use.as_deref() == Some("\\Archive"))
@@ -236,15 +247,17 @@ impl MessageService {
     // -------------------------------------------------------------------------
 
     /// Send (or save as a draft) a composed message.
-    pub async fn send(&self, user: UserId, request: &SendRequest) -> Result<SendResult, FerromaError> {
-        let (mailbox, domain) = crate::routes::mail::store::resolve_sender(
-            &self.repos,
-            &request.from,
-            user,
-        )
-        .await?;
+    pub async fn send(
+        &self,
+        user: UserId,
+        request: &SendRequest,
+    ) -> Result<SendResult, FerromaError> {
+        let (mailbox, domain) =
+            crate::routes::mail::store::resolve_sender(&self.repos, &request.from, user).await?;
 
-        let outgoing = self.build_outgoing(&mailbox, &domain, request, user).await?;
+        let outgoing = self
+            .build_outgoing(&mailbox, &domain, request, user)
+            .await?;
         let recipients = outgoing.envelope_recipients();
 
         if !request.draft {
@@ -256,14 +269,24 @@ impl MessageService {
 
         // Guarantee the target folder exists on disk and in the database; an
         // account created by an older build, or by hand, may be missing `Sent`.
-        self.repos.folders.ensure_standard(mailbox.mailbox_id()).await?;
-        self.maildir
-            .ensure_mailbox(&domain, &mailbox.local_part)?;
+        self.repos
+            .folders
+            .ensure_standard(mailbox.mailbox_id())
+            .await?;
+        self.maildir.ensure_mailbox(&domain, &mailbox.local_part)?;
 
         let bytes = outgoing.build(&domain)?;
         let body = describe_built_message(&bytes, &outgoing);
         let stored = self
-            .store_bytes(&domain, &mailbox, folder_name, flags, request.draft, &outgoing, &body)
+            .store_bytes(
+                &domain,
+                &mailbox,
+                folder_name,
+                flags,
+                request.draft,
+                &outgoing,
+                &body,
+            )
             .await?;
 
         self.sync
@@ -275,7 +298,12 @@ impl MessageService {
         } else {
             let outcome = self
                 .mail
-                .enqueue(Some(user), stored.message.message_id(), outgoing.from.clone(), recipients)
+                .enqueue(
+                    Some(user),
+                    stored.message.message_id(),
+                    outgoing.from.clone(),
+                    recipients,
+                )
                 .await?;
             (outcome.queued, outcome.recipients)
         };
@@ -326,7 +354,11 @@ impl MessageService {
     ) -> Result<OutgoingMessage, FerromaError> {
         let _ = domain;
 
-        if !request.draft && request.to.is_empty() && request.cc.is_empty() && request.bcc.is_empty() {
+        if !request.draft
+            && request.to.is_empty()
+            && request.cc.is_empty()
+            && request.bcc.is_empty()
+        {
             return Err(FerromaError::Invalid(
                 "a message needs at least one recipient".to_string(),
             ));
@@ -408,11 +440,7 @@ impl MessageService {
         }
 
         let today = self.utc_day_start(now);
-        let daily = self
-            .repos
-            .queue
-            .count_sent_since(user, today)
-            .await?;
+        let daily = self.repos.queue.count_sent_since(user, today).await?;
         if daily >= i64::from(self.config.limits.daily_send_limit) {
             return Err(FerromaError::RateLimited);
         }
@@ -452,6 +480,112 @@ impl MessageService {
             body,
         )
         .await
+    }
+
+    /// Import an RFC 5322 blob into one folder owned by `user`.
+    ///
+    /// JMAP uses this path for `Email/import`; keeping the storage, change-log and
+    /// event work here ensures an imported message is indistinguishable from one that
+    /// arrived through SMTP to IMAP and FCP clients.
+    pub async fn import_raw_message(
+        &self,
+        user: UserId,
+        mailbox_id: MailboxId,
+        folder_id: MailboxId,
+        raw: &[u8],
+        flags: &str,
+        received_at: Option<DateTime<Utc>>,
+    ) -> Result<Message, FerromaError> {
+        let mailbox = owned_mailbox(&self.repos, mailbox_id, user).await?;
+        let folder = self
+            .repos
+            .folders
+            .find_by_id(folder_id)
+            .await?
+            .filter(|folder| folder.mailbox_id == mailbox.id)
+            .ok_or_else(|| FerromaError::NotFound("no such folder".to_string()))?;
+        let parsed = ferroma_mail::ParsedMessage::parse_with_limits(
+            raw,
+            &ferroma_mail::message::ParseLimits::from_limits(&self.config.limits),
+        )?;
+        let domain = domain_name(&self.repos, mailbox.domain_id).await?;
+        let stored = self
+            .maildir
+            .store(&domain, &mailbox.local_part, &folder.name, raw, flags)?;
+
+        let recipients = imported_recipients(&parsed);
+        let attachment_parts = parsed.attachments();
+        let message = match self
+            .repos
+            .messages
+            .insert(NewMessage {
+                folder_id,
+                mailbox_id,
+                rfc_message_id: parsed.message_id().map(|id| id.as_str().to_string()),
+                thread_id: parsed.message_id().map(|id| id.as_str().to_string()),
+                subject: parsed.subject(),
+                sender: parsed
+                    .from()
+                    .first()
+                    .map(|address| address.address.to_string()),
+                sender_name: parsed
+                    .from()
+                    .first()
+                    .and_then(|address| address.name.clone()),
+                snippet: parsed.snippet(180).trim().to_owned().into(),
+                size_bytes: stored.size as i64,
+                storage_path: stored.path.clone(),
+                checksum_sha256: Some(stored.sha256),
+                flags: flags.to_string(),
+                internal_date: received_at,
+                sent_at: parsed.date(),
+                has_attachments: !attachment_parts.is_empty(),
+                attachment_count: attachment_parts.len() as i32,
+                is_draft: flags
+                    .split_whitespace()
+                    .any(|flag| flag.eq_ignore_ascii_case("draft")),
+            })
+            .await
+        {
+            Ok(message) => message,
+            Err(error) => {
+                let _ = self.maildir.delete(&stored.path);
+                return Err(error.into());
+            }
+        };
+
+        self.repos
+            .messages
+            .insert_recipients(message.message_id(), &recipients)
+            .await?;
+        for part in attachment_parts {
+            let blob = self.attachments.store(&part.content)?;
+            self.repos
+                .attachments
+                .insert(
+                    message.message_id(),
+                    NewAttachment {
+                        filename: part.filename(),
+                        content_type: part.content_type.to_string(),
+                        size_bytes: blob.size as i64,
+                        storage_path: blob.path,
+                        content_id: part.content_id().map(str::to_string),
+                        is_inline: part
+                            .disposition()
+                            .is_some_and(|value| value.eq_ignore_ascii_case("inline")),
+                        checksum_sha256: Some(blob.sha256),
+                    },
+                )
+                .await?;
+        }
+        self.sync.record_message_created(user, &message).await?;
+        self.events
+            .publish(
+                EventScope::User(user),
+                Event::mail_received(mailbox_id, message.message_id()),
+            )
+            .await;
+        Ok(message)
     }
 
     // -------------------------------------------------------------------------
@@ -495,19 +629,19 @@ impl MessageService {
             }
         }
 
-        let updated = self
-            .repos
-            .messages
-            .find_by_id(id)
-            .await?
-            .unwrap_or(message);
+        let updated = self.repos.messages.find_by_id(id).await?.unwrap_or(message);
 
         // `unseen_count` is a denormalised counter the sidebar renders. Delivery and
         // move recounted it, but a flag change did not, so reading a message left the
         // unread badge untouched — permanently, since nothing else recounts that folder
         // until the next delivery. The recount is best-effort: the flag change itself
         // has already been committed, and a failed counter must not fail the request.
-        if let Err(err) = self.repos.folders.recount(MailboxId::new(updated.folder_id)).await {
+        if let Err(err) = self
+            .repos
+            .folders
+            .recount(MailboxId::new(updated.folder_id))
+            .await
+        {
             tracing::warn!(
                 folder_id = updated.folder_id,
                 error = %err,
@@ -525,13 +659,14 @@ impl MessageService {
             .find_by_id(MailboxId::new(updated.folder_id))
             .await?
             .ok_or_else(|| FerromaError::NotFound(format!("folder {}", updated.folder_id)))?;
-        if let Err(err) = self.refresh_maildir(&domain, &mailbox, &folder.name, &updated).await {
+        if let Err(err) = self
+            .refresh_maildir(&domain, &mailbox, &folder.name, &updated)
+            .await
+        {
             tracing::warn!(message_id = updated.id, error = %err, "could not rename the maildir file");
         }
 
-        self.sync
-            .record_message_flags(user, &updated)
-            .await?;
+        self.sync.record_message_flags(user, &updated).await?;
 
         if seen.is_some() {
             self.events
@@ -548,7 +683,11 @@ impl MessageService {
             self.events
                 .publish(
                     EventScope::User(user),
-                    Event::mail_flag_changed(mailbox.mailbox_id(), updated.message_id(), updated.flags.clone()),
+                    Event::mail_flag_changed(
+                        mailbox.mailbox_id(),
+                        updated.message_id(),
+                        updated.flags.clone(),
+                    ),
                 )
                 .await;
         }
@@ -565,7 +704,9 @@ impl MessageService {
         message: &Message,
     ) -> Result<(), FerromaError> {
         let _ = (domain, mailbox, folder);
-        let path = self.maildir.set_flags(&message.storage_path, &message.flags)?;
+        let path = self
+            .maildir
+            .set_flags(&message.storage_path, &message.flags)?;
         if path != message.storage_path {
             self.repos
                 .messages
@@ -618,16 +759,8 @@ impl MessageService {
             .messages
             .move_to_folder(id, target.folder_id(), mailbox.mailbox_id())
             .await?;
-        self.repos
-            .messages
-            .set_storage_path(id, &new_path)
-            .await?;
-        let moved = self
-            .repos
-            .messages
-            .find_by_id(id)
-            .await?
-            .unwrap_or(moved);
+        self.repos.messages.set_storage_path(id, &new_path).await?;
+        let moved = self.repos.messages.find_by_id(id).await?.unwrap_or(moved);
 
         self.sync
             .record_message_moved(user, MailboxId::new(from_folder), &moved)
@@ -670,9 +803,13 @@ impl MessageService {
 
         let domain = domain_name(&self.repos, mailbox.domain_id).await?;
         let bytes = self.maildir.read(&message.storage_path)?;
-        let stored = self
-            .maildir
-            .store(&domain, &mailbox.local_part, &target.name, &bytes, &message.flags)?;
+        let stored = self.maildir.store(
+            &domain,
+            &mailbox.local_part,
+            &target.name,
+            &bytes,
+            &message.flags,
+        )?;
 
         let copied = self
             .repos
@@ -690,9 +827,7 @@ impl MessageService {
             .await?
             .unwrap_or(copied);
 
-        self.sync
-            .record_message_created(user, &copied)
-            .await?;
+        self.sync.record_message_created(user, &copied).await?;
         Ok(copied)
     }
 
@@ -833,6 +968,26 @@ impl MessageService {
     }
 }
 
+/// Convert the standard RFC 5322 address headers into storage recipient rows.
+fn imported_recipients(message: &ferroma_mail::ParsedMessage) -> Vec<Recipient> {
+    let mut recipients = Vec::new();
+    for (kind, addresses) in [
+        ("to", message.to()),
+        ("cc", message.cc()),
+        ("reply-to", message.reply_to()),
+    ] {
+        for (ordinal, address) in addresses.into_iter().enumerate() {
+            recipients.push(Recipient {
+                kind: kind.to_string(),
+                address: address.address.to_string(),
+                display_name: address.name,
+                ordinal: ordinal as i32,
+            });
+        }
+    }
+    recipients
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -910,7 +1065,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let service = MessageService::new(
             repos.clone(),
-            Maildir::new(dir.path().join("a"), false, ferroma_core::config::MailboxLayout::Maildir),
+            Maildir::new(
+                dir.path().join("a"),
+                false,
+                ferroma_core::config::MailboxLayout::Maildir,
+            ),
             Arc::new(AttachmentStore::new(dir.path().join("att-a"), false)),
             Arc::new(EventBus::with_defaults()),
             Arc::new(SyncService::new(repos.clone(), 500, 30)),
@@ -924,7 +1083,10 @@ mod tests {
                 false,
                 ferroma_core::config::MailboxLayout::Maildir,
             ))
-            .with_attachments(Arc::new(AttachmentStore::new(dir.path().join("att-b"), false)));
+            .with_attachments(Arc::new(AttachmentStore::new(
+                dir.path().join("att-b"),
+                false,
+            )));
         assert_eq!(swapped.maildir().root(), dir.path().join("b"));
         assert_eq!(swapped.attachments().root(), dir.path().join("att-b"));
         assert_eq!(swapped.repositories().pool().size(), 0);

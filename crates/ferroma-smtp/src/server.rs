@@ -229,6 +229,7 @@ impl SmtpListener {
 /// A handle to a running server.
 pub struct SmtpServerHandle {
     shutdown: watch::Sender<bool>,
+    listener_tasks: std::sync::Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     local_addrs: Vec<SocketAddr>,
     connection_limiter: ConnectionLimiter,
     hostname: String,
@@ -267,6 +268,23 @@ impl SmtpServerHandle {
     /// Ask the accept loops to stop. In-flight sessions finish their current command.
     pub fn shutdown(&self) {
         let _ = self.shutdown.send(true);
+    }
+
+    /// Stop accept loops and wait until every listening socket has been released.
+    ///
+    /// Connection tasks are intentionally not awaited: a transaction that is already
+    /// receiving `DATA` is allowed to finish, while idle command reads see the same
+    /// shutdown signal and close promptly.
+    pub async fn shutdown_and_wait(&self) {
+        self.shutdown();
+        let tasks = self
+            .listener_tasks
+            .lock()
+            .map(|mut guard| std::mem::take(&mut *guard))
+            .unwrap_or_default();
+        for task in tasks {
+            let _ = task.await;
+        }
     }
 
     /// A receiver that resolves when shutdown was requested.
@@ -384,8 +402,10 @@ impl SmtpServer {
             .filter_map(|l| l.local_addr().ok())
             .collect();
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let listener_tasks = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let handle = SmtpServerHandle {
             shutdown: shutdown_tx,
+            listener_tasks: std::sync::Arc::clone(&listener_tasks),
             local_addrs,
             connection_limiter: self.limiter.clone(),
             hostname: self.config.hostname().to_string(),
@@ -395,12 +415,16 @@ impl SmtpServer {
             Arc::new(self.config),
             self.limiter,
         ));
+        let mut tasks = Vec::new();
         for listener in listeners {
             let context = Arc::clone(&context);
             let mut shutdown = shutdown_rx.clone();
-            tokio::spawn(async move {
+            tasks.push(tokio::spawn(async move {
                 run_listener(listener, context, &mut shutdown).await;
-            });
+            }));
+        }
+        if let Ok(mut guard) = listener_tasks.lock() {
+            guard.extend(tasks);
         }
         handle
     }
@@ -531,8 +555,9 @@ async fn run_listener(
                 match accepted {
                     Ok((stream, peer)) => {
                         let context = Arc::clone(&context);
+                        let shutdown = shutdown.clone();
                         tokio::spawn(async move {
-                            handle_connection(stream, peer, kind, implicit_tls, context).await;
+                            handle_connection(stream, peer, kind, implicit_tls, context, shutdown).await;
                         });
                     }
                     Err(e) => {
@@ -595,6 +620,7 @@ async fn handle_connection(
     kind: ListenerKind,
     implicit_tls: bool,
     context: Arc<SessionContext>,
+    mut shutdown: watch::Receiver<bool>,
 ) {
     let connection_id = new_connection_id();
     let started = Instant::now();
@@ -634,7 +660,7 @@ async fn handle_connection(
                     }
                     let mut session = SmtpSession::new(connection_id.clone(), peer);
                     session.tls = true;
-                    run_session(&mut io, kind, &mut session, &context, &connection_id).await
+                    run_session(&mut io, kind, &mut session, &context, &connection_id, &mut shutdown).await
                 }
                 Err(e) => {
                     tracing::info!(
@@ -660,7 +686,7 @@ async fn handle_connection(
         }
         let mut session = SmtpSession::new(connection_id.clone(), peer)
             .with_submission(kind == ListenerKind::Submission);
-        let mut outcome = run_session(&mut io, kind, &mut session, &context, &connection_id).await;
+        let mut outcome = run_session(&mut io, kind, &mut session, &context, &connection_id, &mut shutdown).await;
 
         // STARTTLS: hand the socket to the acceptor, then continue as a *new*
         // session. `reset_for_starttls` has already discarded everything the peer
@@ -702,7 +728,7 @@ async fn handle_connection(
                             // open; the upgrade is not a new one. The peer's next command
                             // is the `EHLO` the RFC requires it to send.
                             let mut io = SessionIo::new(SharedStream::from_tls(tls));
-                            outcome = run_session(&mut io, kind, &mut upgraded, &context, &connection_id)
+                            outcome = run_session(&mut io, kind, &mut upgraded, &context, &connection_id, &mut shutdown)
                                 .await;
                         }
                         Err(e) => {
@@ -768,6 +794,8 @@ pub enum SessionResult {
     TlsFailed,
     /// The peer sent a line longer than any command may be.
     LineTooLong,
+    /// An administrator disabled the listener while this session was idle.
+    Disabled,
     /// The peer asked for `STARTTLS`; the caller must perform the handshake.
     Upgrade,
     /// An internal failure ended the session.
@@ -783,6 +811,7 @@ impl SessionResult {
             SessionResult::Timeout => "timeout",
             SessionResult::TlsFailed => "tls_failed",
             SessionResult::LineTooLong => "line_too_long",
+            SessionResult::Disabled => "disabled",
             SessionResult::Upgrade => "starttls",
             SessionResult::Internal => "internal",
         }
@@ -1192,6 +1221,7 @@ async fn run_session(
     session: &mut SmtpSession,
     context: &SessionContext,
     connection_id: &str,
+    shutdown: &mut watch::Receiver<bool>,
 ) -> SessionResult {
     let peer = session.remote_addr;
     let started = Instant::now();
@@ -1208,28 +1238,36 @@ async fn run_session(
         // A multi-step AUTH exchange owns the next line and answers with the SASL
         // wording rather than "unknown command".
         if session.in_auth() {
-            match read_command(io, context.command_timeout()).await {
-                Ok(Some(line)) => match handle_auth_response(io, session, &line, context).await {
+            match read_command_until(io, context.command_timeout(), shutdown).await {
+                CommandWait::Input(Ok(Some(line))) => match handle_auth_response(io, session, &line, context).await {
                     Ok(()) => continue,
                     Err(e) => return internal(connection_id, peer, e),
                 },
-                Ok(None) => return SessionResult::Disconnected,
-                Err(e) if is_timeout(&e) => {
+                CommandWait::Input(Ok(None)) => return SessionResult::Disconnected,
+                CommandWait::Input(Err(e)) if is_timeout(&e) => {
                     let _ = write_reply(io, &Reply::timeout()).await;
                     return SessionResult::Timeout;
                 }
-                Err(e) => return internal(connection_id, peer, e),
+                CommandWait::Input(Err(e)) => return internal(connection_id, peer, e),
+                CommandWait::Disabled => {
+                    let _ = write_reply(io, &Reply::service_disabled()).await;
+                    return SessionResult::Disabled;
+                }
             }
         }
 
-        let line = match read_command(io, context.command_timeout()).await {
-            Ok(Some(line)) => line,
-            Ok(None) => return SessionResult::Disconnected,
-            Err(e) if is_timeout(&e) => {
+        let line = match read_command_until(io, context.command_timeout(), shutdown).await {
+            CommandWait::Input(Ok(Some(line))) => line,
+            CommandWait::Input(Ok(None)) => return SessionResult::Disconnected,
+            CommandWait::Input(Err(e)) if is_timeout(&e) => {
                 let _ = write_reply(io, &Reply::timeout()).await;
                 return SessionResult::Timeout;
             }
-            Err(e) => return internal(connection_id, peer, e),
+            CommandWait::Input(Err(e)) => return internal(connection_id, peer, e),
+            CommandWait::Disabled => {
+                let _ = write_reply(io, &Reply::service_disabled()).await;
+                return SessionResult::Disabled;
+            }
         };
 
         // Rate limit before doing any work for this command.
@@ -1411,12 +1449,30 @@ async fn dispatch(
     }
 }
 
-/// Read one command, or `None` when the connection ended.
-async fn read_command(
+/// Result of waiting for the next SMTP command while a listener may be disabled.
+enum CommandWait {
+    /// The peer supplied a line, disconnected, or hit a read error.
+    Input(Result<Option<Vec<u8>>, FerromaError>),
+    /// The Admin listener switch asked idle sessions to close.
+    Disabled,
+}
+
+/// Read one command, or notice that the listener was disabled while it was idle.
+async fn read_command_until(
     io: &mut SessionIo,
     timeout: Duration,
-) -> Result<Option<Vec<u8>>, FerromaError> {
-    io.read_line(parser::MAX_COMMAND_LINE + 1, timeout).await
+    shutdown: &mut watch::Receiver<bool>,
+) -> CommandWait {
+    tokio::select! {
+        result = io.read_line(parser::MAX_COMMAND_LINE + 1, timeout) => CommandWait::Input(result),
+        changed = shutdown.changed() => {
+            if changed.is_err() || *shutdown.borrow() {
+                CommandWait::Disabled
+            } else {
+                CommandWait::Input(io.read_line(parser::MAX_COMMAND_LINE + 1, timeout).await)
+            }
+        }
+    }
 }
 
 /// Log an internal failure and produce the session result.

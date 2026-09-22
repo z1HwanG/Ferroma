@@ -34,7 +34,7 @@ use crate::extract::{AdminUser, Pagination};
 use crate::routes::admin::domains::audit;
 use crate::routes::auth::TokenResponse;
 use crate::routes::mail::shapes::{AuditResponse, UserResponse};
-use crate::state::AppState;
+use crate::state::{AppState, ManagedListener, ManagedListenerState};
 
 /// The `GET /api/v1/storage` body.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -125,6 +125,42 @@ pub struct SettingsListResponse {
     pub items: Vec<SettingResponse>,
     /// How many exist.
     pub total: i64,
+}
+
+/// The state of one SMTP, IMAP or JMAP service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceListenerResponse {
+    /// Whether this process can start the listener.
+    pub available: bool,
+    /// Whether the listener accepts connections now.
+    pub enabled: bool,
+}
+
+impl From<ManagedListenerState> for ServiceListenerResponse {
+    fn from(value: ManagedListenerState) -> Self {
+        ServiceListenerResponse {
+            available: value.available,
+            enabled: value.enabled,
+        }
+    }
+}
+
+/// `GET /api/v1/services` response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServicesResponse {
+    /// SMTP's configured listener family.
+    pub smtp: ServiceListenerResponse,
+    /// IMAP's configured listener family.
+    pub imap: ServiceListenerResponse,
+    /// JMAP's HTTP API surface.
+    pub jmap: ServiceListenerResponse,
+}
+
+/// `PUT /api/v1/services/:service` request.
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct ServiceUpdateRequest {
+    /// Whether this listener family should accept connections.
+    pub enabled: bool,
 }
 
 /// The `GET /api/v1/setup` body.
@@ -359,7 +395,10 @@ pub async fn list_audit(
 
     let mut filter = AuditFilter::new(pagination.limit, pagination.offset);
     filter.actor_user_id = query.actor_user_id.map(UserId::new);
-    filter.action = query.action.clone().filter(|action| !action.trim().is_empty());
+    filter.action = query
+        .action
+        .clone()
+        .filter(|action| !action.trim().is_empty());
     filter.target_type = query
         .target_type
         .clone()
@@ -393,10 +432,8 @@ pub async fn list_audit(
     let items = rows
         .iter()
         .map(|row| {
-            AuditResponse::from_row(row).with_actor(
-                row.actor_user_id
-                    .and_then(|id| actors.get(&id).cloned()),
-            )
+            AuditResponse::from_row(row)
+                .with_actor(row.actor_user_id.and_then(|id| actors.get(&id).cloned()))
         })
         .collect();
 
@@ -444,11 +481,7 @@ pub async fn put_setting(
         )));
     }
 
-    state
-        .repos
-        .settings
-        .set(key, request.value.clone())
-        .await?;
+    state.repos.settings.set(key, request.value.clone()).await?;
 
     audit(
         &state,
@@ -472,6 +505,72 @@ pub async fn put_setting(
         value,
         updated_at: chrono::Utc::now(),
     }))
+}
+
+/// `GET /api/v1/services`
+pub async fn services(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+) -> Json<ServicesResponse> {
+    let listeners = state.listeners.states();
+    Json(ServicesResponse {
+        smtp: listeners.smtp.into(),
+        imap: listeners.imap.into(),
+        jmap: listeners.jmap.into(),
+    })
+}
+
+/// `PUT /api/v1/services/:service`
+///
+/// This is deliberately separate from the generic settings endpoint: a listener change
+/// has an observable socket-side effect, which must either succeed now or leave the
+/// persisted choice exactly as it was.
+pub async fn update_service(
+    State(state): State<AppState>,
+    admin: AdminUser,
+    Path(service): Path<String>,
+    Json(request): Json<ServiceUpdateRequest>,
+) -> Result<Json<ServiceListenerResponse>, ApiError> {
+    let listener = match service.trim().to_ascii_lowercase().as_str() {
+        "smtp" => ManagedListener::Smtp,
+        "imap" => ManagedListener::Imap,
+        "jmap" => ManagedListener::Jmap,
+        _ => {
+            return Err(ApiError::new(FerromaError::Invalid(
+                "service must be smtp, imap or jmap".to_string(),
+            )))
+        }
+    };
+    let key = listener.setting_key();
+    let previous = state.repos.settings.get(key).await?;
+    state.repos.settings.set(key, serde_json::json!(request.enabled)).await?;
+
+    let effective = match state.listeners.set_enabled(listener, request.enabled).await {
+        Ok(state) => state,
+        Err(error) => {
+            // A database record is a restart promise. Do not leave it promising a listener
+            // state we failed to bind (or failed to stop) in this running process.
+            let restored = match previous {
+                Some(value) => state.repos.settings.set(key, value).await,
+                None => state.repos.settings.delete(key).await.map(|_| ()),
+            };
+            if let Err(restore_error) = restored {
+                tracing::error!(%restore_error, key, "could not restore listener setting after runtime failure");
+            }
+            return Err(ApiError::new(error));
+        }
+    };
+
+    audit(
+        &state,
+        &admin,
+        "service.updated",
+        Some("service"),
+        Some(listener.as_str()),
+        serde_json::json!({ "enabled": request.enabled }),
+    )
+    .await;
+    Ok(Json(effective.into()))
 }
 
 /// `GET /api/v1/setup`
@@ -565,8 +664,10 @@ pub async fn setup(
         .map(str::trim)
         .filter(|hostname| !hostname.is_empty())
     {
-        if ferroma_core::address::validate_domain(&ferroma_core::address::normalise_domain(hostname))
-            .is_err()
+        if ferroma_core::address::validate_domain(&ferroma_core::address::normalise_domain(
+            hostname,
+        ))
+        .is_err()
         {
             return Err(ApiError::new(FerromaError::Invalid(format!(
                 "{hostname} is not a valid server hostname"
@@ -667,7 +768,12 @@ pub async fn setup(
                  not by the browser (inside a container, use the mounted path)"
             ))));
         }
-        let current = state.config.tls.cert_path.as_ref().map(|path| path.display().to_string());
+        let current = state
+            .config
+            .tls
+            .cert_path
+            .as_ref()
+            .map(|path| path.display().to_string());
         if current.as_deref() != Some(cert) {
             state
                 .repos
@@ -690,7 +796,12 @@ pub async fn setup(
                  not by the browser (inside a container, use the mounted path)"
             ))));
         }
-        let current = state.config.tls.key_path.as_ref().map(|path| path.display().to_string());
+        let current = state
+            .config
+            .tls
+            .key_path
+            .as_ref()
+            .map(|path| path.display().to_string());
         if current.as_deref() != Some(key) {
             state
                 .repos
@@ -1206,6 +1317,23 @@ mod tests {
         assert_eq!(json["freed_bytes"], 1024);
         assert_eq!(json["removed_maildir_scratch"], 2);
         assert_eq!(json["duration_ms"], 12);
+    }
+
+    #[test]
+    fn the_services_shape_is_stable() {
+        let json = serde_json::to_value(ServicesResponse {
+            smtp: ServiceListenerResponse { available: true, enabled: false },
+            imap: ServiceListenerResponse { available: false, enabled: false },
+            jmap: ServiceListenerResponse { available: true, enabled: true },
+        })
+        .expect("must serialise");
+        assert_eq!(json["smtp"]["available"], true);
+        assert_eq!(json["smtp"]["enabled"], false);
+        assert_eq!(json["imap"]["available"], false);
+        assert_eq!(json["jmap"]["enabled"], true);
+        let update: ServiceUpdateRequest = serde_json::from_value(serde_json::json!({ "enabled": true }))
+            .expect("the documented request parses");
+        assert!(update.enabled);
     }
 
     #[test]

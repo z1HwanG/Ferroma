@@ -331,7 +331,7 @@ fixes it rather than leaving you to guess:
 | 2. Collect configuration | asks interactively: mail domain, MX hostname, admin address, database address, API port (default `127.0.0.1:18080`) |
 | 3. Write `.env` | generates a random database password and `FERROMA_JWT_SECRET`, mode 600; **it is the only configuration file** |
 | 4. Create the role and the database | tries, in order: `sudo -u postgres` (peer auth), the `psql` **inside a PostgreSQL container on this host** (how 1Panel and similar panels run it, through `docker exec`), and the superuser named by `--pg-password`; if none works it prints SQL you can paste — in the `docker exec` form when the database is a container |
-| 5. Build the image | a local `docker build` (10–30 minutes the first time). Pass `--image wesukilaye/ferroma:0.1.8` to pull the release instead — the same command skips the build entirely |
+| 5. Build the image | a local `docker build` (10–30 minutes the first time). Pass `--image wesukilaye/ferroma:0.1.9` to pull the release instead — the same command skips the build entirely |
 | 6. Create the schema | runs `ferroma database init` in the container (which also creates the database when it is missing) |
 | 7. Install the certificate | installs the certificate into `./tls` as uid 10001 for 465/993, and checks that the SAN covers the MX hostname |
 | 8. Start | `docker compose up -d`, waiting up to 3 minutes for the health check and printing the log on timeout |
@@ -535,7 +535,7 @@ Stating any of these in the environment wins over the wizard, which is the point
 deployment that knows its identity sets it once, and an instance being set up by hand gets
 asked. `scripts/deploy.sh --wizard` writes none of them, so a fresh container needs only
 the web port published — plus `POSTGRES_PASSWORD`, which the script generates.
-| `FERROMA_VERSION` | `0.1.8` | prod (`:?`) | a released image tag; prod never builds |
+| `FERROMA_VERSION` | `0.1.9` | prod (`:?`) | a released image tag; prod never builds |
 
 ### 4.2 Commonly set
 
@@ -1111,12 +1111,63 @@ docker compose -f docker-compose.prod.yml exec postgres \
 
 ## 8. Backup and restore
 
-**Ferroma ships no backup tooling.** There is no `scripts/backup.sh`, no
-`scripts/restore.sh`, no `backup` or `restore` service in either compose file, and
-no `ferroma-backups` volume. `scripts/deploy.sh` has no `backup` and no `restore`
-subcommand either. Backing this deployment up is the operator's job, done with the
-host's own tools: `pg_dump`, `tar` or `rsync`, `restic`/`borg`, a filesystem or
-hypervisor snapshot, your existing backup product.
+**One command writes both halves, and one command puts them back.** `ferroma
+storage export --to <path>` writes a single archive: a PostgreSQL custom-format
+dump, the Maildir, the attachment blobs, `dkim/`, `<data_dir>/database.json`, the
+generated `jwt_secret`, and a `manifest.json` that records the Ferroma version, the
+time, the `pg_dump` major version, the file counts and a SHA-256 of every member.
+`ferroma storage import --from <path>` verifies that manifest and restores into an
+empty database and an empty data directory.
+
+There is still no `scripts/backup.sh`, no `scripts/restore.sh`, no `backup` or
+`restore` service in either compose file, and no `ferroma-backups` volume.
+`scripts/deploy.sh` has no `backup` and no `restore` subcommand either. Scheduling,
+retention and getting the archive off the machine stay the operator's job: point
+`restic`, `borg` or your existing backup product at the file the command wrote.
+
+```bash
+# Stop the server first. Without --live the export refuses while `ferroma serve`
+# is up, because a running copy can miss a delivery in progress.
+docker compose -f docker-compose.prod.yml stop ferroma
+docker compose -f docker-compose.prod.yml run --rm ferroma \
+  storage export --to /var/lib/ferroma/ferroma.tar
+
+# Or, when stopping is not acceptable. The archive is labelled `live` in its
+# manifest: Maildir's atomic rename means it cannot contain a half-written
+# message, but it can miss one that was mid-delivery.
+docker compose -f docker-compose.prod.yml exec ferroma \
+  storage export --live --to /var/lib/ferroma/ferroma.tar
+```
+
+`--to` may also be an `s3://bucket/key` or a `webdav://host/path` URL. Those are
+destinations for the same archive, not a second backup system. The credentials come
+from the environment — `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (and
+`AWS_REGION`, defaulting to `us-east-1`) for S3, `WEBDAV_USERNAME` and
+`WEBDAV_PASSWORD` for WebDAV — and are never read from `ferroma.toml` or written
+into the archive. The transfer uses the same rustls stack as the rest of the
+server; it does not pull in `native-tls`, `openssl` or `schannel`.
+
+The runtime image ships `pg_dump` and `pg_restore` from `postgresql-client-16`,
+which matches the `postgres:16` the compose files run. An import refuses an archive
+whose `pg_dump` major version is not the server's: a dump written by a newer client
+cannot be loaded by an older server, and a mismatched pair is how a restore
+"succeeds" into nothing usable.
+
+```bash
+# On the new host, with the server stopped and the database empty.
+docker compose -f docker-compose.prod.yml run --rm ferroma \
+  storage import --from /var/lib/ferroma/ferroma.tar
+```
+
+A target that already has accounts, or a data directory that already has files, is
+refused unless `--replace`. Restoring over an existing store is a merge, which is
+how a week of mail gets lost. After the load the command runs `ferroma storage
+verify` itself, and a mismatch exits non-zero.
+
+The steps below are what that command does, written out for an operator who would
+rather run `pg_dump` by hand — a snapshot of the volume, a cluster that is not
+PostgreSQL 16, a host where the binary is not the thing taking the copy. They
+produce the same two halves the archive holds.
 
 ### 8.1 What a backup must contain
 
@@ -1408,15 +1459,16 @@ docker volume rm ferroma-backups
 ```
 
 Migrations run at startup when `database.run_migrations = true`. They are
-forward-only: `migrations/` is an ordered list (currently one file,
-`0001_initial.sql`) applied in order, and there is no down migration. That is why
-step 1 is step 1.
+forward-only: `migrations/` is an ordered list (`0001_initial.sql` through
+`0004_sessions_allow_jmap.sql`) applied in order, and there is no down migration.
+An applied file is also frozen: sqlx checksums it, so a later change is a new
+file rather than an edit. That is why step 1 is step 1.
 
 ### 9.2 Rollback
 
 ```bash
 # Roll the image back.
-sed -i 's/^FERROMA_VERSION=.*/FERROMA_VERSION=0.1.8/' .env
+sed -i 's/^FERROMA_VERSION=.*/FERROMA_VERSION=0.1.9/' .env
 docker compose -f docker-compose.prod.yml pull ferroma
 docker compose -f docker-compose.prod.yml up -d ferroma
 ```
@@ -1473,7 +1525,7 @@ git push origin main v0.2.0
 ```
 
 `.github/workflows/docker-publish.yml` then checks that the tag and `Cargo.toml`
-agree — a `v0.2.0` tag on a tree that says `0.1.8` fails before anything is built —
+agree — a `v0.2.0` tag on a tree that says `0.1.9` fails before anything is built —
 runs `node tools/check-deploy.mjs`, builds both architectures with a GitHub Actions
 layer cache, and pushes `0.2.0` and `latest`. A release publishes those two tags and
 nothing else: there is deliberately no rolling minor tag (`0.2`, `0.3`, …), and no
@@ -1578,7 +1630,7 @@ For a **single-host private registry** instead of Docker Hub, point
 ```json
 {
   "status": "ok",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "protocol_version": 1,
   "uptime_secs": 84213,
   "database": { "ok": true, "server_version": "PostgreSQL 16.15",

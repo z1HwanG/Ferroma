@@ -19,4 +19,5 @@ pub mod admin;
 pub mod auth;
 pub mod client;
 pub mod health;
+pub mod jmap;
 pub mod mail;
