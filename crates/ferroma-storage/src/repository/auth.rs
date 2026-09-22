@@ -136,6 +136,34 @@ impl SessionsRepository {
         Ok(done.rows_affected())
     }
 
+    /// The newest still-usable session of one kind for an account.
+    ///
+    /// A JMAP client authenticates with its password on every request. Opening a
+    /// session each time would write a row per request; this finds the one already
+    /// open for that device so the caller can reuse it.
+    pub async fn find_live(
+        &self,
+        user_id: UserId,
+        kind: &str,
+        device_id: Option<i64>,
+        now: DateTime<Utc>,
+    ) -> Result<Option<Session>> {
+        Ok(sqlx::query_as::<_, Session>(
+            "SELECT * FROM sessions
+              WHERE user_id = $1 AND kind = $2
+                AND revoked_at IS NULL AND expires_at > $3
+                AND ($4::BIGINT IS NULL OR device_id = $4)
+              ORDER BY id ASC
+              LIMIT 1",
+        )
+        .bind(user_id.get())
+        .bind(kind)
+        .bind(now)
+        .bind(device_id)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
     /// An account's sessions, newest first.
     pub async fn list_for_user(
         &self,

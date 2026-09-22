@@ -106,6 +106,11 @@ pub struct ApiError {
     pub status_override: Option<StatusCode>,
     /// Seconds a `429` client should wait, sent as `Retry-After`.
     pub retry_after_secs: Option<u64>,
+    /// Whether a `401` should name `Basic` as well as `Bearer`.
+    ///
+    /// Only the JMAP surface sets this. A management or FCP endpoint that advertised
+    /// Basic would be asking a client to send a password it will not accept.
+    pub www_authenticate: bool,
 }
 
 impl ApiError {
@@ -116,7 +121,15 @@ impl ApiError {
             details: None,
             status_override: None,
             retry_after_secs: None,
+            www_authenticate: false,
         }
+    }
+
+    /// Tell a JMAP client that `Basic` (the mailbox password) is accepted.
+    #[must_use]
+    pub fn with_www_authenticate(mut self) -> Self {
+        self.www_authenticate = true;
+        self
     }
 
     /// Attach structured detail (`{"field": "to"}`).
@@ -228,6 +241,16 @@ impl IntoResponse for ApiError {
         };
 
         let mut response = (status, Json(body)).into_response();
+
+        // A JMAP client retries a 401 with the scheme named here. Without it, the
+        // client that just sent the mailbox password has no reason to try Basic.
+        // Management and FCP 401s name Bearer only; advertising Basic there would
+        // invite a password onto a surface that does not accept one.
+        if status == StatusCode::UNAUTHORIZED && self.www_authenticate {
+            if let Ok(value) = HeaderValue::from_str("Basic realm=\"jmap\", Bearer") {
+                response.headers_mut().insert(header::WWW_AUTHENTICATE, value);
+            }
+        }
 
         // `429` is only actionable with a `Retry-After`; default to the documented
         // login lockout window when the caller did not pick a number.

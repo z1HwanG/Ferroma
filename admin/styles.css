@@ -2615,15 +2615,55 @@ html.theme-switching .theme-toggle .icon {
 
 /* -------------------------------------------------------------- responsive */
 
-/* The sidebar is always docked. It used to collapse above 860px and become an
-   overlapping drawer below it, driven by `data-nav`; a console whose navigation can
-   disappear is one where the operator has to find the button that brings it back, and
-   the collapse bought nothing the wide tables needed. Mobile is explicitly out of
-   scope, so the grid stays two-column at every width and only the touch targets below
-   adapt. */
+/* Below this width the docked 248px sidebar is most of the window, and the section
+   it opens is what gets clipped. The sidebar becomes a drawer; the button that opens
+   it stays in the top bar, so navigation never has to be found. Wide tables still
+   scroll inside `.table-wrap`. */
+.nav-toggle {
+  display: none;
+}
+
+.nav-backdrop {
+  display: none;
+}
+
 @media (max-width: 860px) {
+  .nav-toggle {
+    display: inline-flex;
+  }
+
   .brand-sub {
     display: none;
+  }
+
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sidebar {
+    position: fixed;
+    z-index: 30;
+    top: 49px;
+    bottom: 0;
+    left: 0;
+    width: min(280px, 86vw);
+    transform: translateX(-105%);
+    transition: transform 160ms var(--ease);
+    box-shadow: var(--shadow);
+  }
+
+  .app[data-nav="open"] .sidebar {
+    transform: none;
+  }
+
+  .app[data-nav="open"] .nav-backdrop {
+    display: block;
+    position: fixed;
+    z-index: 25;
+    inset: 49px 0 0;
+    background: rgba(0, 0, 0, 0.45);
+    border: 0;
+    padding: 0;
   }
 
   /*

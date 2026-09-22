@@ -34,7 +34,7 @@ Apple Mail、Outlook、iPhone Mail 与 Android 客户端都是一等公民，不
 | 加密 | 只用 rustls，见 [architecture.md](architecture.md) §8 |
 
 `imap.require_tls_for_login`（默认 `false`）会在未加密的连接上以 `NO [PRIVACYREQUIRED]`
-拒绝 `LOGIN` 与 `AUTHENTICATE`。`docker-compose.prod.yml` 把
+拒绝 `LOGIN` 与 `AUTHENTICATE`。`docker-compose.yml` 把
 `FERROMA__IMAP__REQUIRE_TLS_FOR_LOGIN` 设为 `'true'`；生产部署应当保持这一设置。
 `LOGIN` 以明文发送密码，而没有 `CRAM-MD5` 或 `SCRAM-*` 可以退而求其次（见 §8）。
 

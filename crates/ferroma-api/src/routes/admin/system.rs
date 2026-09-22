@@ -182,6 +182,10 @@ pub struct SetupStatusResponse {
     pub api_port: u16,
     /// Whether TLS is on for the current process.
     pub tls_enabled: bool,
+    /// Implicit-TLS SMTP port the running configuration binds, `0` when it does not.
+    pub smtps_port: u16,
+    /// Implicit-TLS IMAP port the running configuration binds, `0` when it does not.
+    pub imaps_port: u16,
     /// Certificate bundle the running configuration loads, when one is configured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tls_cert: Option<String>,
@@ -211,6 +215,10 @@ pub struct SetupRequest {
     pub api_port: Option<u16>,
     /// Whether TLS should be on after the next start.
     pub tls_enabled: Option<bool>,
+    /// Implicit-TLS SMTP port after the next start. `0` leaves it off.
+    pub smtps_port: Option<u16>,
+    /// Implicit-TLS IMAP port after the next start. `0` leaves it off.
+    pub imaps_port: Option<u16>,
     /// Certificate bundle (leaf first) to load after the next start.
     pub tls_cert: Option<String>,
     /// Its private key.
@@ -241,6 +249,12 @@ pub struct SetupApplied {
     /// The key path written to `tls.key_path`, when it was given.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tls_key: Option<String>,
+    /// The implicit-TLS SMTP port written to `smtp.smtps_port`, when it differed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub smtps_port: Option<u16>,
+    /// The implicit-TLS IMAP port written to `imap.imaps_port`, when it differed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub imaps_port: Option<u16>,
     /// Whether a restart is needed for the stored values to take effect.
     pub restart_required: bool,
 }
@@ -335,6 +349,72 @@ pub async fn count_messages(state: &AppState) -> Option<i64> {
     } else {
         None
     }
+}
+
+/// Where `POST /api/v1/storage/export` should write.
+#[derive(Debug, Deserialize)]
+pub struct StorageExportRequest {
+    /// A path inside the container, or an `s3://` / `webdav://` URL.
+    pub to: String,
+    /// Accepted and ignored. This endpoint always exports while the server is up.
+    #[serde(default)]
+    pub live: bool,
+}
+
+/// What one export produced.
+#[derive(Debug, Serialize)]
+pub struct StorageExportResponse {
+    /// Where the archive went.
+    pub destination: String,
+    /// Size of the archive, in bytes.
+    pub bytes: u64,
+    /// How many files the archive holds.
+    pub members: usize,
+    /// Always true: the server answering this request cannot stop itself first.
+    pub live: bool,
+}
+
+/// `POST /api/v1/storage/export`
+///
+/// Runs `ferroma storage export --live`. Import is not offered here: it refuses
+/// while a server is listening, because a restore writes both halves underneath
+/// that process. The new host runs `ferroma storage import` after its own server
+/// is stopped.
+pub async fn storage_export(
+    State(state): State<AppState>,
+    admin: AdminUser,
+    Json(request): Json<StorageExportRequest>,
+) -> Result<Json<StorageExportResponse>, ApiError> {
+    let to = request.to.trim();
+    if to.is_empty() {
+        return Err(ApiError::new(FerromaError::Invalid(
+            "say where the archive should go".into(),
+        )));
+    }
+    let writer = state.backup.clone().ok_or_else(|| {
+        ApiError::new(FerromaError::Invalid(
+            "this process cannot write an archive; run `ferroma storage export --live` instead".into(),
+        ))
+    })?;
+    let report = writer(to.to_string()).await.map_err(|error| {
+        ApiError::new(FerromaError::Invalid(error.chars().take(500).collect()))
+    })?;
+    let report = StorageExportResponse {
+        destination: report.destination,
+        bytes: report.bytes,
+        members: report.members,
+        live: true,
+    };
+    audit(
+        &state,
+        &admin,
+        "storage.export",
+        Some("storage"),
+        None,
+        serde_json::json!({ "destination": report.destination, "bytes": report.bytes }),
+    )
+    .await;
+    Ok(Json(report))
 }
 
 /// `POST /api/v1/storage/gc`
@@ -594,6 +674,8 @@ pub async fn setup_status(
         api_host: state.config.api.host.clone(),
         api_port: state.config.api.port,
         tls_enabled: state.config.tls.enabled,
+        smtps_port: state.config.smtp.smtps_port,
+        imaps_port: state.config.imap.imaps_port,
         tls_cert: state
             .config
             .tls
@@ -812,13 +894,52 @@ pub async fn setup(
         }
     }
 
+    // 465 and 993 are listeners, so they take effect on the next start, the same way the
+    // certificate does. Turning them on also refuses a password on the plaintext ports:
+    // a client that can reach 465 has no reason to send one on 587 before STARTTLS.
+    if let Some(port) = request.smtps_port {
+        if port != state.config.smtp.smtps_port {
+            state
+                .repos
+                .settings
+                .set("smtp.smtps_port", serde_json::json!(port))
+                .await?;
+            applied.smtps_port = Some(port);
+        }
+    }
+    if let Some(port) = request.imaps_port {
+        if port != state.config.imap.imaps_port {
+            state
+                .repos
+                .settings
+                .set("imap.imaps_port", serde_json::json!(port))
+                .await?;
+            applied.imaps_port = Some(port);
+        }
+    }
+    let implicit = request.smtps_port.unwrap_or(0) != 0 || request.imaps_port.unwrap_or(0) != 0;
+    if implicit {
+        state
+            .repos
+            .settings
+            .set("smtp.require_tls_for_auth", serde_json::json!(true))
+            .await?;
+        state
+            .repos
+            .settings
+            .set("imap.require_tls_for_login", serde_json::json!(true))
+            .await?;
+    }
+
     applied.restart_required = applied.hostname.is_some()
         || applied.public_url.is_some()
         || applied.api_host.is_some()
         || applied.api_port.is_some()
         || applied.tls_enabled.is_some()
         || applied.tls_cert.is_some()
-        || applied.tls_key.is_some();
+        || applied.tls_key.is_some()
+        || applied.smtps_port.is_some()
+        || applied.imaps_port.is_some();
 
     if applied.restart_required {
         // Every field above is read once at boot, which is why they are stored rather than

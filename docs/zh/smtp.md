@@ -317,7 +317,7 @@ max_message_size` 时，当 `max_message_size` 为 `0` 时，或者当 `max_mime
 ### `require_tls_for_auth`
 
 在 `config/ferroma.toml` 中默认为 `false`，这样一次裸 `cargo run` 无需证书即可工作。
-`docker-compose.prod.yml` 设置 `FERROMA__SMTP__REQUIRE_TLS_FOR_AUTH: 'true'`，生产 MX
+`docker-compose.yml` 设置 `FERROMA__SMTP__REQUIRE_TLS_FOR_AUTH: 'true'`，生产 MX
 应当保持这一设置：`AUTH PLAIN` 与 `AUTH LOGIN` 都用 base64 发送口令，而那是编码，
 不是加密。在明文 587 端口上，被动观察者能读到明文口令。开启该标志后，在 `STARTTLS`
 完成之前，`AUTH` 既不被宣告也不被接受。

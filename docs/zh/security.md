@@ -253,7 +253,7 @@ tracing::warn!(
 ```
 
 并且`has_ephemeral_secret()`返回`true`，调用方因此可以拒绝在该状态下提供服务。
-`docker-compose.yml`与`docker-compose.prod.yml`都要求它
+`docker-compose.yml`与`docker-compose.yml`都要求它
 （`${FERROMA_JWT_SECRET:?set FERROMA_JWT_SECRET in .env}`），`.env.example`给出了生成
 命令：
 
@@ -505,7 +505,7 @@ tls.self_signed_fallback requires tls.allow_insecure_dev_mode = true
 ### 7.5 `require_tls_for_auth`与`require_tls_for_login`
 
 两者默认都是`false`，这样一次裸的`cargo run`无需证书就能跑起来，而两者在
-`docker-compose.prod.yml`中都被设为`true`：
+`docker-compose.yml`中都被设为`true`：
 
 ```yaml
 FERROMA__SMTP__REQUIRE_TLS_FOR_AUTH: 'true'
@@ -821,7 +821,7 @@ sender          recipient   message_id   result   duration
 
 * **单机 compose 在缺少密钥时快速失败。** `docker-compose.yml` 里的
   `${FERROMA_JWT_SECRET:?set FERROMA_JWT_SECRET in .env}` 与 `${POSTGRES_PASSWORD:?…}`
-  意味着缺少密钥的部署根本不会启动，而不是带着默认值启动。`docker-compose.prod.yml`
+  意味着缺少密钥的部署根本不会启动，而不是带着默认值启动。`docker-compose.yml`
   刻意不设 JWT 密钥：服务器首次启动时会生成一个并写进数据卷，这也是那个卷含密的
   原因之一。
 * **备份是运维者的事，凭据也一样。** 不再有脚本替你排除 `*.env` 或 `credentials*`；
@@ -894,7 +894,7 @@ sender          recipient   message_id   result   duration
 | 45 | 启动时强制要求密钥 | compose 的`${VAR:?}`插值 | 已实现 |
 | 46 | 容器以非特权身份运行 | `Dockerfile`的`USER ferroma`，uid 10001 | 已实现 |
 | 47 | 数据库不对外发布 | `postgres`服务上用`expose`而不是`ports` | 已实现 |
-| 48 | 生产环境的`Secure` cookie | `api.secure_cookies`，由`docker-compose.prod.yml`设为 true | 已实现（配置） |
+| 48 | 生产环境的`Secure` cookie | `api.secure_cookies`，由`docker-compose.yml`设为 true | 已实现（配置） |
 | 49 | 默认关闭 CORS | `api.cors_origins = []`（仅同源） | 已实现（配置） |
 | 50 | 仅在可信时使用`X-Forwarded-For` | `api.trust_proxy_headers = false`默认 | 已实现（配置） |
 | 51 | 未认证 HTTP 到不了数据 | 除`/health`、`/version`、`/.well-known/*`外，每条`/api/v1`路由都要 bearer/cookie | 已实现 |

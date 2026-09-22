@@ -9,11 +9,9 @@
  * command: everything an operator would otherwise pass as a flag or an environment
  * variable — the domain, the hostname, the public URL, the API listener, the TLS files —
  * is a field here, stored in the database and adopted by the server on its next start
- * (see `apply_stored_settings`). Three things cannot move here, and the page says so
- * rather than pretending otherwise: the database connection (a process has to reach
- * PostgreSQL before it can serve a page, and the settings table lives in it), the
- * container image, and the published ports (Docker fixes port mappings when the container
- * is created).
+ * (see `apply_stored_settings`). The database is the first step of the same page: it
+ * is submitted with the rest, and the connection happens before the administrator is
+ * created, without replacing the form. The container image still cannot move here.
  */
 
 import { API_BASE, ApiError, clearTokens, request, setTokens } from '../../shared/api.js';
@@ -46,6 +44,17 @@ export async function render() {
   const root = el('div', { class: 'setup-view' });
 
   try {
+    let databaseFirst = false;
+    try {
+      const bootstrap = await request(`${API_BASE}/bootstrap`, { toast: false, retryOn401: false });
+      databaseFirst = Boolean(bootstrap && bootstrap.required);
+    } catch {
+      databaseFirst = false;
+    }
+    if (databaseFirst) {
+      root.append(renderWizard(null));
+      return { node: root, cleanup() {} };
+    }
     const payload = await request(`${API_BASE}/setup`, { toast: false, retryOn401: false });
     if (payload && payload.required) {
       root.append(renderWizard(payload));
@@ -89,6 +98,39 @@ export async function render() {
  * @param {Record<string, unknown>} status the `GET /setup` body the form prefills from
  */
 function renderWizard(status) {
+  const needsDatabase = !status;
+  const dbHost = el('input', {
+    class: 'input',
+    id: 'setup-db-host',
+    type: 'text',
+    autocomplete: 'off',
+    spellcheck: 'false',
+    placeholder: '127.0.0.1:5432',
+    value: '127.0.0.1:5432',
+  });
+  const dbUser = el('input', {
+    class: 'input',
+    id: 'setup-db-user',
+    type: 'text',
+    autocomplete: 'off',
+    spellcheck: 'false',
+    placeholder: 'ferroma',
+  });
+  const dbPassword = el('input', {
+    class: 'input',
+    id: 'setup-db-password',
+    type: 'password',
+    autocomplete: 'off',
+  });
+  const setupCode = el('input', {
+    class: 'input',
+    id: 'setup-db-code',
+    type: 'text',
+    autocomplete: 'off',
+    spellcheck: 'false',
+    autocapitalize: 'characters',
+    placeholder: 'ABCD1234',
+  });
   const email = el('input', {
     class: 'input',
     id: 'setup-email',
@@ -120,6 +162,7 @@ function renderWizard(status) {
   const apiHost = el('input', { class: 'input', id: 'setup-api-host', type: 'text', autocomplete: 'off' });
   const apiPort = el('input', { class: 'input', id: 'setup-api-port', type: 'number', min: '1', max: '65535' });
   const tlsEnabled = el('input', { type: 'checkbox', id: 'setup-tls-enabled' });
+  const implicitTls = el('input', { type: 'checkbox', id: 'setup-implicit-tls' });
   const tlsCert = el('input', { class: 'input', id: 'setup-tls-cert', type: 'text', autocomplete: 'off' });
   const tlsKey = el('input', { class: 'input', id: 'setup-tls-key', type: 'text', autocomplete: 'off' });
 
@@ -129,6 +172,7 @@ function renderWizard(status) {
   apiHost.value = String(meta.api_host || '0.0.0.0');
   apiPort.value = String(meta.api_port || 8080);
   tlsEnabled.checked = Boolean(meta.tls_enabled);
+  implicitTls.checked = Number(meta.smtps_port) === 465 && Number(meta.imaps_port) === 993;
   tlsCert.value = String(meta.tls_cert || '');
   tlsKey.value = String(meta.tls_key || '');
 
@@ -168,6 +212,8 @@ function renderWizard(status) {
       api_host: apiHost.value.trim(),
       api_port: Number.parseInt(apiPort.value, 10),
       tls_enabled: tlsEnabled.checked,
+      smtps_port: implicitTls.checked ? 465 : 0,
+      imaps_port: implicitTls.checked ? 993 : 0,
       tls_cert: tlsCert.value.trim(),
       tls_key: tlsKey.value.trim(),
     };
@@ -195,6 +241,10 @@ function renderWizard(status) {
       show(t('The public URL must start with http:// or https://.'));
       return;
     }
+    if (needsDatabase && (dbHost.value.trim() === '' || dbUser.value.trim() === '' || setupCode.value.trim() === '')) {
+      show(t('Enter the database host, user name, password and the setup code.'));
+      return;
+    }
     if (values.api_host === '') {
       show(t('Enter the address the API should listen on.'));
       return;
@@ -209,8 +259,24 @@ function renderWizard(status) {
     }
 
     submit.disabled = true;
-    setText(submit, t('Creating…'));
+    setText(submit, needsDatabase ? t('Connecting…') : t('Creating…'));
     try {
+      if (needsDatabase) {
+        await request(`${API_BASE}/bootstrap`, {
+          method: 'POST',
+          body: {
+            host: dbHost.value.trim(),
+            username: dbUser.value.trim(),
+            password: dbPassword.value,
+            database: 'ferroma',
+            code: setupCode.value.trim(),
+          },
+          toast: false,
+          retryOn401: false,
+        });
+        await waitForSetup();
+        setText(submit, t('Creating…'));
+      }
       const payload = await request(`${API_BASE}/setup`, { method: 'POST', body: values, toast: false });
       if (payload) setTokens(payload);
       const applied = payload && payload.applied ? payload.applied : null;
@@ -338,6 +404,25 @@ function renderWizard(status) {
     }
   }
 
+  /**
+   * Wait until the wizard's own endpoint answers.
+   *
+   * Connecting the database switches the process onto the real API. The switch is not
+   * instant, and a request that lands in it is a 404 the form would report as a failure.
+   */
+  async function waitForSetup() {
+    for (let attempt = 0; attempt < 25; attempt += 1) {
+      try {
+        await request(`${API_BASE}/setup`, { toast: false, retryOn401: false });
+        return;
+      } catch (error) {
+        const late = error instanceof ApiError && (error.status === 404 || error.status === 0 || error.network);
+        if (!late || attempt === 24) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 400));
+      }
+    }
+  }
+
   function show(message) {
     setText(error, message);
     setHidden(error, false);
@@ -350,19 +435,31 @@ function renderWizard(status) {
     ),
 
     el('div', { class: 'setup-form' }, [
-      setupStep(1, t('Administrator account'), t('The account that signs in here, and the first mailbox.'), [
+      needsDatabase
+        ? setupStep(1, t('PostgreSQL'), t('The PostgreSQL this host already runs. The empty database is named ferroma.'), [
+            el('div', { class: 'row' }, [
+              field(t('Host'), dbHost),
+              field(t('User name'), dbUser),
+            ]),
+            el('div', { class: 'row' }, [
+              field(t('Password'), dbPassword),
+              field(t('Setup code'), setupCode, t('Printed in the container log each time the server starts.')),
+            ]),
+          ])
+        : el('div'),
+      setupStep(needsDatabase ? 2 : 1, t('Administrator account'), t('The account that signs in here, and the first mailbox.'), [
         el('div', { class: 'row' }, [
           field(t('Administrator email'), email),
           field(t('Password'), password, t('At least 8 characters.')),
         ]),
       ]),
-      setupStep(2, t('Mail domain'), t('The domain this server receives mail for. Addresses, DKIM and the DNS checks are all grouped by it.'), [
+      setupStep(needsDatabase ? 3 : 2, t('Mail domain'), t('The domain this server receives mail for. Addresses, DKIM and the DNS checks are all grouped by it.'), [
         el('div', { class: 'row' }, [
           field(t('Primary mail domain'), domain),
           field(t('Description'), description, t('Optional, shown in the domain list.')),
         ]),
       ]),
-      setupStep(3, t('Server and access'), t('Stored in the database and applied on the next restart. A value given by the deployment — a flag or an environment variable — always wins over these.'), [
+      setupStep(needsDatabase ? 4 : 3, t('Server and access'), t('Stored in the database and applied on the next restart. A value given by the deployment — a flag or an environment variable — always wins over these.'), [
         el('div', { class: 'row' }, [
           field(t('Server hostname'), hostname, t('The name this server announces in SMTP and message headers.')),
           field(t('Public URL'), publicUrl, t('Where this server is reached, e.g. https://mail.example.com. Used in autoconfiguration and generated links.')),
@@ -375,6 +472,14 @@ function renderWizard(status) {
           tlsEnabled,
           el('span', { text: t('Serve TLS from this process') }),
         ]),
+        el('label', { class: 'checkbox', for: 'setup-implicit-tls' }, [
+          implicitTls,
+          el('span', { text: t('Also listen on 465 and 993') }),
+        ]),
+        el('p', {
+          class: 'field-hint',
+          text: t('465 and 993 are TLS from the first byte. 587 and 143 stay available and upgrade with STARTTLS. A password is then refused before that upgrade.'),
+        }),
         tlsFields,
       ]),
       error,

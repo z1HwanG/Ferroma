@@ -631,6 +631,11 @@ pub struct AppState {
     pub mail_service: crate::service::MessageService,
     /// The bounded in-process log ring behind `GET /api/v1/logs`.
     pub logs: crate::logbuf::LogSink,
+    /// Writes one archive of both halves, when the process that owns the data registered it.
+    ///
+    /// The archive writer lives in the server binary. A process that did not register a
+    /// writer leaves this empty, and the export endpoint says so instead of writing nothing.
+    pub backup: Option<BackupWriter>,
     /// Asked for when the process has to come back up for a stored setting to be real.
     ///
     /// The first-run wizard can only *write* the advertised hostname, the public URL, the HTTP
@@ -639,6 +644,21 @@ pub struct AppState {
     /// been asked to come back up — see `restart_itself` in `server/src/serve.rs`.
     pub restart: RestartSignal,
 }
+
+/// What one archive export produced.
+#[derive(Debug, Clone)]
+pub struct BackupReport {
+    /// Where the archive went.
+    pub destination: String,
+    /// Size of the archive, in bytes.
+    pub bytes: u64,
+    /// How many files the archive holds.
+    pub members: usize,
+}
+
+/// Writes one archive. The server binary supplies the implementation.
+pub type BackupWriter =
+    Arc<dyn Fn(String) -> futures_util::future::BoxFuture<'static, Result<BackupReport, String>> + Send + Sync>;
 
 /// A process's request to restart itself.
 ///
@@ -732,6 +752,7 @@ impl AppState {
             uploads: Arc::new(UploadRegistry::new()),
             mail_service,
             logs: crate::logbuf::LogSink::new(Arc::new(crate::logbuf::LogBuffer::default())),
+            backup: None,
             restart: RestartSignal::default(),
         }
     }
@@ -779,6 +800,13 @@ impl AppState {
     #[must_use]
     pub fn with_database(mut self, database: Arc<Database>) -> Self {
         self.database = Some(database);
+        self
+    }
+
+    /// Register the process that can write a store archive.
+    #[must_use]
+    pub fn with_backup(mut self, backup: BackupWriter) -> Self {
+        self.backup = Some(backup);
         self
     }
 

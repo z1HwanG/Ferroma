@@ -12,6 +12,77 @@ a section a release has nothing for is left out rather than written empty.
 
 The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
+## [0.1.10] — 2026-09-23
+
+### Fixed
+
+- **A JMAP client can sign in with the mailbox password.** `GET /.well-known/jmap`
+  accepted only a bearer token minted by a Ferroma-specific call, so a client that
+  follows RFC 8620 and sends `Authorization: Basic` received `401` and stopped. The
+  same address now accepts Basic — the full address and its password — and a `401`
+  names `Basic` in `WWW-Authenticate`. A repeated Basic login reuses the JMAP session
+  already open for that address instead of writing one row per request. Bearer tokens
+  still work, and a browser cookie still does not reach this surface.
+
+- **Autodiscovery no longer tells a client to open 587 as implicit TLS.**
+  `GET /.well-known/ferroma` said `tls: true` and nothing else. A client that reads
+  that as "TLS from the first byte" opens the submission port that way and the
+  handshake fails; the same client opening a closed 465 as STARTTLS waits until it
+  times out. Each endpoint now carries `security`: `implicit` on 465 and 993,
+  `starttls` on 587 and 143. An implicit port that is not listening is not
+  advertised — the document names the plaintext port and `starttls` instead.
+
+- **The Admin console is usable below 860px.** The sidebar stayed docked at 248px, so
+  the section it opened was what got clipped. Below that width it is a drawer, opened
+  from the top bar and closed by the section it leads to, the backdrop, or Escape.
+  Wide tables still scroll inside their own box.
+
+- **A quoted reply keeps its lines.** The quoted HTML is the other client's own
+  tables and paragraphs. The editor's reset gave those no layout, so the older
+  message collapsed into one line. Inside the quote, paragraphs keep their margin and
+  a table stays a table.
+
+- **A signature card is no longer a black slab in dark mode.** The reading frame
+  inverts the message and then inverts images back. A card that states its own light
+  background came out near-black with the avatar still on it. Anything that brought
+  its own background is inverted back once, and the images inside it are not inverted
+  a second time.
+
+- **An inline image with only a Content-ID is stored.** Delivery kept a part when it
+  looked like an attachment. A logo that carries a `Content-ID` and neither a filename
+  nor `Content-Disposition: attachment` was dropped, and the `cid:` in the HTML had
+  nothing to resolve to. Such an image is now an attachment. SVG stays out. Remote
+  `http:` and `https:` images are still not loaded until the reader asks: the reading
+  pane has a per-message control for that, because fetching them tells the sender the
+  message was opened.
+
+### Changed
+
+- **One deployment, and it does not bring a database.** `docker compose up -d`
+  reads `docker-compose.yml`, which starts Ferroma only, on the host's network.
+  The host is assumed to already run PostgreSQL. `docker-compose.demo.yml` is a
+  demonstration: it builds the checkout and starts its own database, in plaintext,
+  and the command has to name it. The setup page is one form: its first step asks for that server's
+  host, user name and password, and the rest of the form — the administrator, the
+  mail domain, the hostname, TLS, and whether 465 and 993 listen — is filled in
+  before anything is submitted. Connecting the database happens behind that one
+  click; the form is not replaced and the address bar does not move. The implicit
+  ports and the "password only after TLS" switches are stored by the wizard and
+  adopted on the next start, so the compose file no longer states them.
+  `docker-compose.yml` is the plaintext checkout stack, not an install.
+  `docker-compose.external-db.yml` remains only so an older `scripts/deploy.sh`
+  still finds it.
+
+### Added
+
+- **`POST /api/v1/storage/export` — the move, from the console.** The Storage page
+  takes a path inside the container, or an `s3://` or `webdav://` URL, and writes one
+  archive of both halves while the server stays up. The archive is marked live. Import
+  is not offered there: it refuses while a server is listening, because a restore
+  writes both halves underneath that process. The page prints the command to run on
+  the new host once that host's server is stopped. S3 and WebDAV credentials stay in
+  the environment and are not stored by the page.
+
 ## [0.1.9] — 2026-09-22
 
 ### Fixed

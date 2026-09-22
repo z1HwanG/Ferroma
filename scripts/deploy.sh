@@ -34,7 +34,7 @@ set -eu
 # Locations and defaults
 # -----------------------------------------------------------------------------
 ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
-COMPOSE_FILE="docker-compose.external-db.yml"
+COMPOSE_FILE="docker-compose.yml"
 ENV_FILE="$ROOT_DIR/.env"
 
 DEFAULT_API_HOST="127.0.0.1"

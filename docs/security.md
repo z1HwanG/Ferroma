@@ -279,7 +279,7 @@ tracing::warn!(
 ```
 
 and `has_ephemeral_secret()` returns `true` so a caller can refuse to serve in
-that state. `docker-compose.yml` and `docker-compose.prod.yml` both require it
+that state. `docker-compose.yml` and `docker-compose.yml` both require it
 (`${FERROMA_JWT_SECRET:?set FERROMA_JWT_SECRET in .env}`), and `.env.example`
 gives the generation command:
 
@@ -559,7 +559,7 @@ turn verification off somewhere else.
 ### 7.5 `require_tls_for_auth` and `require_tls_for_login`
 
 Both default to `false` so a bare `cargo run` works without certificates, and
-both are set to `true` in `docker-compose.prod.yml`:
+both are set to `true` in `docker-compose.yml`:
 
 ```yaml
 FERROMA__SMTP__REQUIRE_TLS_FOR_AUTH: 'true'
@@ -911,7 +911,7 @@ it as tightly as the database itself.
 
 Practices the repository already enforces:
 
-* **The single-host compose fails fast on a missing secret.** `${FERROMA_JWT_SECRET:?set FERROMA_JWT_SECRET in .env}` and `${POSTGRES_PASSWORD:?…}` in `docker-compose.yml` mean a deployment with no secret does not start, rather than starting with a default. `docker-compose.prod.yml` deliberately leaves the JWT secret unset: the server generates one into the data volume on first start, which is one reason that volume is secret-bearing.
+* **The single-host compose fails fast on a missing secret.** `${FERROMA_JWT_SECRET:?set FERROMA_JWT_SECRET in .env}` and `${POSTGRES_PASSWORD:?…}` in `docker-compose.yml` mean a deployment with no secret does not start, rather than starting with a default. `docker-compose.yml` deliberately leaves the JWT secret unset: the server generates one into the data volume on first start, which is one reason that volume is secret-bearing.
 * **Backups are the operator's, credentials included.** No script excludes `*.env`
   or `credentials*` for you; an archive of `.env` or of the `ferroma-data` volume
   must be encrypted and stored like the secrets it holds.
@@ -982,7 +982,7 @@ Rotation, when it is needed:
 | 45 | Secrets required at boot | compose `${VAR:?}` interpolation | implemented |
 | 46 | Container runs unprivileged | `Dockerfile` `USER ferroma`, uid 10001 | implemented |
 | 47 | Database not published | `expose`, not `ports`, on the `postgres` service | implemented |
-| 48 | `Secure` cookies in production | `api.secure_cookies`, set true by `docker-compose.prod.yml` | implemented (config) |
+| 48 | `Secure` cookies in production | `api.secure_cookies`, set true by `docker-compose.yml` | implemented (config) |
 | 49 | CORS closed by default | `api.cors_origins = []` (same-origin only) | implemented (config) |
 | 50 | `X-Forwarded-For` only when trusted | `api.trust_proxy_headers = false` by default | implemented (config) |
 | 51 | Unauthenticated HTTP cannot reach data | bearer/cookie on every `/api/v1` route except `/health`, `/version`, `/.well-known/*` | implemented |

@@ -250,6 +250,11 @@ impl ContentType {
         self.type_ == "text"
     }
 
+    /// Whether this is an `image/*` type.
+    pub fn is_image(&self) -> bool {
+        self.type_ == "image"
+    }
+
     /// Whether this is a `message/*` type (`message/rfc822`, `message/delivery-status`).
     pub fn is_message(&self) -> bool {
         self.type_ == "message"
@@ -409,6 +414,20 @@ impl MimePart {
     /// Whether this part carries text.
     pub fn is_text(&self) -> bool {
         self.content_type.is_text()
+    }
+
+    /// Whether this part is an image the HTML names by `Content-ID`.
+    ///
+    /// Marketing mail and signatures attach a logo this way and give it neither a
+    /// filename nor `Content-Disposition: attachment`. It is still a part the reader
+    /// has to be able to fetch, or the `cid:` image is a broken box.
+    pub fn is_inline_image(&self) -> bool {
+        if self.content_id().is_none() || !self.content_type.is_image() {
+            return false;
+        }
+        let subtype = self.content_type.subtype.to_ascii_lowercase();
+        // SVG can carry script. It stays out of the inline path on purpose.
+        subtype != "svg+xml" && !subtype.contains("svg")
     }
 
     /// Whether this part should be presented to the user as an attachment:
@@ -1255,6 +1274,16 @@ mod tests {
         let mut bare = MimePart::leaf(ContentType::parse("image/png"), vec![]);
         bare.headers.append("Content-Disposition", "inline");
         assert!(!bare.is_attachment());
+        // No filename, so it is not an attachment — but the HTML names it, so it still
+        // has to be stored or the reader has nothing to put in the box.
+        assert!(!bare.is_inline_image());
+        bare.headers.append("Content-ID", "<logo@host>");
+        assert!(bare.is_inline_image());
+
+        let svg = MimePart::leaf(ContentType::parse("image/svg+xml"), vec![]);
+        let mut svg = svg;
+        svg.headers.append("Content-ID", "<mark@host>");
+        assert!(!svg.is_inline_image(), "svg can carry script and stays out");
     }
 
     #[test]

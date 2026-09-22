@@ -48,13 +48,29 @@ async function load() {
  * @param {Node} root the view this form lives in, so it can hand the page over on success
  */
 function form(state, root) {
-  const url = el('input', {
+  const host = el('input', {
     class: 'input',
-    id: 'bootstrap-url',
+    id: 'bootstrap-host',
     type: 'text',
     autocomplete: 'off',
     spellcheck: 'false',
-    placeholder: 'postgres://ferroma:password@127.0.0.1:5432/ferroma',
+    placeholder: '127.0.0.1:5432',
+    value: '127.0.0.1:5432',
+  });
+  const username = el('input', {
+    class: 'input',
+    id: 'bootstrap-user',
+    type: 'text',
+    autocomplete: 'off',
+    spellcheck: 'false',
+    placeholder: 'ferroma',
+  });
+  const password = el('input', {
+    class: 'input',
+    id: 'bootstrap-password',
+    type: 'password',
+    autocomplete: 'off',
+    spellcheck: 'false',
   });
   const code = el('input', {
     class: 'input',
@@ -78,11 +94,11 @@ function form(state, root) {
 
   submit.addEventListener('click', async () => {
     setHidden(error, true);
-    const address = url.value.trim();
-    if (address === '') {
-      setText(error, t('Enter the database address.'));
+    const address = host.value.trim();
+    if (address === '' || username.value.trim() === '') {
+      setText(error, t('Enter the database host, user name and password.'));
       setHidden(error, false);
-      url.focus();
+      host.focus();
       return;
     }
     if (code.value.trim() === '') {
@@ -97,7 +113,13 @@ function form(state, root) {
     try {
       await request(`${API_BASE}/bootstrap`, {
         method: 'POST',
-        body: { url: address, code: code.value.trim() },
+        body: {
+          host: address,
+          username: username.value.trim(),
+          password: password.value,
+          database: 'ferroma',
+          code: code.value.trim(),
+        },
         toast: false,
         retryOn401: false,
       });
@@ -147,7 +169,7 @@ function form(state, root) {
   }
 
   const steps = el('ol', { class: 'bootstrap-steps' }, [
-    el('li', { text: t('Create an empty database and a role for Ferroma. It never creates one itself.') }),
+    el('li', { text: t('Use the PostgreSQL this host already runs. Create an empty database named ferroma and a role that can connect to it.') }),
     el('li', {
       text: t('Find the setup code in this server\'s log — `docker compose logs ferroma`, or the terminal it runs in. A new code is printed on every start.'),
     }),
@@ -163,12 +185,16 @@ function form(state, root) {
             el('h2', { class: 'setup-step-title', text: t('PostgreSQL') }),
             el('p', {
               class: 'setup-step-lede',
-              text: t('Not the Docker one it might have started next to: Ferroma connects over the network, so the address is whatever this process can reach.'),
+              text: t('The PostgreSQL this host already runs. Ferroma connects over the network, so the host is whatever this process can reach.'),
             }),
           ]),
         ]),
         el('div', { class: 'setup-step-body' }, [
-          el('div', { class: 'field' }, [el('label', { class: 'field-label', for: 'bootstrap-url', text: t('Database address') }), url]),
+          el('div', { class: 'field' }, [el('label', { class: 'field-label', for: 'bootstrap-host', text: t('Host') }), host]),
+          el('div', { class: 'row' }, [
+            el('div', { class: 'field' }, [el('label', { class: 'field-label', for: 'bootstrap-user', text: t('User name') }), username]),
+            el('div', { class: 'field' }, [el('label', { class: 'field-label', for: 'bootstrap-password', text: t('Password') }), password]),
+          ]),
           el('div', { class: 'field' }, [el('label', { class: 'field-label', for: 'bootstrap-code', text: t('Setup code') }), code]),
           steps,
           error,

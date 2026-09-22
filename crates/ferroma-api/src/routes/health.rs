@@ -346,8 +346,17 @@ pub struct DiscoveredEndpoint {
     pub host: String,
     /// Port number.
     pub port: u16,
-    /// Whether TLS is used.
+    /// Whether the connection is encrypted at all.
+    ///
+    /// This does not say how. A client that reads `true` as "TLS from the first byte"
+    /// opens 587 that way and the handshake fails: 587 speaks SMTP first. `security`
+    /// names the mode.
     pub tls: bool,
+    /// `starttls` on 587 and 143, `implicit` on 465 and 993.
+    ///
+    /// Omitted on a plaintext port. A client that only reads `tls` still works.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security: Option<String>,
 }
 
 /// The `GET /.well-known/ferroma` body (specification §32).
@@ -384,26 +393,48 @@ impl WellKnownResponse {
             api: format!("{public}{base_path}"),
             imap: DiscoveredEndpoint {
                 host: host.clone(),
-                // 993 when implicit TLS is available, otherwise the plaintext port.
+                // 993 when implicit TLS is available, otherwise the plaintext port,
+                // which upgrades with STARTTLS. Advertising 993 while it is not
+                // listening is what makes a client time out on "TLS".
                 port: if config.imap.imaps_port != 0 {
                     config.imap.imaps_port
                 } else {
                     config.imap.port
                 },
                 tls: config.imap.imaps_port != 0 || tls_configured,
+                security: security_mode(config.imap.imaps_port != 0, tls_configured),
             },
             smtp: DiscoveredEndpoint {
                 host,
+                // 587, not 465, unless implicit TLS is actually listening. A client
+                // that opens 587 as implicit TLS fails immediately; one that opens a
+                // closed 465 as STARTTLS waits until it times out.
                 port: if config.smtp.smtps_port != 0 {
                     config.smtp.smtps_port
                 } else {
                     config.smtp.submission_port
                 },
                 tls: config.smtp.smtps_port != 0 || tls_configured,
+                security: security_mode(config.smtp.smtps_port != 0, tls_configured),
             },
             web: public.to_string(),
             protocol_version: config.client.protocol_version,
         }
+    }
+}
+
+/// How a discovered port is encrypted.
+///
+/// An implicit-TLS port (465, 993) is `implicit`. A plaintext port that can upgrade
+/// (587, 143) is `starttls` once TLS exists at all. A deployment with no TLS names
+/// neither, and the field is left out.
+fn security_mode(implicit: bool, tls_configured: bool) -> Option<String> {
+    if implicit {
+        Some("implicit".to_string())
+    } else if tls_configured {
+        Some("starttls".to_string())
+    } else {
+        None
     }
 }
 
@@ -477,6 +508,10 @@ mod tests {
         // The defaults leave 993/465 off, so the plaintext ports are advertised.
         assert_eq!(document.imap.port, 143);
         assert_eq!(document.smtp.port, 587);
+        // TLS is on because the public URL is https, but neither implicit port is
+        // listening, so a client must upgrade rather than speak TLS first.
+        assert_eq!(document.imap.security.as_deref(), Some("starttls"));
+        assert_eq!(document.smtp.security.as_deref(), Some("starttls"));
     }
 
     #[test]
@@ -497,6 +532,8 @@ mod tests {
         assert!(document.imap.tls);
         assert_eq!(document.smtp.port, 465);
         assert!(document.smtp.tls);
+        assert_eq!(document.imap.security.as_deref(), Some("implicit"));
+        assert_eq!(document.smtp.security.as_deref(), Some("implicit"));
     }
 
     #[test]
@@ -505,6 +542,8 @@ mod tests {
         assert_eq!(document.api, "http://localhost:8080/api/v1");
         assert!(!document.imap.tls);
         assert!(!document.smtp.tls);
+        assert!(document.imap.security.is_none());
+        assert!(document.smtp.security.is_none());
     }
 
     #[test]

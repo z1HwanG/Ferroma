@@ -179,12 +179,14 @@ UTC 下的 RFC 3339 / ISO 8601，例如`2026-09-16T12:00:00Z`。除
 ```json
 {
   "api": "https://mail.example.com/api/v1",
-  "imap": { "host": "mail.example.com", "port": 993, "tls": true },
-  "smtp": { "host": "mail.example.com", "port": 587, "tls": true },
+  "imap": { "host": "mail.example.com", "port": 993, "tls": true, "security": "implicit" },
+  "smtp": { "host": "mail.example.com", "port": 587, "tls": true, "security": "starttls" },
   "web": "https://mail.example.com",
   "protocol_version": 1
 }
 ```
+
+`tls` 只说明连接是否加密。`security` 说明方式：465 与 993 是 `implicit`（从第一个字节起就是 TLS），587 与 143 是 `starttls`（先说 SMTP 或 IMAP，再升级）。把每个 `tls: true` 都当成隐式 TLS 的客户端会用这种方式打开 587，握手随即失败。隐式端口没有在监听时，文档给出明文端口和 `starttls`，而不是通告一个没人听的 465 或 993。没有配置 TLS 时省略 `security`。
 
 ### `GET /.well-known/mta-sts.txt`与`GET /api/v1/domains/:id/dns`
 
@@ -712,10 +714,12 @@ Ferroma 也提供 RFC 8620 与 RFC 8621 的首批 JMAP 邮件接口。它复用�
 Maildir 文件、仓储、事件和变更日志；不会另建第二套邮箱或邮件存储。JMAP 与 IMAP、
 FCP 并存，并不取代其中任何一个。
 
-客户端先调用 `POST /api/jmap/auth/token`（`email`、`password`、`device_name`）
-获得可单独撤销的 JMAP Bearer 令牌会话。该访问令牌只被 JMAP 端点接受；浏览器
-cookie、普通 REST 令牌和 FCP 令牌都会被拒绝。携带该令牌访问
-`GET /.well-known/jmap` 会得到 RFC 8620 Session 对象及 API、上传和下载 URL 模板。
+标准客户端用 `Authorization: Basic`（完整邮箱地址和它的密码）访问
+`GET /.well-known/jmap`，得到 RFC 8620 Session 对象。`401` 的
+`WWW-Authenticate` 会写明 `Basic`，客户端据此重发密码。同一次请求也接受
+`POST /api/jmap/auth/token`（`email`、`password`、`device_name`）签发的
+JMAP Bearer 令牌。该令牌只被 JMAP 端点接受；浏览器 cookie、普通 REST 令牌和
+FCP 令牌都会被拒绝。Basic 登录会复用该地址已经打开的 JMAP 会话，而不是每次请求都写一行。
 
 | 方法 | 路径 | 用途 |
 |---|---|---|

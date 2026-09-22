@@ -342,7 +342,7 @@ Failure replies — deliberately indistinguishable between "no such user" and
 ### `require_tls_for_auth`
 
 Default `false` in `config/ferroma.toml` so a bare `cargo run` works without
-certificates. `docker-compose.prod.yml` sets
+certificates. `docker-compose.yml` sets
 `FERROMA__SMTP__REQUIRE_TLS_FOR_AUTH: 'true'`, and a production MX should keep it
 there: `AUTH PLAIN` and `AUTH LOGIN` both send the password in base64, which is
 encoding, not encryption. Over plaintext port 587 a passive observer reads the

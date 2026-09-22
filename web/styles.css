@@ -1293,6 +1293,34 @@ html[data-theme-resolved="dark"] .reader-html {
   opacity: 0.82;
 }
 
+/* A quoted message is almost always a table: one row per header, then the body. The page
+   reset zeroes every paragraph's margin and leaves table cells at their default inline
+   layout, which is how "Replied Message" collapsed into a single line. Inside the quote
+   the original structure has to win. */
+.editor blockquote p {
+  margin: 0 0 0.6em;
+}
+
+.editor blockquote table {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  margin: 8px 0;
+  border-collapse: collapse;
+  overflow-x: auto;
+}
+
+.editor blockquote tr {
+  display: table-row;
+}
+
+.editor blockquote td,
+.editor blockquote th {
+  display: table-cell;
+  padding: 2px 8px 2px 0;
+  vertical-align: top;
+}
+
 .compose-tabs {
   display: flex;
   gap: 6px;

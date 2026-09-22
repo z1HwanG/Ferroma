@@ -53,8 +53,21 @@ struct BootstrapStatus {
 struct ConnectRequest {
     /// The code this boot printed to its log.
     code: String,
-    /// `postgres://user:password@host:5432/database`.
+    /// `postgres://user:password@host:5432/database`, when the page sent one string.
+    #[serde(default)]
     url: String,
+    /// Host and port, as the page asks for them: `127.0.0.1:5432`.
+    #[serde(default)]
+    host: String,
+    /// The role.
+    #[serde(default)]
+    username: String,
+    /// The role's password.
+    #[serde(default)]
+    password: String,
+    /// The database name. Empty means `ferroma`.
+    #[serde(default)]
+    database: String,
 }
 
 /// The connect endpoint's answers, as plain JSON objects: one success shape and one
@@ -124,6 +137,41 @@ fn code_matches(expected: &str, submitted: &str) -> bool {
         .zip(submitted.bytes())
         .fold(0u8, |acc, (a, b)| acc | (a ^ b))
         == 0
+}
+
+/// The connection string, from a whole URL or from the three fields the page asks for.
+///
+/// The password is percent-encoded. A password containing `@` or `:` would otherwise
+/// be read as part of the host.
+fn connection_url(request: &ConnectRequest) -> Result<String, String> {
+    let whole = request.url.trim();
+    if !whole.is_empty() {
+        return Ok(whole.to_string());
+    }
+    let host = request.host.trim();
+    let username = request.username.trim();
+    if host.is_empty() || username.is_empty() {
+        return Err("give the database host, the user name and the password".to_string());
+    }
+    let database = {
+        let name = request.database.trim();
+        if name.is_empty() { "ferroma" } else { name }
+    };
+    let user = percent_encode(username);
+    let password = percent_encode(&request.password);
+    Ok(format!("postgres://{user}:{password}@{host}/{database}"))
+}
+
+/// Percent-encode the characters that would break a `postgres://` user or password.
+fn percent_encode(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for byte in raw.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(byte as char),
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 /// Whether a submitted URL is one this server could use at all.
@@ -331,7 +379,10 @@ async fn connect_handler(
         );
     }
 
-    let url = request.url.trim().to_string();
+    let url = match connection_url(&request) {
+        Ok(url) => url,
+        Err(message) => return (StatusCode::BAD_REQUEST, failure("invalid_input", message)),
+    };
     if let Err(message) = validate_url(&url) {
         return (StatusCode::BAD_REQUEST, failure("invalid_input", message));
     }

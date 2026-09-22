@@ -61,7 +61,7 @@ pub fn build(state: AppState) -> Router {
 /// was accepted, and it covers the whole of initialisation: the database form and the first-run
 /// wizard are the same address, one after the other.
 pub fn build_with_root(state: AppState, root: RootApp) -> Router {
-    let api = management_api();
+    let api = management_api().route("/storage/export", post(routes::admin::system::storage_export));
     let client = client_api(&state.config);
     let jmap = jmap_api();
     let discovery = discovery_routes();
@@ -833,6 +833,7 @@ pub fn route_table() -> Vec<(&'static str, &'static str)> {
         // §4.6 storage / audit / settings
         ("GET", "/api/v1/storage"),
         ("POST", "/api/v1/storage/gc"),
+        ("POST", "/api/v1/storage/export"),
         ("GET", "/api/v1/audit"),
         ("GET", "/api/v1/settings"),
         ("PUT", "/api/v1/settings/{key}"),

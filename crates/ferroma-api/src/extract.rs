@@ -389,16 +389,117 @@ impl FromRequestParts<AppState> for JmapAuth {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
-        let auth = authenticate(state, &parts.headers, false).await?;
+        // A JMAP client (RFC 8620) sends `Authorization: Basic` with the mailbox
+        // password on its first request to `/.well-known/jmap`. Minting a bearer
+        // token first is a Ferroma-only step no such client performs, which is why
+        // that request answered 401. Basic is accepted here and turned into the
+        // same JMAP session a bearer token names. A bearer token still has to be a
+        // JMAP one: a browser cookie must not reach this surface.
+        if let Some((email, password)) = basic_credentials(&parts.headers) {
+            let ip = crate::routes::auth::peer_ip(state, &parts.headers);
+            let user_agent = parts
+                .headers
+                .get(axum::http::header::USER_AGENT)
+                .and_then(|value| value.to_str().ok());
+            let device_uid = format!("jmap:{email}");
+            let outcome = state
+                .auth
+                .login(
+                    &email,
+                    &password,
+                    SessionKind::Jmap,
+                    ip,
+                    user_agent,
+                    Some(ferroma_auth::DeviceInfo {
+                        device_uid: device_uid.clone(),
+                        name: Some("JMAP client".to_string()),
+                        platform: None,
+                        client_version: None,
+                        protocol_version: None,
+                    }),
+                )
+                .await
+                .map_err(|err| match err {
+                    FerromaError::RateLimited => ApiError::new(FerromaError::RateLimited)
+                        .with_retry_after(state.config.limits.login_lockout_secs)
+                        .with_www_authenticate(),
+                    other => ApiError::new(other).with_www_authenticate(),
+                })?;
+            // The password was right, which is all this request needed to prove.
+            // `login` has already written a session for it. A client that sends Basic
+            // on every call would otherwise leave one row per call, so the row just
+            // written is revoked and the one already open for this device is reused.
+            let user_id = ferroma_core::UserId::new(outcome.user.id);
+            if let Ok(Some(device)) = state.repos.devices.find_by_uid(user_id, &device_uid).await {
+                if let Ok(Some(existing)) = state
+                    .repos
+                    .sessions
+                    .find_live(user_id, "jmap", Some(device.id), chrono::Utc::now())
+                    .await
+                {
+                    if existing.id != outcome.session.id {
+                        let _ = state
+                            .repos
+                            .sessions
+                            .revoke(ferroma_core::SessionId::new(outcome.session.id))
+                            .await;
+                        return Ok(JmapAuth(Authenticated {
+                            user: outcome.user,
+                            session: existing,
+                            claims: None,
+                        }));
+                    }
+                }
+            }
+            return Ok(JmapAuth(Authenticated {
+                user: outcome.user,
+                session: outcome.session,
+                claims: None,
+            }));
+        }
+
+        let auth = authenticate(state, &parts.headers, false)
+            .await
+            .map_err(|err| err.with_www_authenticate())?;
         if !matches!(
             SessionKind::parse(&auth.session.kind),
             Some(SessionKind::Jmap)
         ) {
             return Err(ApiError::new(FerromaError::Unauthorized(
                 "this endpoint requires a JMAP bearer token".to_string(),
-            )));
+            ))
+            .with_www_authenticate());
         }
         Ok(JmapAuth(auth))
+    }
+}
+
+/// `Authorization: Basic` decoded into the mailbox address and the password.
+///
+/// The scheme is case-insensitive. A value that is not Basic, or that does not
+/// decode, is `None` so the bearer-token path can still be tried. The password
+/// may contain `:`; the address may not, which is already true of an email address.
+fn basic_credentials(headers: &axum::http::HeaderMap) -> Option<(String, String)> {
+    let raw = headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?;
+    let (scheme, token) = raw.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("basic") {
+        return None;
+    }
+    let decoded = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        token.trim(),
+    )
+    .ok()?;
+    let text = String::from_utf8(decoded).ok()?;
+    let (email, password) = text.split_once(':')?;
+    let email = email.trim();
+    if email.is_empty() || password.is_empty() {
+        None
+    } else {
+        Some((email.to_string(), password.to_string()))
     }
 }
 

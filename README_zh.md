@@ -42,33 +42,32 @@ Ferroma 是一套从协议层开始自建的完整邮件系统：自己的 SMTP 
 
 ## 快速开始
 
-官方支持的部署方式是 Docker Compose。你需要一台有公网 IP 的主机、一个 `MX` 记录指向它的域名，以及放行 25 端口。
+唯一支持的部署方式是一个 Compose 文件，`docker-compose.yml`，它只启动 Ferroma。默认这台机器已经在运行 PostgreSQL。你还需要一台有公网 IP 的主机、一个 `MX` 记录指向它的域名，以及放行 25 端口。在宿主机上直接运行二进制不是受支持的安装方式。
 
 ```bash
 git clone https://github.com/z1HwanG/Ferroma && cd Ferroma
-cp .env.example .env          # 填写 POSTGRES_PASSWORD、FERROMA_HOSTNAME、FERROMA_JWT_SECRET
-docker compose up -d
+cp .env.example .env          # 把 FERROMA_VERSION 设成要部署的版本
+docker compose up -d          # 读 docker-compose.yml，也就是部署文件
 docker compose logs -f ferroma
 ```
 
-然后打开 `http://localhost:8080`，跟着首次运行向导走一遍即可。要作为真正的 MX 使用——TLS、DKIM、投递率——请改 `docker-compose.prod.yml`，并按 [`docs/zh/deployment.md`](docs/zh/deployment.md) 操作；其中 DNS 那一节不是可选项。
+然后打开 `http://localhost:8080`。第一页要这台机器上已经在运行的 PostgreSQL 的主机、用户名和密码，之后的向导收其余各项。作为真正的 MX 使用所需的 TLS、DKIM、投递率见 [`docs/zh/deployment.md`](docs/zh/deployment.md)；其中 DNS 那一节不是可选项。
 
 ### 想直接拉镜像，不在本机构建？
 
 每个发布版本都以 `wesukilaye/ferroma` 发布到 Docker Hub，覆盖 `linux/amd64` 与 `linux/arm64`。上面首次 `docker compose up -d` 会在容器里把整个 Rust 工作区编译一遍——10–30 分钟，外加数 GB 构建缓存——所以在服务器上直接拉取要快得多：
 
 ```bash
-docker pull wesukilaye/ferroma:0.1.9
+docker pull wesukilaye/ferroma:0.1.10
 ```
 
-`docker-compose.prod.yml` 与 `docker-compose.external-db.yml` 的默认仓库已经是它，在 `.env` 里锁定版本即可：
+`docker-compose.yml` 的默认仓库已经是它，在 `.env` 里锁定版本即可。`docker-compose.demo.yml` 是演示，不是这条命令：
 
 ```bash
-FERROMA_VERSION=0.1.9                      # docker-compose.prod.yml：要拉取的标签
-# FERROMA_IMAGE=wesukilaye/ferroma:0.1.9   # docker-compose.external-db.yml：整串引用
+FERROMA_VERSION=0.1.10                     # docker-compose.yml：要拉取的标签
 ```
 
-可用标签只有 `0.1.9`（一个精确版本）与 `latest`（最新发布）——每次发布只产出这两个，所以一个标签永远只对应一个具体版本。要可复现的部署请锁定精确版本，不要用 `latest`。
+可用标签只有 `0.1.10`（一个精确版本）与 `latest`（最新发布）——每次发布只产出这两个，所以一个标签永远只对应一个具体版本。要可复现的部署请锁定精确版本，不要用 `latest`。
 
 ### 服务器上已经有 PostgreSQL 和反向代理？
 
@@ -80,39 +79,6 @@ git clone https://github.com/z1HwanG/Ferroma && cd Ferroma
 ```
 
 它会：生成 `.env`（随机密码）、建角色与库、构建镜像、执行迁移、把证书以 uid 10001 装进 `./tls` 供 SMTP/IMAP 的 TLS 使用、启动整套服务、创建第一个管理员、生成 DKIM 密钥，最后打印还需发布的 DNS 记录和可直接粘贴的反向代理片段。之后用 `./scripts/deploy.sh status | logs | upgrade | dkim | certs | doctor | down`。每一步的细节与取舍见 [`docs/zh/deployment.md`](docs/zh/deployment.md) §3.1。
-
-### 不用 Docker，直接运行
-
-一条命令就会建库、执行迁移，并打印下一步做什么——整条首次运行路径都不需要碰 `psql`：
-
-```bash
-cargo build --release --bin ferroma
-
-# 指向你能连上的 PostgreSQL，其余全部有默认值。
-export DATABASE_URL=postgres://ferroma:secret@localhost:5432/ferroma
-
-./target/release/ferroma database init        # 建库，然后迁移
-./target/release/ferroma domain create example.com
-./target/release/ferroma user create you@example.com --admin
-./target/release/ferroma serve
-```
-
-`ferroma serve` 会绑定 SMTP 的 25 与 587、IMAP 的 143，以及 8080 上的 API / Webmail / Admin——并且**打印实际绑定的地址**，所以「某个端口被你没料到的进程占着」这种情况立刻可见：
-
-```text
-smtp      0.0.0.0:25, 0.0.0.0:587
-imap      0.0.0.0:143 (starttls), 0.0.0.0:0 (tls)
-http      http://0.0.0.0:8080/api/v1
-webmail   http://0.0.0.0:8080/
-admin     http://0.0.0.0:8080/admin
-```
-
-在另一个终端验证：
-
-```bash
-ferroma healthcheck            # 容器 HEALTHCHECK 跑的就是这条
-curl -s localhost:8080/api/v1/health
-```
 
 ### 先做一次预检
 
@@ -171,7 +137,7 @@ ferroma config check --dns-domain example.com
 上表最后一行以上的全部内容，都由下面的测试体系验证，其中包括一项验收测试：启动真实服务器、通过 SMTP 投递一封信、用 IMAP 读回来、再通过 API 找到它、跟着同步游标走一遍，并驱动 bootstrap 设置页——无数据库的服务器、setup code、向导的 POST、健康的 API——全程走真实 socket。
 
 ```text
-cargo test --workspace    →  通过，0 失败，0 跳过（0.1.9，rustc 1.98）
+cargo test --workspace    →  通过，0 失败，0 跳过（0.1.10，rustc 1.98）
 cargo clippy --workspace  →  clippy 1.98 下 0 警告（钉住的 1.88 仍能构建；
                               `manual_is_multiple_of` 是 1.98 的 lint，且已修复）
 ```

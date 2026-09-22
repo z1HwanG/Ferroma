@@ -46,6 +46,8 @@ export async function render() {
     renderData: (data) => data.node,
   });
 
+  const backup = backupCard(resultLine);
+
   const root = el('div', {}, [
     viewHead(t('Storage'), t('Space used by mail, attachments and the database'), [refreshButton, gcButton]),
     countsHost,
@@ -53,6 +55,7 @@ export async function render() {
     resultLine,
     usage.node,
     counts.node,
+    backup,
   ]);
 
   /** Pull one figure out of a payload, tolerating an absent key. */
@@ -187,6 +190,114 @@ export async function render() {
 
   await refresh();
   return { node: root, cleanup() {} };
+}
+
+/**
+ * The move-to-another-server card.
+ *
+ * Export runs the same command the operator would, inside this container, while the
+ * server stays up (`--live`): stopping it from the page that is talking to it is not
+ * a thing the page can do. Import is the line printed underneath. It refuses while a
+ * server is listening, because a restore writes both halves underneath that process,
+ * so it is run on the new host after that host's server is stopped.
+ *
+ * @param {HTMLElement} resultLine
+ */
+function backupCard(resultLine) {
+  const destination = el('input', {
+    class: 'input',
+    id: 'backup-destination',
+    type: 'text',
+    spellcheck: 'false',
+    placeholder: '/var/lib/ferroma/ferroma.tar',
+  });
+  const command = el('pre', { class: 'code-block', id: 'backup-command' });
+  const button = el('button', { type: 'button', class: 'btn', text: t('Export archive') });
+
+  const target = () => destination.value.trim();
+  const refreshCommand = () => {
+    const where = target() || '/var/lib/ferroma/ferroma.tar';
+    command.textContent = `ferroma storage import --from ${shellQuote(where)}`;
+  };
+  destination.addEventListener('input', refreshCommand);
+  refreshCommand();
+
+  button.addEventListener('click', () => exportArchive(button, destination, resultLine));
+
+  return el('section', { class: 'card' }, [
+    el('header', { class: 'card-head' }, [
+      el('div', {}, [
+        el('h2', { class: 'card-title', text: t('Move to another server') }),
+        el('p', {
+          class: 'card-sub',
+          text: t('One archive: the database and the mail files. A path inside the container, an s3:// URL or a webdav:// URL.'),
+        }),
+      ]),
+    ]),
+    el('div', { class: 'card-body' }, [
+      el('label', { class: 'field-label', for: 'backup-destination', text: t('Archive') }),
+      destination,
+      el('div', { class: 'card-actions' }, [button]),
+      el('p', {
+        class: 'view-sub',
+        text: t('Import refuses while a server is running. On the new host, with its server stopped, run:'),
+      }),
+      command,
+      el('p', {
+        class: 'view-sub',
+        text: t('S3 reads AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY from the environment. WebDAV reads WEBDAV_USERNAME and WEBDAV_PASSWORD. Neither is stored here.'),
+      }),
+    ]),
+  ]);
+}
+
+/**
+ * Ask the server to write the archive.
+ *
+ * @param {HTMLButtonElement} button
+ * @param {HTMLInputElement} destination
+ * @param {HTMLElement} resultLine
+ */
+async function exportArchive(button, destination, resultLine) {
+  const to = destination.value.trim();
+  if (to === '') {
+    setText(resultLine, t('Say where the archive should go.'));
+    destination.focus();
+    return;
+  }
+  const confirmed = await confirmDialog({
+    title: t('Export an archive?'),
+    message: t('The database and the mail files are written to {to}. The server stays up, so a message delivered during the export may be missing.', { to }),
+    confirmLabel: t('Export'),
+  });
+  if (!confirmed) return;
+
+  button.disabled = true;
+  setText(resultLine, t('Exporting…'));
+  try {
+    const payload = await request(`${API_BASE}/storage/export`, {
+      method: 'POST',
+      body: { to, live: true },
+      toast: false,
+    });
+    const bytes = num(payload && payload.bytes, 0);
+    setText(
+      resultLine,
+      t('Exported {size} to {to}.', { size: formatBytes(bytes), to: (payload && payload.destination) || to }),
+    );
+    toastSuccess(t('Archive exported.'));
+  } catch (error) {
+    const message = error instanceof ApiError ? error.message : t('The export failed.');
+    setText(resultLine, message);
+    toastError(message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+/** A destination safe to paste into a shell. */
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
 /** Replace a host's children. */

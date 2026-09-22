@@ -1,21 +1,33 @@
 # AGENTS.md — working in this repository
 
-Ferroma is a from-scratch, Rust-native self-hosted mail platform. Its design record is
-`docs/`: [`architecture.md`](docs/architecture.md) for the shape of the system,
-[`api.md`](docs/api.md) and [`fcp.md`](docs/fcp.md) for the frozen wire contracts, and
-[`security.md`](docs/security.md) for the threat model. The conventions in §4 below are
-not negotiable.
+Ferroma is a from-scratch, Rust-native self-hosted mail platform: its own SMTP and IMAP
+servers, its own MIME and mail core, its own storage. It does not wrap Postfix, Dovecot
+or Stalwart. The desktop client left in 0.1.8; this repository is the server, the
+Webmail, the Admin console, and the Ferroma Client Protocol (FCP) a client talks to.
+The licence is AGPL-3.0-only.
+
+The design record is `docs/`: [`architecture.md`](docs/architecture.md) for the shape of
+the system, [`api.md`](docs/api.md) and [`fcp.md`](docs/fcp.md) for the frozen wire
+contracts, and [`security.md`](docs/security.md) for the threat model. The conventions
+in §4 below are not negotiable. [`CONTRIBUTING.md`](CONTRIBUTING.md) is the shorter
+version of the same agreement, including the checks a change has to pass.
 
 The 64-section project book this repository was built from is no longer kept in the
 tree. Documents and doc comments that cite it by section number — `specification §N`,
 `项目书 §N` — are quoting a text that now lives only in git history, so treat the code
 and the documents under `docs/` as what a change is measured against.
 
+`AGENTS.md` has no Chinese mirror, and nothing in the repository requires one.
+
 ---
 
 ## 1. This machine is unusual — read this first
 
-Two environment quirks shape every build here. Ignore them and nothing compiles.
+The scripts under `scripts/*.ps1` and the notes in this section describe **one Windows
+development host**, not Ferroma, and not every checkout. On a machine where `cargo`
+reaches crates.io and Docker is available, ignore §1.1–§1.2 and use the commands in
+`README.md` and `docs/deployment.md`. Two quirks of that Windows host shape every build
+done on it. Ignore them there and nothing compiles.
 
 ### 1.1 The Windows TLS stack is broken
 
@@ -27,21 +39,25 @@ Two consequences:
 
 * **crates.io access goes through a local proxy.** `tools/crates-proxy.mjs` re-serves
   the crates.io sparse index and crate archives over plain HTTP on
-  `http://127.0.0.1:8931`, fetching upstream with Node. The workspace
-  `.cargo/config.toml` replaces the `crates-io` source with it. Start it with
+  `http://127.0.0.1:8931`, fetching upstream with Node. A gitignored, machine-local
+  `.cargo/config.toml` replaces the `crates-io` source with it — committing that file
+  would break `cargo build` everywhere else, which is why `.gitignore` and
+  `.dockerignore` both exclude `.cargo/`. Start the proxy with
   `node tools/crates-proxy.mjs` (background) or let `scripts/cargo.ps1` start it.
 * **Use rustls, never native-tls.** Every dependency that can choose a TLS backend is
-  pinned to rustls in the workspace `Cargo.toml`. Do not add a crate that pulls in
-  `native-tls`, `openssl`, or `schannel`. This is not just an environment workaround:
-  rustls is the right choice for a server that terminates SMTP/IMAP TLS anyway.
+  pinned to rustls in the workspace `Cargo.toml` (`runtime-tokio-rustls`,
+  `reqwest` with `default-features = false` and `rustls-tls`). Do not add a crate that
+  pulls in `native-tls`, `openssl`, or `schannel`. This is not just an environment
+  workaround: rustls is the right choice for a server that terminates SMTP/IMAP TLS
+  anyway.
 
 For one-off HTTPS downloads, use `node tools/fetch.mjs <url> <dest>`.
 
 ### 1.2 `CARGO_HOME` lives inside the repository
 
-The session file sandbox only permits writes inside the project tree, so
+That host's session file sandbox only permits writes inside the project tree, so
 `CARGO_HOME` is redirected to `.cargo-home/` (and `CARGO_TARGET_DIR` to `target/`).
-Always source the environment first:
+Source the environment first:
 
 ```powershell
 . .\scripts\env.ps1          # or: .\scripts\cargo.ps1 <args>
@@ -49,17 +65,21 @@ cargo test --workspace
 ```
 
 Concurrent agents share `target/` and will block on cargo's build lock. If you are
-one of several agents working in parallel, give yourself a private target directory:
+one of several agents working in parallel, give yourself a private target directory
+(`target-<name>/`, which `.gitignore` already excludes):
 
 ```powershell
-$env:CARGO_TARGET_DIR="C:\Users\25688\Documents\DSH\Ferroma\target-<yourname>"
+$env:CARGO_TARGET_DIR = Join-Path (Get-Location) 'target-<yourname>'
 ```
+
+Do not hard-code another checkout's path. A private target directory is several
+gigabytes; delete it when the work is done.
 
 ---
 
 ## 2. PostgreSQL for development and tests
 
-There is no Docker on this machine. A minimal PostgreSQL 16 distribution lives in
+On the Windows host there is no Docker. A minimal PostgreSQL 16 distribution lives in
 `.cache/pgsql/` and a cluster in `.cache/pgdata/`, started by:
 
 ```powershell
@@ -68,13 +88,13 @@ There is no Docker on this machine. A minimal PostgreSQL 16 distribution lives i
 .\scripts\dev-postgres.ps1 stop
 ```
 
-`pg_ctl` cannot be used on this host (it fails to create a restricted token); the
+`pg_ctl` cannot be used on that host (it fails to create a restricted token); the
 script runs `postgres.exe` directly. `pg_ctl stop` would not help either, because
 stopping a server means signalling it, and that is denied too.
 
 ### 2.1 The cluster is fragile in one specific way — read this before killing anything
 
-This sandbox forbids cross-process signalling. Two consequences, both of which have
+That sandbox forbids cross-process signalling. Two consequences, both of which have
 already cost real time:
 
 1. **Never force-kill the cluster, and never run anything that makes PostgreSQL
@@ -121,12 +141,10 @@ $env:FERROMA_TEST_SKIP_WITHOUT_DATABASE = "1"   # only when you really have no d
 cargo test --workspace
 ```
 
-The target deployment is Docker Compose, in one of two shapes. A host with nothing but
-Docker uses `docker-compose.prod.yml`, which brings its own PostgreSQL container. A host
-that **already runs PostgreSQL** (the common case for the server this is deployed to)
-uses `docker-compose.external-db.yml` — `scripts/deploy.sh` drives it, the container runs
-with `network_mode: host` so the existing database is reached over `127.0.0.1`, and HTTPS
-is left to the reverse proxy that is already there. See `docs/deployment.md` §3.1.
+The deployment is `docker-compose.yml`: Ferroma only, on the host's network, and the
+setup page asks for the PostgreSQL the host already runs. `docker-compose.demo.yml`
+is a demonstration — it builds the checkout and starts its own database, in plaintext.
+`scripts/deploy.sh` drives the deployment file. See `docs/deployment.md` §3.1.
 
 ---
 
@@ -144,15 +162,20 @@ crates/
   ferroma-sync/      change log, cursors, idempotent client operations
   ferroma-api/       REST API, Ferroma Client Protocol (FCP), WebSocket, frontends
 server/              the `ferroma` binary: wires everything together
-client/              the official desktop client (core + UI shell)
 migrations/          PostgreSQL DDL, embedded into the binary at compile time
 config/              ferroma.toml — also embedded as the default configuration
-web/, admin/         Webmail and Admin single-page apps
+web/, admin/         Webmail and Admin single-page apps (no build step)
 shared/              the ES modules both apps import (served at /shared)
 docs/                architecture, protocol and operations documentation
-scripts/             development and deployment helpers
-tools/               the crates proxy and the HTTPS fetcher
+  zh/                the Chinese half of every document under docs/
+scripts/             development helpers (PowerShell, for the host in §1) and deploy.sh
+tools/               doc checks, the crates proxy, the HTTPS fetcher, probes
 ```
+
+There is no `client/` directory. FCP stays, in `docs/fcp.md` and `ferroma-api`; a
+desktop client is a separate project.
+
+---
 
 ## 4. Conventions that are not negotiable
 
@@ -166,28 +189,56 @@ tools/               the crates proxy and the HTTPS fetcher
 4. **No `unwrap()` on untrusted input.** Peers control SMTP commands, IMAP literals,
    MIME structures and HTTP bodies. `unwrap()` belongs in tests only.
 5. **Protocol layers contain no business logic.** SMTP, IMAP, Webmail and the Client
-   API all go through the mail core and the repositories; none of them implements
+   API all go through `ferroma-mail` and the repositories; none of them implements
    its own message handling.
 6. **The server is never an open relay.** Unauthenticated peers may deliver only to
-   local domains.
+   local domains. There is no `allow_relay` key to discover and set.
 7. **Never log** passwords, tokens, private keys, or full message bodies.
 8. **Timestamps are `TIMESTAMPTZ` and UTC** at every layer.
+9. **Migrations are forward-only, and an applied file is frozen.** `migrations/` is an
+   ordered list applied at startup when `database.run_migrations = true`. sqlx records
+   a SHA-384 of each file and refuses to start (`VersionMismatch`) if one changes —
+   a comment is enough. A schema change is a new file, never an edit of
+   `0001_initial.sql` or anything after it. There is no down migration, so an upgrade
+   that applies one cannot be rolled back by swapping the binary; the database has to
+   be restored from the pre-upgrade dump (`docs/deployment.md` §9).
+
+---
 
 ## 5. Testing
 
 * Unit tests live in `#[cfg(test)] mod tests` next to the code and are expected to be
   thorough — protocol parsers especially. Every crate has real fixtures.
-* Integration tests live in `crates/*/tests/` and use the shared
+* Integration tests live in `crates/*/tests/` and use that crate's
   `tests/common/mod.rs` helper for a disposable, migrated database.
-* The end-to-end acceptance run (`tests/e2e/`) drives a real server process over
-  real sockets: SMTP submission, IMAP retrieval, HTTP API, sync and WebSocket.
-* Everything is run with `cargo test --workspace`.
+* The end-to-end acceptance run is `server/tests/e2e.rs`. It drives a real server
+  process over real sockets: SMTP submission, IMAP retrieval, the HTTP API, sync and
+  WebSocket. It is part of `cargo test --workspace`, not a separate harness.
+* The whole suite is `cargo test --workspace`. `CONTRIBUTING.md` runs it `--offline`,
+  which is right once the registry cache is warm and wrong on a checkout that still
+  has crates to fetch.
+
+---
 
 ## 6. Definition of done
 
 A change is done when: it compiles without new warnings, its tests pass, it is
 documented, and the behaviour it claims is covered by a test that would fail if the
 behaviour regressed. "It compiles" is not done.
+
+```bash
+cargo test --workspace
+node tools/check-docs.mjs       # every relative link and anchor, and the en/zh pairs
+node tools/check-zh.mjs         # terminology, pairing, and the language of each reference
+node tools/check-diagrams.mjs   # box-drawing rows share a last column
+node tools/check-deploy.mjs     # deployment artefacts, the Dockerfile included
+node tools/check-web.mjs        # module graph, ids, i18n coverage of web/ and admin/
+node tools/site-check.mjs       # the generated site publishes both languages
+```
+
+The front-end check fails on an element id that no view defines, on a `t('…')` string
+the Chinese catalog does not cover, and on a `fetch()` outside `shared/api.js`. Each of
+those has already shipped as a bug once.
 
 A **documentation** change is done when `node tools/check-docs.mjs` and
 `node tools/check-zh.mjs` pass: every relative link and anchor resolves, a Chinese
@@ -211,3 +262,6 @@ needs different arithmetic in English and in Chinese, and measuring the wrong on
 figure into a false finding. Rows from boxes side by side or nested carry different counts and are
 excluded by construction; that is what keeps the rule from firing on every crate graph in
 `architecture.md`.
+
+A release tag has to equal `Cargo.toml`'s `version`. The image workflow refuses a tag
+that disagrees with the manifest, so a tag cannot label a tree it did not build.

@@ -834,9 +834,9 @@ const CMD_PATH_A = {
     'POSTGRES_PASSWORD=<a long random password>',
     `FERROMA_VERSION=${VERSION}`,
     '',
-    'docker compose -f docker-compose.prod.yml pull',
-    'docker compose -f docker-compose.prod.yml up -d',
-    'docker compose -f docker-compose.prod.yml ps',
+    'docker compose -f docker-compose.yml pull',
+    'docker compose -f docker-compose.yml up -d',
+    'docker compose -f docker-compose.yml ps',
   ].join('\n'),
   zh: [
     `git clone ${REPO_URL} && cd Ferroma`,
@@ -846,9 +846,9 @@ const CMD_PATH_A = {
     'POSTGRES_PASSWORD=<一串够长的随机密码>',
     `FERROMA_VERSION=${VERSION}`,
     '',
-    'docker compose -f docker-compose.prod.yml pull',
-    'docker compose -f docker-compose.prod.yml up -d',
-    'docker compose -f docker-compose.prod.yml ps',
+    'docker compose -f docker-compose.yml pull',
+    'docker compose -f docker-compose.yml up -d',
+    'docker compose -f docker-compose.yml ps',
   ].join('\n'),
 };
 
@@ -1067,13 +1067,13 @@ function deploySections(lang) {
          : ['Shape', 'The host', 'Database', 'TLS', 'Files'],
       zh ? [
         ['<b>Q</b> · 最快的一条路 <span class="chip chip-brand">先看这个</span>', '主机上已经跑着 PostgreSQL', '你已有的那一个（Ferroma 不建库）', '全明文，仅限本机', '你自己的一个 compose 文件，或一条 <code>docker run</code>'],
-        ['<b>A</b> · Compose，自带数据库', '只有 Docker 的干净主机', '<code>postgres:16-alpine</code> 容器', 'Ferroma 终止 465/993；HTTPS 交给反向代理', '<code>docker-compose.prod.yml</code>'],
-        ['<b>B</b> · Compose，复用现有 PostgreSQL <span class="chip chip-green">推荐</span>', '已经在跑 PostgreSQL 和反向代理', '你自己的服务器，经 <code>127.0.0.1</code>', '反向代理终止 HTTPS；Ferroma 终止 465/993', '<code>docker-compose.external-db.yml</code> + <code>scripts/deploy.sh</code>'],
+        ['<b>A</b> · Compose，自带数据库', '只有 Docker 的干净主机', '<code>postgres:16-alpine</code> 容器', 'Ferroma 终止 465/993；HTTPS 交给反向代理', '<code>docker-compose.yml</code>'],
+        ['<b>B</b> · Compose，复用现有 PostgreSQL <span class="chip chip-green">推荐</span>', '已经在跑 PostgreSQL 和反向代理', '你自己的服务器，经 <code>127.0.0.1</code>', '反向代理终止 HTTPS；Ferroma 终止 465/993', '<code>docker-compose.yml</code> + <code>scripts/deploy.sh</code>'],
         ['<b>C</b> · 纯 Docker', '只有 Docker 的干净主机', '你自己起的容器', '你自己安排', '<code>docker run</code>'],
       ] : [
         ['<b>Q</b> · the fastest path <span class="chip chip-brand">start here</span>', 'PostgreSQL already runs on this host', 'the one you have (Ferroma never creates it)', 'all plaintext, this host only', 'your own compose file, or one <code>docker run</code>'],
-        ['<b>A</b> · Compose, its own database', 'anything with Docker', '<code>postgres:16-alpine</code> container', 'Ferroma terminates 465/993; a reverse proxy terminates HTTPS', '<code>docker-compose.prod.yml</code>'],
-        ['<b>B</b> · Compose, existing PostgreSQL <span class="chip chip-green">recommended</span>', 'already runs PostgreSQL and a reverse proxy', 'your own server, over <code>127.0.0.1</code>', 'your proxy terminates HTTPS; Ferroma terminates 465/993', '<code>docker-compose.external-db.yml</code> + <code>scripts/deploy.sh</code>'],
+        ['<b>A</b> · Compose, its own database', 'anything with Docker', '<code>postgres:16-alpine</code> container', 'Ferroma terminates 465/993; a reverse proxy terminates HTTPS', '<code>docker-compose.yml</code>'],
+        ['<b>B</b> · Compose, existing PostgreSQL <span class="chip chip-green">recommended</span>', 'already runs PostgreSQL and a reverse proxy', 'your own server, over <code>127.0.0.1</code>', 'your proxy terminates HTTPS; Ferroma terminates 465/993', '<code>docker-compose.yml</code> + <code>scripts/deploy.sh</code>'],
         ['<b>C</b> · Plain Docker', 'anything with Docker', 'a container you run yourself', 'your own arrangement', '<code>docker run</code>'],
       ]) +
     `<div class="note note-warn"><span class="note-ico">!</span><div><p>${
@@ -1257,7 +1257,7 @@ function deploySections(lang) {
       zh ? ['变量', '必填', '作用'] : ['Variable', 'Required', 'What it does'],
       zh ? [
         ['<code>DATABASE_URL</code>', '是', 'PostgreSQL 连接串。路径 A/C 必填；路径 B 由 <code>deploy.sh</code> 写入 <code>.env</code>'],
-        ['<code>POSTGRES_PASSWORD</code>', '路径 A', '只有 <code>docker-compose.prod.yml</code> 读它，用来起数据库容器'],
+        ['<code>POSTGRES_PASSWORD</code>', '路径 A', '只有 <code>docker-compose.yml</code> 读它，用来起数据库容器'],
         ['<code>FERROMA_VERSION</code>', '路径 A', '要拉取的发布 tag（如 <code>' + VERSION + '</code>）。可复现部署请钉死版本，不要用 <code>latest</code>'],
         ['<code>FERROMA_DATA_DIR</code>', '否', 'Maildir、附件与 DKIM 私钥的位置。容器内默认 <code>/var/lib/ferroma</code>'],
         ['<code>FERROMA_JWT_SECRET</code>', '否', '不设则进程重启会让所有会话失效；镜像会在数据卷里生成一次并复用'],
@@ -1269,7 +1269,7 @@ function deploySections(lang) {
         ['<code>FERROMA_LOG_LEVEL</code> / <code>FERROMA_LOG_FORMAT</code>', '否', '默认 <code>info</code> / <code>text</code>；容器里通常用 <code>json</code>'],
       ] : [
         ['<code>DATABASE_URL</code>', 'yes', 'PostgreSQL connection string. Required on paths A and C; path B writes it into <code>.env</code> for you'],
-        ['<code>POSTGRES_PASSWORD</code>', 'path A', 'read only by <code>docker-compose.prod.yml</code>, to start the database container'],
+        ['<code>POSTGRES_PASSWORD</code>', 'path A', 'read only by <code>docker-compose.yml</code>, to start the database container'],
         ['<code>FERROMA_VERSION</code>', 'path A', 'the release tag to pull (e.g. <code>' + VERSION + '</code>). Pin the exact release for a reproducible deployment; never <code>latest</code>'],
         ['<code>FERROMA_DATA_DIR</code>', 'no', 'where the Maildir, attachments and the DKIM private key live. <code>/var/lib/ferroma</code> in the image'],
         ['<code>FERROMA_JWT_SECRET</code>', 'no', 'unset, every session is invalidated when the process restarts; the image generates one into the data volume and reuses it'],
@@ -1314,14 +1314,14 @@ function deploySections(lang) {
   S.push({ id: 'operate', title: zh ? '日常命令' : 'Everyday commands', html:
     codeBlock(CMD_OPS[lang], 'bash') +
     `<p>${zh
-      ? 'Compose 部署则把 <code>docker</code> 换成 <code>docker compose -f docker-compose.prod.yml</code>：'
-      : 'On a Compose deployment, replace <code>docker</code> with <code>docker compose -f docker-compose.prod.yml</code>:'}</p>` +
+      ? 'Compose 部署则把 <code>docker</code> 换成 <code>docker compose -f docker-compose.yml</code>：'
+      : 'On a Compose deployment, replace <code>docker</code> with <code>docker compose -f docker-compose.yml</code>:'}</p>` +
     codeBlock([
-      'docker compose -f docker-compose.prod.yml logs -f --tail=200 ferroma',
-      'docker compose -f docker-compose.prod.yml restart ferroma',
-      'docker compose -f docker-compose.prod.yml exec ferroma sh',
-      `docker compose -f docker-compose.prod.yml down        # ${zh ? '保留数据卷' : 'keeps the volumes'}`,
-      `# docker compose -f docker-compose.prod.yml down -v   # ${zh ? '连同所有邮件与用户一起删除' : 'destroys all mail and users'}`,
+      'docker compose -f docker-compose.yml logs -f --tail=200 ferroma',
+      'docker compose -f docker-compose.yml restart ferroma',
+      'docker compose -f docker-compose.yml exec ferroma sh',
+      `docker compose -f docker-compose.yml down        # ${zh ? '保留数据卷' : 'keeps the volumes'}`,
+      `# docker compose -f docker-compose.yml down -v   # ${zh ? '连同所有邮件与用户一起删除' : 'destroys all mail and users'}`,
     ].join('\n'), 'bash') });
 
   S.push({ id: 'upgrade', title: zh ? '升级与回滚' : 'Upgrades and rollback', html:
@@ -1332,11 +1332,11 @@ function deploySections(lang) {
       '# .env',
       `FERROMA_VERSION=${VERSION}`,
       '',
-      'docker compose -f docker-compose.prod.yml pull',
-      'docker compose -f docker-compose.prod.yml up -d',
+      'docker compose -f docker-compose.yml pull',
+      'docker compose -f docker-compose.yml up -d',
       '',
       `# ${zh ? '回滚：把上一个 tag 写回去，再重复一次' : 'rollback: put the previous tag back and repeat'}`,
-      'docker compose -f docker-compose.prod.yml up -d',
+      'docker compose -f docker-compose.yml up -d',
     ].join('\n'), 'bash') +
     `<div class="note note-warn"><span class="note-ico">!</span><div><p>${
       zh ? '迁移只向前。回滚镜像之前先看 <code>CHANGELOG.md</code> 里那一版是否带 schema 变更，并先做一次数据库转储。'

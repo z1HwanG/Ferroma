@@ -1,117 +1,107 @@
 # =============================================================================
-# Ferroma — development / single-host deployment
+# Ferroma — the deployment. `docker compose up -d` uses this file.
 # =============================================================================
-#   cp .env.example .env      # then edit the secrets
-#   docker compose up -d
-#   docker compose logs -f ferroma
+#   docker compose up -d                              # needs FERROMA_VERSION, nothing else
 #
-# This file is the "just make it run" stack: Ferroma plus PostgreSQL, plaintext
-# ports, TLS off. For a real MX see docker-compose.prod.yml.
+# One container. The host is assumed to already run PostgreSQL. Ferroma asks for
+# its host, user name and password on the setup page and remembers the answer.
+# The mail domain, the hostname, the public URL and TLS follow on the wizard.
+# See docs/deployment.md §3.2.
+#
+# docker-compose.demo.yml is the other file, and it is a demonstration: it builds
+# this checkout, starts its own PostgreSQL, and serves everything in plaintext.
+#   * TLS terminated by Ferroma itself on 465 / 993 / 8443
+#   * PostgreSQL tuned for a real workload and not merely "the defaults"
+#   * host port 25 / 587 / 143 still bound, but the implicit-TLS ports are added
+#   * resource limits, restart policies and bounded logs on every service
+#   * no backup service: back the database container and the ferroma-data volume up
+#     with the host's own tooling (docs/deployment.md §8)
+#
+# Before the first boot, read docs/deployment.md: DNS (MX/A/PTR/SPF/DKIM/DMARC)
+# has to be in place or your mail will be rejected no matter how correct Ferroma is.
 # =============================================================================
 
 name: ferroma
 
-services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: ferroma-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-ferroma}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
-      POSTGRES_DB: ${POSTGRES_DB:-ferroma}
-      # Deterministic collation: an MX must sort the same on every host.
-      POSTGRES_INITDB_ARGS: '--encoding=UTF8 --locale=C'
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-ferroma} -d ${POSTGRES_DB:-ferroma}']
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 20s
-    networks:
-      - ferroma-internal
-    # Not published by default: only Ferroma needs to reach the database.
-    expose:
-      - '5432'
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: '20m'
+    max-file: '10'
 
+services:
   ferroma:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    # This stack builds the image itself; the name is fully qualified so that the
-    # result of `docker compose build` can be pushed without re-tagging.
-    image: ${FERROMA_REPO:-wesukilaye/ferroma}:${FERROMA_VERSION:-dev}
-    # `build:` and `image:` together do not mean "build it and call it that" to
-    # Compose. With the default pull policy it tries to *pull* that name first, and
-    # `…:dev` has never been published, so `docker compose up -d` died looking for it
-    # instead of compiling anything. Pinning the policy is what makes this file build
-    # the tree it sits in.
-    pull_policy: build
+    # A released image, pulled — prod never builds. `FERROMA_REPO` and
+    # `FERROMA_VERSION` are interpolated as two separate variables on purpose:
+    # compose does not substitute a `${…}` nested inside another `${…:-…}`, so
+    # `${FERROMA_IMAGE:-${FERROMA_REPO}:${FERROMA_VERSION}}` would silently
+    # collapse to an empty tag. Override the repository for a mirror or a private
+    # registry; the version stays required.
+    image: ${FERROMA_REPO:-wesukilaye/ferroma}:${FERROMA_VERSION:?set FERROMA_VERSION to a released tag}
     container_name: ferroma
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
+    restart: always
+    # The host's own network, so the PostgreSQL already running here is
+    # 127.0.0.1 from inside the container. The setup page asks for it.
+    network_mode: host
     environment:
-      # --- database ---
-      DATABASE_URL: postgres://${POSTGRES_USER:-ferroma}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ferroma}
-      # --- identity ---
-      FERROMA_HOSTNAME: ${FERROMA_HOSTNAME:-mail.example.com}
+      # Only what a *process* needs to exist before it can serve a page is set here.
+      # The database address is not one of those: with DATABASE_URL unset the server
+      # binds the web port and asks for it on the setup page, then remembers the answer
+      # in the data volume. Stating it here would win over that page. The mail domain,
+      # the hostname, the public URL, the API listener and TLS are the same kind of
+      # answer, collected by the wizard once the database exists.
       FERROMA_DATA_DIR: /var/lib/ferroma
       FERROMA_LOG_LEVEL: ${FERROMA_LOG_LEVEL:-info}
-      FERROMA_API_PUBLIC_URL: ${FERROMA_PUBLIC_URL:-http://localhost:8080}
-      # --- secrets (see .env.example) ---
-      FERROMA_JWT_SECRET: ${FERROMA_JWT_SECRET:?set FERROMA_JWT_SECRET in .env}
-      # --- TLS ---
-      FERROMA_TLS_ENABLED: ${FERROMA_TLS_ENABLED:-false}
-      FERROMA_TLS_CERT: ${FERROMA_TLS_CERT:-}
-      FERROMA_TLS_KEY: ${FERROMA_TLS_KEY:-}
-    ports:
-      # Inbound mail. Port 25 must be reachable from the internet for Ferroma to
-      # receive mail from other servers.
-      - '${SMTP_PORT:-25}:25'
-      # Authenticated submission from mail clients.
-      - '${SUBMISSION_PORT:-587}:587'
-      # IMAP for Thunderbird, Apple Mail, Outlook, phones.
-      - '${IMAP_PORT:-143}:143'
-      # HTTP API + Webmail + Admin.
-      - '${HTTP_PORT:-8080}:8080'
+      FERROMA_LOG_FORMAT: ${FERROMA_LOG_FORMAT:-json}
+      # Drop the PEMs into ./tls and tick "Serve TLS from this process" in the wizard.
+      # Enabling TLS before the files exist is refused with an explanation rather than
+      # applied and failing at the next boot.
+      # The certificate paths are the mounted files. Whether TLS is on, and whether 465
+      # and 993 listen, is the wizard's answer: stating it here would win over that
+      # answer, because a deployment value is never overridden by a stored one.
+      FERROMA_TLS_CERT: ${FERROMA_TLS_CERT:-/etc/ferroma/tls/fullchain.pem}
+      FERROMA_TLS_KEY: ${FERROMA_TLS_KEY:-/etc/ferroma/tls/privkey.pem}
+      # `Secure` cookies are dropped by the browser over plain HTTP, which would make the
+      # very first sign-in fail. Set SECURE_COOKIES=true in .env once the reverse proxy
+      # serves HTTPS — which is the production arrangement, and what scripts/deploy.sh
+      # writes. (Compose cannot nest one default inside another, so this is its own knob.)
+      FERROMA__API__SECURE_COOKIES: '${SECURE_COOKIES:-false}'
+      # Behind a load balancer or reverse proxy, honour X-Forwarded-For.
+      FERROMA__API__TRUST_PROXY_HEADERS: '${TRUST_PROXY_HEADERS:-false}'
+      FERROMA_DKIM_ENABLED: ${FERROMA_DKIM_ENABLED:-false}
+      FERROMA_DKIM_SELECTOR: ${FERROMA_DKIM_SELECTOR:-default}
+      FERROMA_DKIM_KEY: /etc/ferroma/dkim/${FERROMA_DKIM_SELECTOR:-default}.private
+    # No `ports:` — host networking binds 25, 587, 465, 143, 993 and 8080 on the
+    # host directly. Docker cannot publish ports for a container in that mode.
     volumes:
-      # Maildir, attachments, TLS material. Back this up.
       - ferroma-data:/var/lib/ferroma
-      # Operator configuration; the image ships a full default at the same path.
       - ./config/ferroma.toml:/etc/ferroma/ferroma.toml:ro
-      # Certificates, when TLS is terminated here rather than by a reverse proxy.
       - ./tls:/etc/ferroma/tls:ro
+      - ./dkim:/etc/ferroma/dkim:ro
     healthcheck:
       test: ['CMD', 'ferroma', 'healthcheck', '--url', 'http://127.0.0.1:8080/api/v1/health']
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 20s
-    stop_grace_period: 30s
-    logging:
-      driver: json-file
-      options:
-        max-size: '10m'
-        max-file: '5'
-    networks:
-      - ferroma-internal
-      - ferroma-public
+      start_period: 30s
+    stop_grace_period: 60s
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+  # No backup service ships here on purpose. Ferroma keeps no backup tooling in the
+  # deployment: back up the database container and the ferroma-data volume with
+  # whatever the host already uses (pg_dump + restic/borg/rsync, a hypervisor
+  # snapshot, a storage-level snapshot). Both halves are needed together — a
+  # database restored without its Maildir loses messages and vice versa.
+  # docs/deployment.md §8 has the commands and what a backup must contain.
 
 volumes:
-  postgres-data:
-    name: ferroma-postgres-data
   ferroma-data:
     name: ferroma-data
-
-networks:
-  # Database traffic stays here and never touches the host network.
-  ferroma-internal:
-    name: ferroma-internal
-    internal: false
-  # Mail and HTTP ports.
-  ferroma-public:
-    name: ferroma-public

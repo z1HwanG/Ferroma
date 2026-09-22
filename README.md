@@ -46,18 +46,21 @@ to own the whole stack.
 
 ## Quick start
 
-The supported deployment is Docker Compose. You need a host with a public IP, a domain
-whose `MX` record points at it, and port 25 open.
+The only supported deployment is one Compose file, `docker-compose.yml`, and it
+starts Ferroma only. The host is assumed to already run PostgreSQL. You also need a
+public IP, a domain whose `MX` record points at the host, and port 25 open. Running
+the binary on the host is not a supported install.
 
 ```bash
 git clone https://github.com/z1HwanG/Ferroma && cd Ferroma
-cp .env.example .env          # set POSTGRES_PASSWORD, FERROMA_HOSTNAME, FERROMA_JWT_SECRET
-docker compose up -d
+cp .env.example .env          # set FERROMA_VERSION to the release you want
+docker compose up -d          # reads docker-compose.yml, the deployment
 docker compose logs -f ferroma
 ```
 
-Then open `http://localhost:8080` and walk through the first-run wizard. For a real MX
-— TLS, DKIM, deliverability — use `docker-compose.prod.yml` and follow
+Then open `http://localhost:8080`. The first page asks for the database host, user
+name and password of the PostgreSQL this machine already runs. The wizard after it
+asks for the rest. TLS, DKIM and deliverability are in
 [`docs/deployment.md`](docs/deployment.md); the DNS section is not optional.
 
 ### Prefer a published image over a local build?
@@ -68,18 +71,17 @@ inside the container — 10–30 minutes, and several gigabytes of build cache �
 is the faster path onto a server:
 
 ```bash
-docker pull wesukilaye/ferroma:0.1.9
+docker pull wesukilaye/ferroma:0.1.10
 ```
 
-`docker-compose.prod.yml` and `docker-compose.external-db.yml` already default to that
-repository; pin the release you want in `.env`:
+`docker-compose.yml` already defaults to that repository; pin the release you want
+in `.env`. `docker-compose.demo.yml` is the demonstration and is not this command:
 
 ```bash
-FERROMA_VERSION=0.1.9                      # docker-compose.prod.yml: the tag to pull
-# FERROMA_IMAGE=wesukilaye/ferroma:0.1.9   # docker-compose.external-db.yml: the whole reference
+FERROMA_VERSION=0.1.10                     # docker-compose.yml: the tag to pull
 ```
 
-Available tags are `0.1.9` (an exact release) and `latest` (the newest release) — a
+Available tags are `0.1.10` (an exact release) and `latest` (the newest release) — a
 release publishes those two and nothing else, so a tag always names one specific
 version. For a reproducible deployment pin the exact release, never `latest`.
 
@@ -102,42 +104,6 @@ records still to publish plus the reverse-proxy block to paste. After that:
 `./scripts/deploy.sh status | logs | upgrade | dkim | certs | doctor | down`.
 Every step, and the reasoning behind it, is in
 [`docs/deployment.md`](docs/deployment.md) §3.1.
-
-### Running it directly, without Docker
-
-One command creates the database, applies the migrations and prints what to do next —
-the whole first-run path, with no `psql` step:
-
-```bash
-cargo build --release --bin ferroma
-
-# Point it at a PostgreSQL you can reach. Everything else has a default.
-export DATABASE_URL=postgres://ferroma:secret@localhost:5432/ferroma
-
-./target/release/ferroma database init        # creates the database, then migrates
-./target/release/ferroma domain create example.com
-./target/release/ferroma user create you@example.com --admin
-./target/release/ferroma serve
-```
-
-`ferroma serve` binds SMTP on 25 and 587, IMAP on 143, and the API, Webmail and Admin console
-on 8080 — and prints exactly what it bound, so a port you did not expect to be taken
-is visible immediately:
-
-```text
-smtp      0.0.0.0:25, 0.0.0.0:587
-imap      0.0.0.0:143 (starttls), 0.0.0.0:0 (tls)
-http      http://0.0.0.0:8080/api/v1
-webmail   http://0.0.0.0:8080/
-admin     http://0.0.0.0:8080/admin
-```
-
-Verify it from another terminal:
-
-```bash
-ferroma healthcheck            # exactly what the container HEALTHCHECK runs
-curl -s localhost:8080/api/v1/health
-```
 
 ### Run the preflight
 
@@ -216,7 +182,7 @@ finds it through the API, follows the sync cursor, and drives the bootstrap setu
 — server with no database, code, wizard POST, healthy API — over real sockets.
 
 ```text
-cargo test --workspace    →  passed, 0 failed, 0 skipped (0.1.9, rustc 1.98)
+cargo test --workspace    →  passed, 0 failed, 0 skipped (0.1.10, rustc 1.98)
 cargo clippy --workspace  →  0 warnings on clippy 1.98 (the 1.88 pin still builds;
                               `manual_is_multiple_of` is a 1.98 lint, and it is fixed)
 ```

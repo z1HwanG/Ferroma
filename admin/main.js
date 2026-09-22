@@ -211,9 +211,9 @@ function start() {
 /** Mount the section the boot landed on: a first-run page, or the routed section. */
 async function mountAfterBoot() {
   if (bootstrapMode) {
-    // No `go(...)`: the operator's URL is where they were told to look, and rewriting it
-    // would only make the reload they are about to do land somewhere else.
-    await mountView('bootstrap', new URLSearchParams());
+    // The database is the first step of the same form as the rest of setup. Mounting the
+    // old database-only page here is what made connecting feel like a navigation.
+    await mountView('setup', new URLSearchParams());
     return;
   }
   if (setupMode) {
@@ -390,6 +390,13 @@ function renderNavigation() {
       button.append(queueBadge);
     }
     button.addEventListener('click', () => {
+      // A drawer that stays open after the section changes covers the section.
+      byId('app-view').setAttribute('data-nav', 'closed');
+      const toggle = byId('nav-toggle');
+      if (toggle) {
+        toggle.setAttribute('aria-expanded', 'false');
+        toggle.setAttribute('aria-label', t('Show navigation'));
+      }
       go(section.id);
     });
     list.append(el('li', {}, [button]));
@@ -485,6 +492,25 @@ function wireChrome() {
     }
   });
 
+  // Below 860px the sidebar is a drawer. The button is hidden at wider widths, so
+  // this is a no-op there; see `admin/styles.css`.
+  const navToggle = byId('nav-toggle');
+  const backdrop = el('button', {
+    type: 'button',
+    class: 'nav-backdrop',
+    'aria-label': t('Hide navigation'),
+  });
+  byId('app-view').append(backdrop);
+  const setNavOpen = (open) => {
+    byId('app-view').setAttribute('data-nav', open ? 'open' : 'closed');
+    navToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    navToggle.setAttribute('aria-label', open ? t('Hide navigation') : t('Show navigation'));
+  };
+  navToggle.addEventListener('click', () => {
+    setNavOpen(byId('app-view').getAttribute('data-nav') !== 'open');
+  });
+  backdrop.addEventListener('click', () => setNavOpen(false));
+
   // The clicked button is the centre of the reveal; see `shared/theme.js`.
   byId('theme-toggle').addEventListener('click', (event) => toggleTheme({ origin: event.currentTarget }));
   syncThemeButton();
@@ -527,6 +553,14 @@ function wireChrome() {
 
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
+    if (byId('app-view').getAttribute('data-nav') === 'open') {
+      byId('app-view').setAttribute('data-nav', 'closed');
+      const toggle = byId('nav-toggle');
+      toggle.setAttribute('aria-expanded', 'false');
+      toggle.setAttribute('aria-label', t('Show navigation'));
+      toggle.focus();
+      return;
+    }
     const menu = byId('account-menu');
     if (!menu.hidden) {
       setHidden(menu, true);

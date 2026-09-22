@@ -58,6 +58,12 @@ const DARK_MESSAGE_CSS =
   'body{filter:invert(0.92) hue-rotate(180deg)}' +
   // Media is inverted back, so photographs, logos and screenshots keep their colours.
   'img,video,picture,canvas,svg image{filter:invert(1) hue-rotate(180deg)}' +
+  // A signature card states its own light background. Inverting the whole message turns
+  // that card into a near-black slab with the avatar and the name still on it. Undo the
+  // invert on anything that brought its own background, and do not undo it a second time
+  // on the images inside — those would come out inverted.
+  '[style*="background"],[bgcolor]{filter:invert(1) hue-rotate(180deg)}' +
+  '[style*="background"] img,[style*="background"] video,[bgcolor] img,[bgcolor] video{filter:none}' +
   '</style>';
 
 /** Whether the client is currently rendering in dark. */
@@ -105,7 +111,29 @@ const FRAME_BASE = '<base target="_blank">' + FRAME_QUOTE_CSS;
  * @param {string} html
  */
 function frameSource(html) {
-  return (darkMode() ? DARK_MESSAGE_CSS : '') + FRAME_BASE + html;
+  const body = remoteImages ? html : stripRemoteImages(html);
+  return (darkMode() ? DARK_MESSAGE_CSS : '') + FRAME_BASE + body;
+}
+
+/**
+ * Drop remote image sources so the frame does not fetch them.
+ *
+ * A `cid:` source is not remote — the parent rewrites it to a `data:` URL before the
+ * frame is composed. `http:`, `https:` and a scheme-relative `//` are. The tag stays,
+ * so the layout keeps the box; only the request is removed.
+ *
+ * @param {string} html
+ */
+function stripRemoteImages(html) {
+  return html.replace(
+    /(<img\b[^>]*?\bsrc\s*=\s*)(["'])(?:https?:|\/\/)[^"']*\2/gi,
+    '$1$2$2',
+  );
+}
+
+/** Whether the HTML names an image the browser would have to fetch. */
+function hasRemoteImages(html) {
+  return /\bsrc\s*=\s*["'](?:https?:|\/\/)/i.test(html);
 }
 
 /** Inline images already fetched for the message currently on screen, keyed by attachment id. */
@@ -259,6 +287,14 @@ function bytesToBase64(bytes) {
 /** @type {string} */
 let preferredPart = 'html';
 
+/**
+ * Whether remote images of the message on screen may be fetched.
+ *
+ * Off by default, and reset when another message is opened: loading an `http:` image
+ * tells the sender the message was opened. The reader opts in per message.
+ */
+let remoteImages = false;
+
 export function initReader(options) {
   handlers = options;
 
@@ -287,6 +323,10 @@ export function initReader(options) {
     preferredPart = 'text';
     renderBody();
   });
+  byId('tab-images').addEventListener('click', () => {
+    remoteImages = !remoteImages;
+    renderBody();
+  });
 
   // The HTML frame is sandboxed to an opaque origin, so `contentDocument` is `null`
   // and its content height cannot be read from here. Its size therefore comes from CSS;
@@ -313,6 +353,8 @@ function withMessage(action) {
  * @param {number} id
  */
 export async function openMessage(id) {
+  // Remote images are a per-message choice. Opening another message starts from off.
+  remoteImages = false;
   const state = getState();
   const inList = state.messages.find((message) => message.id === id);
   mutate((draft) => {
@@ -457,7 +499,12 @@ function renderBody() {
   const textNode = byId('reader-text');
   const frame = byId('reader-html');
 
-  setHidden(tabs, !(hasHtml && hasText));
+  const imagesButton = byId('tab-images');
+  const remote = hasHtml && hasRemoteImages(message.html);
+  setHidden(imagesButton, !remote);
+  setText(imagesButton, remoteImages ? t('Hide images') : t('Show images'));
+  imagesButton.setAttribute('aria-pressed', remoteImages ? 'true' : 'false');
+  setHidden(tabs, !(hasHtml && hasText) && !remote);
 
   const showHtml = hasHtml && (preferredPart === 'html' || !hasText);
   setText(byId('tab-html'), t('Rich text'));

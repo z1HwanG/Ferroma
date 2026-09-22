@@ -39,7 +39,7 @@ target list.
 | Encryption | rustls only — see [architecture.md](architecture.md) §8 |
 
 `imap.require_tls_for_login` (default `false`) refuses `LOGIN` and `AUTHENTICATE`
-on an unencrypted connection with `NO [PRIVACYREQUIRED]`. `docker-compose.prod.yml`
+on an unencrypted connection with `NO [PRIVACYREQUIRED]`. `docker-compose.yml`
 sets `FERROMA__IMAP__REQUIRE_TLS_FOR_LOGIN` to `'true'`; a production deployment
 should keep it. `LOGIN` sends the password in cleartext, and there is no
 `CRAM-MD5` or `SCRAM-*` to fall back on (see §8).

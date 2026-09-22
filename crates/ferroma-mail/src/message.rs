@@ -139,12 +139,20 @@ impl ParsedMessage {
         self.first_body_part("html")
     }
 
-    /// Every part that should be shown as an attachment, in document order.
+    /// Every part that should be stored with the message, in document order.
+    ///
+    /// That is an attachment in the usual sense, and also an inline image that only
+    /// carries a `Content-ID`. The second kind has no filename and no
+    /// `Content-Disposition: attachment`, so [`MimePart::is_attachment`] misses it —
+    /// and the HTML then has a `cid:` the reader cannot resolve.
     pub fn attachments(&self) -> Vec<&MimePart> {
         let mut out = Vec::new();
         for root in &self.body {
             root.walk(&mut |part| {
-                if part.is_attachment() && !part.is_multipart() {
+                if part.is_multipart() {
+                    return;
+                }
+                if part.is_attachment() || part.is_inline_image() {
                     out.push(part);
                 }
             });

@@ -182,12 +182,19 @@ domain of the address the user typed.
 ```json
 {
   "api": "https://mail.example.com/api/v1",
-  "imap": { "host": "mail.example.com", "port": 993, "tls": true },
-  "smtp": { "host": "mail.example.com", "port": 587, "tls": true },
+  "imap": { "host": "mail.example.com", "port": 993, "tls": true, "security": "implicit" },
+  "smtp": { "host": "mail.example.com", "port": 587, "tls": true, "security": "starttls" },
   "web": "https://mail.example.com",
   "protocol_version": 1
 }
 ```
+
+`tls` says whether the connection is encrypted. `security` says how: `implicit` on
+465 and 993 (TLS from the first byte), `starttls` on 587 and 143 (SMTP or IMAP first,
+then the upgrade). A client that treats every `tls: true` as implicit TLS opens 587
+that way and the handshake fails. When the implicit port is not listening, the
+document names the plaintext port and `starttls` instead of advertising a closed 465
+or 993. `security` is omitted when no TLS is configured.
 
 ### `GET /.well-known/mta-sts.txt` and `GET /api/v1/domains/:id/dns`
 
@@ -729,11 +736,14 @@ uses the existing mailboxes, Maildir files, repositories, events and change log;
 never creates a second mailbox or message store. JMAP is alongside IMAP and FCP, not
 a replacement for either.
 
-A client first obtains a separately revocable JMAP bearer-token session with
-`POST /api/jmap/auth/token` (`email`, `password`, `device_name`). The resulting
-access token is accepted only by JMAP endpoints; browser cookies and ordinary REST or
-FCP bearer sessions are rejected. `GET /.well-known/jmap`, with that bearer token,
-returns the RFC 8620 Session object and the API/upload/download URL templates.
+A standard client sends `Authorization: Basic` — the full mailbox address and its
+password — to `GET /.well-known/jmap` and receives the RFC 8620 Session object. A
+`401` names `Basic` in `WWW-Authenticate`, which is what tells the client to send
+that password. The same request also accepts a JMAP bearer token minted by
+`POST /api/jmap/auth/token` (`email`, `password`, `device_name`). That token is
+accepted only by JMAP endpoints; browser cookies and ordinary REST or FCP bearer
+sessions are rejected. A Basic login reuses the JMAP session already open for that
+address instead of writing one row per request.
 
 | Method | Path | Purpose |
 |---|---|---|

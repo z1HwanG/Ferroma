@@ -113,6 +113,26 @@ pub fn run(config: &Config, args: &ServeArgs, log_sink: ferroma_api::LogSink) ->
     runtime.block_on(serve(config, args, log_sink))
 }
 
+/// The archive writer the admin export endpoint calls.
+///
+/// It is the same function as `ferroma storage export --live`: one archive of the
+/// database and the mail files, taken while this process is still serving.
+fn archive_writer(config: Config) -> ferroma_api::state::BackupWriter {
+    Arc::new(move |to| {
+        let config = config.clone();
+        Box::pin(async move {
+            let report = crate::backup::export(&config, &to, true)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(ferroma_api::state::BackupReport {
+                destination: report.destination,
+                bytes: report.bytes,
+                members: report.members,
+            })
+        })
+    })
+}
+
 /// Adopt the configuration values the first-run wizard stored in the `settings` table.
 ///
 /// The wizard is a browser form, and it can only persist what it can reach: the
@@ -187,6 +207,33 @@ async fn apply_stored_settings(config: &mut Config, repos: &Repositories) {
                     "ignoring the TLS material stored by the setup wizard: it is not on disk"
                 );
             }
+        }
+    }
+
+    // 465 and 993 are off unless someone turns them on. The wizard is that someone
+    // when the deployment did not say: a deployment that set the port keeps it.
+    if config.smtp.smtps_port == default.smtp.smtps_port {
+        if let Some(port) = stored_u16(repos, "smtp.smtps_port").await {
+            tracing::info!(port, "adopting the SMTPS port stored by the setup wizard");
+            config.smtp.smtps_port = port;
+        }
+    }
+    if config.imap.imaps_port == default.imap.imaps_port {
+        if let Some(port) = stored_u16(repos, "imap.imaps_port").await {
+            tracing::info!(port, "adopting the IMAPS port stored by the setup wizard");
+            config.imap.imaps_port = port;
+        }
+    }
+    if config.smtp.require_tls_for_auth == default.smtp.require_tls_for_auth {
+        if let Some(required) = stored_bool(repos, "smtp.require_tls_for_auth").await {
+            tracing::info!(required, "adopting the SMTP TLS-for-auth switch stored by the setup wizard");
+            config.smtp.require_tls_for_auth = required;
+        }
+    }
+    if config.imap.require_tls_for_login == default.imap.require_tls_for_login {
+        if let Some(required) = stored_bool(repos, "imap.require_tls_for_login").await {
+            tracing::info!(required, "adopting the IMAP TLS-for-login switch stored by the setup wizard");
+            config.imap.require_tls_for_login = required;
         }
     }
 
@@ -654,7 +701,8 @@ async fn serve(config: &Config, args: &ServeArgs, log_sink: ferroma_api::LogSink
         // answers with what this process has actually logged.
         .with_log_sink(log_sink)
         .with_listener_control(listener_control)
-        .with_restart(restart);
+        .with_restart(restart)
+        .with_backup(archive_writer(config.clone()));
 
         // Which app answers at `/` is decided here, because the answer is a fact about the
         // database: an instance that still owes its first administrator serves the console at

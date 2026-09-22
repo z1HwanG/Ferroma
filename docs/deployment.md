@@ -13,9 +13,12 @@ together, monitoring and health checks, upgrades and
 rollback, and a troubleshooting section keyed by symptom with the command that
 diagnoses each one.
 
+> **The only supported deployment is Docker** — Compose, or one container with the
+> database reachable from it. Running the binary on the host is not an install path.
+>
 > **Status:** the deployment artefacts are real and complete —
-> `Dockerfile`, `docker-compose.yml`, `docker-compose.prod.yml`,
-> `docker-compose.external-db.yml`, `.env.example`, `config/ferroma.toml`,
+> `Dockerfile`, `docker-compose.yml`, `docker-compose.yml`,
+> `docker-compose.yml`, `.env.example`, `config/ferroma.toml`,
 > `scripts/deploy.sh`.
 > The `ferroma` binary implements every subcommand this document uses: `serve`,
 > `config check|show|default`, `database init|status`, `migrate`, `user`, `domain`,
@@ -60,7 +63,7 @@ Two containers minimum. PostgreSQL is never published to the host: it is on
 `ferroma-internal` and reachable only by the `ferroma` service.
 
 > **If this host already runs PostgreSQL** (and a reverse proxy for 443), do not
-> start a second database container: use `docker-compose.external-db.yml` and
+> start a second database container: use `docker-compose.yml` and
 > `./scripts/deploy.sh` from §3.1 — that is Ferroma itself and the database you
 > already have; backing it up is your own job, see §8.
 
@@ -291,13 +294,24 @@ The Admin console's DNS Health screen (`GET /api/v1/domains/:id/dns`,
 
 ---
 
-## 3. The three compose files
+## 3. One compose file
 
-| File | Use it for | TLS | Postgres | Images | Extra |
-|---|---|---|---|---|---|
-| `docker-compose.external-db.yml` | **a host that already runs PostgreSQL and a reverse proxy** (recommended, see §3.1) | the reverse proxy terminates HTTPS; Ferroma terminates 465/993 | **none** — it uses the host's Postgres | `wesukilaye/ferroma:<tag>`, `docker pull`ed or built here — the whole reference is `FERROMA_IMAGE` | `network_mode: host`, `.env` is the whole configuration; backups stay yours, see §8 |
-| `docker-compose.yml` | development, a single host, a first look | off; ports 25/587/143/8080 plaintext | `postgres:16-alpine`, defaults | built locally from `Dockerfile`, tagged `wesukilaye/ferroma:dev` | — |
-| `docker-compose.prod.yml` | a real MX | terminated by Ferroma on 465/993 (HTTPS goes to the reverse proxy) | tuned (`shared_buffers=512MB`, `wal_compression=on`, …) | `wesukilaye/ferroma:${FERROMA_VERSION}` — a released tag, never built | resource limits, `restart: always`, bounded logs, `ulimit nofile 65536`; backups stay yours, see §8 |
+There is one deployment, `docker-compose.yml`. `docker compose up -d` reads it
+and starts Ferroma only. The host is assumed to already run PostgreSQL, and the
+setup page asks for that server's host, user name and password.
+
+`docker-compose.demo.yml` is a demonstration. It builds this checkout, starts a
+PostgreSQL beside Ferroma, and serves everything in plaintext. It is what you run
+to look at the software, and it is named so that the command has to name it:
+
+```bash
+docker compose -f docker-compose.demo.yml up -d
+```
+
+| File | What it is |
+|---|---|
+| `docker-compose.yml` | the deployment: Ferroma only, resource limits, `restart: always` |
+| `docker-compose.demo.yml` | a demonstration. Plaintext, its own database, no limits. |
 
 Both reference the published repository through `FERROMA_REPO`, which defaults to
 `wesukilaye/ferroma` and can point at a mirror or a private registry instead. The
@@ -307,15 +321,14 @@ interpolate a `${…}` nested inside another, so a nested default such as
 `:`-terminated string rather than to an image reference. `tools/check-deploy.mjs`
 fails the build if one reappears.
 
-Do not use `docker-compose.yml` in production. It serves IMAP and the API in
+Do not use `docker-compose.demo.yml` as an install. It serves IMAP and the API in
 plaintext, has no resource limits, and it binds port 143 to the host unencrypted.
 
-### 3.1 A host that already runs PostgreSQL: one command (recommended)
+### 3.1 A host that already runs PostgreSQL
 
-If this Linux host **already runs PostgreSQL** and **already has a reverse proxy**
-(nginx, Caddy, …) owning 443, do not start a second database container: use
-`docker-compose.external-db.yml`, driven by `scripts/deploy.sh`. It is the route
-with the fewest steps and the smallest change to the environment you already have.
+Start `docker-compose.yml`. On the setup page, give the host, user name and password of
+the PostgreSQL that is already running. A reverse proxy that already owns 443 keeps owning it;
+Ferroma's web port stays behind it. `scripts/deploy.sh` drives the same file.
 
 ```bash
 git clone … && cd Ferroma
@@ -331,7 +344,7 @@ fixes it rather than leaving you to guess:
 | 2. Collect configuration | asks interactively: mail domain, MX hostname, admin address, database address, API port (default `127.0.0.1:18080`) |
 | 3. Write `.env` | generates a random database password and `FERROMA_JWT_SECRET`, mode 600; **it is the only configuration file** |
 | 4. Create the role and the database | tries, in order: `sudo -u postgres` (peer auth), the `psql` **inside a PostgreSQL container on this host** (how 1Panel and similar panels run it, through `docker exec`), and the superuser named by `--pg-password`; if none works it prints SQL you can paste — in the `docker exec` form when the database is a container |
-| 5. Build the image | a local `docker build` (10–30 minutes the first time). Pass `--image wesukilaye/ferroma:0.1.9` to pull the release instead — the same command skips the build entirely |
+| 5. Build the image | a local `docker build` (10–30 minutes the first time). Pass `--image wesukilaye/ferroma:0.1.10` to pull the release instead — the same command skips the build entirely |
 | 6. Create the schema | runs `ferroma database init` in the container (which also creates the database when it is missing) |
 | 7. Install the certificate | installs the certificate into `./tls` as uid 10001 for 465/993, and checks that the SAN covers the MX hostname |
 | 8. Start | `docker compose up -d`, waiting up to 3 minutes for the health check and printing the log on timeout |
@@ -412,10 +425,10 @@ mounted read-only, `./tls` mounted read-only).
 ```bash
 cp .env.example .env
 # Edit .env and set every REQUIRED variable: see §4.
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d
-docker compose -f docker-compose.prod.yml ps
-docker compose -f docker-compose.prod.yml logs -f ferroma
+docker compose -f docker-compose.yml pull
+docker compose -f docker-compose.yml up -d
+docker compose -f docker-compose.yml ps
+docker compose -f docker-compose.yml logs -f ferroma
 ```
 
 Differences that matter operationally:
@@ -451,26 +464,26 @@ together.
 
 ```bash
 # Follow the log of one service.
-docker compose -f docker-compose.prod.yml logs -f --tail=200 ferroma
+docker compose -f docker-compose.yml logs -f --tail=200 ferroma
 
 # Restart just Ferroma (PostgreSQL keeps running).
-docker compose -f docker-compose.prod.yml restart ferroma
+docker compose -f docker-compose.yml restart ferroma
 
 # A shell inside the container, as the ferroma user.
-docker compose -f docker-compose.prod.yml exec ferroma sh
+docker compose -f docker-compose.yml exec ferroma sh
 
 # A psql session against the database.
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma
 
 # Disk usage of the two volumes.
 docker system df -v | grep -E 'ferroma-data|ferroma-postgres-data'
 
 # Stop everything, keeping the volumes.
-docker compose -f docker-compose.prod.yml down
+docker compose -f docker-compose.yml down
 
 # Stop everything and DESTROY the volumes. This deletes all mail and users.
-# docker compose -f docker-compose.prod.yml down -v
+# docker compose -f docker-compose.yml down -v
 ```
 
 ---
@@ -535,7 +548,7 @@ Stating any of these in the environment wins over the wizard, which is the point
 deployment that knows its identity sets it once, and an instance being set up by hand gets
 asked. `scripts/deploy.sh --wizard` writes none of them, so a fresh container needs only
 the web port published — plus `POSTGRES_PASSWORD`, which the script generates.
-| `FERROMA_VERSION` | `0.1.9` | prod (`:?`) | a released image tag; prod never builds |
+| `FERROMA_VERSION` | `0.1.10` | prod (`:?`) | a released image tag; prod never builds |
 
 ### 4.2 Commonly set
 
@@ -632,8 +645,8 @@ TLS port is configured while `tls.enabled = false`.
 
 ### 5.2 Option A — Ferroma terminates SMTP/IMAP TLS
 
-What `docker-compose.prod.yml` does: 465 and 993 are served by rustls directly
-(the `network_mode: host` of `docker-compose.external-db.yml` is the same), and
+What `docker-compose.yml` does: 465 and 993 are served by rustls directly
+(the `network_mode: host` of `docker-compose.yml` is the same), and
 the PEM bundle and key are mounted read-only. HTTPS is not part of it — see the
 status note at the top of this file. Both implicit-TLS listeners are off by
 default, so turn them on explicitly:
@@ -674,13 +687,13 @@ fails.
 
 Use this when something else already owns 443 and manages certificates, or when
 you want one place for HTTP security headers. SMTP and IMAP are **not** proxied;
-Ferroma still terminates those itself. `docker-compose.external-db.yml` from §3.1
+Ferroma still terminates those itself. `docker-compose.yml` from §3.1
 is exactly this shape: it uses `network_mode: host`, so there are no port mappings
 at all and the API listens on `127.0.0.1:18080` directly (`FERROMA_API_HOST` /
 `FERROMA_API_PORT`).
 
 ```yaml
-# Add to docker-compose.prod.yml's ferroma service.
+# Add to docker-compose.yml's ferroma service.
     ports:
       - '25:25'
       - '587:587'
@@ -850,7 +863,7 @@ sudo install -o 10001 -g 10001 -m 0640 \
   /etc/letsencrypt/live/mail.example.com/fullchain.pem tls/fullchain.pem
 sudo install -o 10001 -g 10001 -m 0600 \
   /etc/letsencrypt/live/mail.example.com/privkey.pem   tls/privkey.pem
-docker compose -f docker-compose.prod.yml restart ferroma
+docker compose -f docker-compose.yml restart ferroma
 ```
 
 Notes:
@@ -895,9 +908,9 @@ sudo certbot renew --dry-run
 ### 6.1 Boot
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d
-docker compose -f docker-compose.prod.yml ps
-docker compose -f docker-compose.prod.yml logs ferroma | tail -50
+docker compose -f docker-compose.yml up -d
+docker compose -f docker-compose.yml ps
+docker compose -f docker-compose.yml logs ferroma | tail -50
 ```
 
 A healthy start logs the resolved configuration summary, an `info` line per
@@ -968,7 +981,7 @@ markers ([imap.md](imap.md) §4.3).
 
 ```bash
 # Confirm on disk, inside the container.
-docker compose -f docker-compose.prod.yml exec ferroma \
+docker compose -f docker-compose.yml exec ferroma \
   ls -la /var/lib/ferroma/mail/example.com/alice/Maildir
 ```
 
@@ -980,7 +993,7 @@ printf 'EHLO test\r\nMAIL FROM:<admin@example.com>\r\nRCPT TO:<alice@example.com
   | nc 127.0.0.1 25
 
 # Did it land?
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -c \
   "SELECT id, uid, subject, sender, size_bytes, storage_path FROM messages ORDER BY id DESC LIMIT 5;"
 ```
@@ -1019,7 +1032,7 @@ sudo chown 10001:10001 dkim/default.private
 chmod 0600 dkim/default.private
 ```
 
-The `docker-compose.external-db.yml` of §3.1 spares you the manual steps above:
+The `docker-compose.yml` of §3.1 spares you the manual steps above:
 `./scripts/deploy.sh` generates the key inside the `ferroma-data` volume at
 `/var/lib/ferroma/dkim/<selector>.private` (already owned by uid 10001) and prints
 the TXT record to publish; `./scripts/deploy.sh dkim --enable` turns signing on
@@ -1059,11 +1072,11 @@ add_auth_results = true
 ```
 
 ```bash
-# Or through the environment, which is how docker-compose.prod.yml does it.
+# Or through the environment, which is how docker-compose.yml does it.
 FERROMA_DKIM_ENABLED=true
 FERROMA_DKIM_SELECTOR=default
 FERROMA_DKIM_KEY=/etc/ferroma/dkim/default.private
-docker compose -f docker-compose.prod.yml restart ferroma
+docker compose -f docker-compose.yml restart ferroma
 ```
 
 `Config::validate()` refuses to boot when `dkim.enabled = true` and
@@ -1092,7 +1105,7 @@ mailboxes carries the verdict, which is the quickest way to confirm the signer i
 running:
 
 ```bash
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -Atc \
   "SELECT storage_path FROM messages ORDER BY id DESC LIMIT 1"
 ```
@@ -1128,14 +1141,14 @@ retention and getting the archive off the machine stay the operator's job: point
 ```bash
 # Stop the server first. Without --live the export refuses while `ferroma serve`
 # is up, because a running copy can miss a delivery in progress.
-docker compose -f docker-compose.prod.yml stop ferroma
-docker compose -f docker-compose.prod.yml run --rm ferroma \
+docker compose -f docker-compose.yml stop ferroma
+docker compose -f docker-compose.yml run --rm ferroma \
   storage export --to /var/lib/ferroma/ferroma.tar
 
 # Or, when stopping is not acceptable. The archive is labelled `live` in its
 # manifest: Maildir's atomic rename means it cannot contain a half-written
 # message, but it can miss one that was mid-delivery.
-docker compose -f docker-compose.prod.yml exec ferroma \
+docker compose -f docker-compose.yml exec ferroma \
   storage export --live --to /var/lib/ferroma/ferroma.tar
 ```
 
@@ -1155,7 +1168,7 @@ cannot be loaded by an older server, and a mismatched pair is how a restore
 
 ```bash
 # On the new host, with the server stopped and the database empty.
-docker compose -f docker-compose.prod.yml run --rm ferroma \
+docker compose -f docker-compose.yml run --rm ferroma \
   storage import --from /var/lib/ferroma/ferroma.tar
 ```
 
@@ -1233,7 +1246,7 @@ docker run --rm --network host -i -e PGPASSWORD="$POSTGRES_PASSWORD" \
 # The prod stack, where PostgreSQL is the `postgres` container. The container's own
 # POSTGRES_USER/POSTGRES_DB are used, so a deployment that renamed either still
 # dumps the right database.
-docker compose -f docker-compose.prod.yml exec -T postgres \
+docker compose -f docker-compose.yml exec -T postgres \
   sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom --compress=6' \
   > "/backups/$STAMP/ferroma.dump"
 ```
@@ -1295,9 +1308,9 @@ They are still two snapshots of two systems taken at two moments. For a perfectl
 consistent pair, stop the service for the duration:
 
 ```bash
-docker compose -f docker-compose.prod.yml stop ferroma
+docker compose -f docker-compose.yml stop ferroma
 # take the pg_dump and the volume copy now (§8.2)
-docker compose -f docker-compose.prod.yml start ferroma
+docker compose -f docker-compose.yml start ferroma
 ```
 
 That is the only way to guarantee no transaction is split across the two halves,
@@ -1319,16 +1332,16 @@ host and belong in whatever keeps the deployment's definition. On the external-d
 stack the DKIM key is inside `ferroma-data`, so the volume covers it.
 
 ```bash
-docker compose -f docker-compose.prod.yml stop ferroma
+docker compose -f docker-compose.yml stop ferroma
 
 # 1. The database. Recreate it empty first: pg_restore into a populated database
 #    merges rather than replaces, and a silently merged mail store is how a week of
 #    mail disappears.
-docker compose -f docker-compose.prod.yml exec -T postgres \
+docker compose -f docker-compose.yml exec -T postgres \
   sh -c 'dropdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
-docker compose -f docker-compose.prod.yml exec -T postgres \
+docker compose -f docker-compose.yml exec -T postgres \
   sh -c 'createdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
-docker compose -f docker-compose.prod.yml exec -T postgres \
+docker compose -f docker-compose.yml exec -T postgres \
   sh -c 'pg_restore --no-owner --no-privileges -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
   < "/backups/$STAMP/ferroma.dump"
 
@@ -1341,8 +1354,8 @@ docker run --rm \
   alpine sh -c 'rm -rf /data/* /data/.[!.]*; tar -xzf /in/ferroma-data.tar.gz -C /data'
 
 # 3. Start it and check that the two halves agree.
-docker compose -f docker-compose.prod.yml up -d ferroma
-docker compose -f docker-compose.prod.yml exec ferroma ferroma storage verify
+docker compose -f docker-compose.yml up -d ferroma
+docker compose -f docker-compose.yml exec ferroma ferroma storage verify
 ```
 
 Both halves are plain standard formats, so nothing needs the deployment to be
@@ -1354,13 +1367,13 @@ client container instead of `docker compose exec postgres`. There is no `postgre
 service and no `--profile tools` restore service to run:
 
 ```bash
-docker compose -f docker-compose.external-db.yml stop ferroma
+docker compose -f docker-compose.yml stop ferroma
 docker run --rm --network host -i \
   -e PGPASSWORD="$POSTGRES_PASSWORD" -e PGUSER="$POSTGRES_USER" -e PGDATABASE="$POSTGRES_DB" \
   postgres:16-alpine \
   pg_restore --no-owner --no-privileges --clean --if-exists -h 127.0.0.1 \
   < "/backups/$STAMP/ferroma.dump"
-docker compose -f docker-compose.external-db.yml up -d ferroma
+docker compose -f docker-compose.yml up -d ferroma
 ```
 
 Restoring one half alone is sometimes the right call — a migration the old binary
@@ -1374,12 +1387,12 @@ afterwards in either case.
 ```bash
 # 1. A first sanity check: how many live messages the restored rows describe.
 #    The full procedure is docs/storage.md §9.
-docker compose -f docker-compose.prod.yml exec ferroma sh -c '
+docker compose -f docker-compose.yml exec ferroma sh -c '
   psql "$DATABASE_URL" -Atc "SELECT COUNT(*) FROM messages WHERE expunged_at IS NULL"'
 
 # 2. The integrity check, from the binary itself: rows without bodies, files
 #    without rows, counters, uid_next.
-docker compose -f docker-compose.prod.yml exec ferroma \
+docker compose -f docker-compose.yml exec ferroma \
   ferroma storage verify --details
 
 # 3. Reconcile the counters that are allowed to drift.
@@ -1390,8 +1403,8 @@ docker compose -f docker-compose.prod.yml exec ferroma \
 #      -H "Authorization: Bearer $TOKEN"
 
 # 4. Start Ferroma and watch the log for the first minute.
-docker compose -f docker-compose.prod.yml up -d ferroma
-docker compose -f docker-compose.prod.yml logs -f --tail=100 ferroma
+docker compose -f docker-compose.yml up -d ferroma
+docker compose -f docker-compose.yml logs -f --tail=100 ferroma
 ```
 
 The full integrity procedure — the orphan query, the checksum loop, the counter
@@ -1408,13 +1421,13 @@ tested).
 ```bash
 # Restore the dump into a scratch database on the same host, without touching
 # production. The volume half is restored the same way, into a throwaway volume.
-docker compose -f docker-compose.prod.yml exec postgres createdb -U ferroma ferroma_drill
-docker compose -f docker-compose.prod.yml exec -T postgres \
+docker compose -f docker-compose.yml exec postgres createdb -U ferroma ferroma_drill
+docker compose -f docker-compose.yml exec -T postgres \
   pg_restore --no-owner --no-privileges --dbname=ferroma_drill \
   < "/backups/$STAMP/ferroma.dump"
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma_drill -c 'SELECT COUNT(*) FROM messages;'
-docker compose -f docker-compose.prod.yml exec postgres dropdb -U ferroma ferroma_drill
+docker compose -f docker-compose.yml exec postgres dropdb -U ferroma ferroma_drill
 ```
 
 Do this quarterly, and after every schema migration.
@@ -1440,11 +1453,11 @@ Do this quarterly, and after every schema migration.
 sed -i 's/^FERROMA_VERSION=.*/FERROMA_VERSION=0.2.0/' .env
 
 # 4. Pull and recreate only the ferroma service.
-docker compose -f docker-compose.prod.yml pull ferroma
-docker compose -f docker-compose.prod.yml up -d ferroma
+docker compose -f docker-compose.yml pull ferroma
+docker compose -f docker-compose.yml up -d ferroma
 
 # 5. Watch it come up.
-docker compose -f docker-compose.prod.yml logs -f --tail=100 ferroma
+docker compose -f docker-compose.yml logs -f --tail=100 ferroma
 ```
 
 **Coming from a release that shipped the backup sidecar.** `./scripts/deploy.sh
@@ -1468,9 +1481,9 @@ file rather than an edit. That is why step 1 is step 1.
 
 ```bash
 # Roll the image back.
-sed -i 's/^FERROMA_VERSION=.*/FERROMA_VERSION=0.1.9/' .env
-docker compose -f docker-compose.prod.yml pull ferroma
-docker compose -f docker-compose.prod.yml up -d ferroma
+sed -i 's/^FERROMA_VERSION=.*/FERROMA_VERSION=0.1.10/' .env
+docker compose -f docker-compose.yml pull ferroma
+docker compose -f docker-compose.yml up -d ferroma
 ```
 
 An image rollback works **only if the schema is compatible**. If the new version
@@ -1479,13 +1492,13 @@ not enough and you must restore the database from the pre-upgrade dump. On the
 external-db stack that is the client-image form from §8.4:
 
 ```bash
-docker compose -f docker-compose.external-db.yml stop ferroma
+docker compose -f docker-compose.yml stop ferroma
 docker run --rm --network host -i -e PGPASSWORD="$POSTGRES_PASSWORD" \
   postgres:16-alpine \
   pg_restore --no-owner --no-privileges --clean --if-exists \
   -h 127.0.0.1 -U ferroma -d ferroma \
   < /backups/<pre-upgrade-stamp>/ferroma.dump
-docker compose -f docker-compose.external-db.yml up -d ferroma
+docker compose -f docker-compose.yml up -d ferroma
 ```
 
 Rolling back the mail store is unnecessary here, because the dump and the volume
@@ -1504,7 +1517,7 @@ a second Ferroma process; both are likelier bottlenecks.
 A restart costs the duration of `server.shutdown_timeout_secs` (30 s) plus the
 boot: listeners stop accepting, in-flight SMTP transactions and queue deliveries
 finish, then the process exits. `stop_grace_period: 60s` in
-`docker-compose.prod.yml` gives it room. Inbound mail during the gap is retried by
+`docker-compose.yml` gives it room. Inbound mail during the gap is retried by
 the sending MTA, because SMTP is store-and-forward by design.
 
 ### 9.4 Publishing a release to Docker Hub
@@ -1525,7 +1538,7 @@ git push origin main v0.2.0
 ```
 
 `.github/workflows/docker-publish.yml` then checks that the tag and `Cargo.toml`
-agree — a `v0.2.0` tag on a tree that says `0.1.9` fails before anything is built —
+agree — a `v0.2.0` tag on a tree that says `0.1.10` fails before anything is built —
 runs `node tools/check-deploy.mjs`, builds both architectures with a GitHub Actions
 layer cache, and pushes `0.2.0` and `latest`. A release publishes those two tags and
 nothing else: there is deliberately no rolling minor tag (`0.2`, `0.3`, …), and no
@@ -1630,7 +1643,7 @@ For a **single-host private registry** instead of Docker Hub, point
 ```json
 {
   "status": "ok",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "protocol_version": 1,
   "uptime_secs": 84213,
   "database": { "ok": true, "server_version": "PostgreSQL 16.15",
@@ -1644,18 +1657,18 @@ For a **single-host private registry** instead of Docker Hub, point
 `503` with `"status": "degraded"` when the database is unreachable.
 
 ```bash
-docker compose -f docker-compose.prod.yml exec ferroma \
+docker compose -f docker-compose.yml exec ferroma \
   ferroma healthcheck --url http://127.0.0.1:8080/api/v1/health
 
 # Or without the CLI.
-docker compose -f docker-compose.prod.yml exec ferroma \
+docker compose -f docker-compose.yml exec ferroma \
   sh -c 'wget -qO- http://127.0.0.1:8080/api/v1/health || echo unreachable'
 ```
 
 The Docker health check in the compose files and the `Dockerfile` runs
 `ferroma healthcheck --url http://127.0.0.1:8080/api/v1/health` every 30 s with a
 20–30 s start period and 3 retries. The address in
-`docker-compose.external-db.yml` follows `FERROMA_API_HOST` **and**
+`docker-compose.yml` follows `FERROMA_API_HOST` **and**
 `FERROMA_API_PORT` (default `127.0.0.1:18080`) — the probe follows wherever the API
 is bound. When a containerised proxy forces the API onto the Docker bridge address
 (the end of §5.4), the probe moves with it instead of reporting a healthy server as
@@ -1678,19 +1691,19 @@ unhealthy.
 
 ```bash
 # The queue, grouped.
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -c \
   "SELECT status, COUNT(*) FROM mail_queue GROUP BY status ORDER BY 2 DESC;"
 
 # The oldest thing waiting to be retried.
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -c \
   "SELECT id, recipient, attempts, next_attempt_at, last_status_code, left(last_error,60)
      FROM mail_queue WHERE status IN ('pending','retry')
     ORDER BY next_attempt_at LIMIT 20;"
 
 # Storage.
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -c \
   "SELECT pg_size_pretty(pg_database_size('ferroma')) AS db,
           (SELECT COUNT(*) FROM messages WHERE expunged_at IS NULL) AS live_messages,
@@ -1699,7 +1712,7 @@ docker compose -f docker-compose.prod.yml exec postgres \
 du -sh "$(docker volume inspect -f '{{.Mountpoint}}' ferroma-data)"
 
 # Failed logins in the last day.
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -c \
   "SELECT email, ip, COUNT(*) FROM login_attempts
     WHERE NOT success AND created_at > NOW() - INTERVAL '1 day'
@@ -1717,16 +1730,16 @@ joined.
 
 ```bash
 # Just the errors.
-docker compose -f docker-compose.prod.yml logs ferroma | grep -i '"level":"ERROR"'
+docker compose -f docker-compose.yml logs ferroma | grep -i '"level":"ERROR"'
 
 # Everything about one message id.
-docker compose -f docker-compose.prod.yml logs ferroma | grep '4821'
+docker compose -f docker-compose.yml logs ferroma | grep '4821'
 
 # A delivery that failed.
-docker compose -f docker-compose.prod.yml logs ferroma | grep -i 'delivery'
+docker compose -f docker-compose.yml logs ferroma | grep -i 'delivery'
 
 # Fresh log lines as they happen, filtered.
-docker compose -f docker-compose.prod.yml logs -f ferroma | grep -E 'WARN|ERROR'
+docker compose -f docker-compose.yml logs -f ferroma | grep -E 'WARN|ERROR'
 ```
 
 Log rotation is bounded in the compose files (`max-size: 20m`, `max-file: 10` in
@@ -1774,7 +1787,7 @@ dig +short TXT _dmarc.example.com
 dig +short 10.113.0.203.zen.spamhaus.org
 
 # 6. Is the queue reporting failures with a remote status code?
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -c \
   "SELECT recipient, last_status_code, last_status_text FROM mail_queue
     WHERE status = 'failed' ORDER BY updated_at DESC LIMIT 10;"
@@ -1800,11 +1813,11 @@ dig +short MX example.com
 dig +short A mail.example.com
 
 # 3. Is Ferroma listening on 25 inside the container?
-docker compose -f docker-compose.prod.yml exec ferroma \
+docker compose -f docker-compose.yml exec ferroma \
   sh -c 'netstat -tlnp 2>/dev/null || ss -tlnp'
 
 # 4. Did the connection even arrive? If there is no log line, it never got here.
-docker compose -f docker-compose.prod.yml logs ferroma | grep -i 'connection\|reject\|550\|554'
+docker compose -f docker-compose.yml logs ferroma | grep -i 'connection\|reject\|550\|554'
 
 # 5. Is the certificate valid from outside?
 openssl s_client -starttls smtp -connect mail.example.com:25 -crlf < /dev/null 2>&1 | head -30
@@ -1823,34 +1836,34 @@ that require TLS (MTA-STS, or a provider policy) defer the mail with a `4xx`.
 
 ```bash
 # 1. Is the queue actually growing, and is the first attempt recent?
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -c \
   "SELECT status, COUNT(*), MIN(next_attempt_at), MAX(created_at)
      FROM mail_queue GROUP BY status;"
 
 # 2. What are the top failures saying?
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -c \
   "SELECT recipient, attempts, last_status_code, last_error
      FROM mail_queue WHERE status IN ('retry','failed')
     ORDER BY attempts DESC LIMIT 20;"
 
 # 3. The attempt history of one stuck delivery.
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -c \
   "SELECT a.attempt, a.remote_mx, a.status_code, a.status_text, a.duration_ms, a.created_at
      FROM delivery_attempts a JOIN mail_queue q ON q.id = a.queue_id
     WHERE q.id = 1234 ORDER BY a.attempt;"
 
 # 4. Can this host reach the remote MX on port 25 at all?
-docker compose -f docker-compose.prod.yml exec ferroma \
+docker compose -f docker-compose.yml exec ferroma \
   sh -c 'nc -vz gmail-smtp-in.l.google.com 25'
 
 # 5. Is outbound 25 blocked by the provider? Test from the host.
 nc -vz alt1.gmail-smtp-in.l.google.com 25
 
 # 6. Is the dispatcher running at all?
-docker compose -f docker-compose.prod.yml logs ferroma | grep -i 'queue\|dispatch'
+docker compose -f docker-compose.yml logs ferroma | grep -i 'queue\|dispatch'
 grep -A6 '^\[queue\]' config/ferroma.toml
 ```
 
@@ -1884,7 +1897,7 @@ change the password.
 
 ```bash
 # 1. Is IMAP listening?
-docker compose -f docker-compose.prod.yml exec ferroma \
+docker compose -f docker-compose.yml exec ferroma \
   sh -c 'netstat -tlnp 2>/dev/null | grep -E "143|993"'
 
 # 2. What does the greeting and capability list say?
@@ -1901,18 +1914,18 @@ grep -E 'require_tls_for_login|imaps_port' config/ferroma.toml
 grep FERROMA__IMAP__REQUIRE_TLS_FOR_LOGIN .env
 
 # 5. Is the account locked by the login throttle?
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -c \
   "SELECT id, email, enabled, failed_logins, locked_until FROM users WHERE email='alice@example.com';"
 
 # 6. What do the recent attempts say?
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -c \
   "SELECT email, ip, success, created_at FROM login_attempts
     ORDER BY created_at DESC LIMIT 20;"
 
 # 7. The server's view of the failure.
-docker compose -f docker-compose.prod.yml logs ferroma | grep -i 'imap\|login'
+docker compose -f docker-compose.yml logs ferroma | grep -i 'imap\|login'
 ```
 
 | Response | Cause | Fix |
@@ -1932,18 +1945,18 @@ are sending as is one they own ([security.md](security.md) §6.3).
 
 ```bash
 # 1. Health, from inside the container.
-docker compose -f docker-compose.prod.yml exec ferroma \
+docker compose -f docker-compose.yml exec ferroma \
   sh -c 'wget -qO- http://127.0.0.1:8080/api/v1/health || echo unreachable'
 
 # 2. Is the container healthy?
-docker compose -f docker-compose.prod.yml ps
+docker compose -f docker-compose.yml ps
 docker inspect -f '{{.State.Health.Status}} restarts={{.RestartCount}}' ferroma
 
 # 3. Why did it exit?
-docker compose -f docker-compose.prod.yml logs --tail=200 ferroma | grep -iE 'error|panic|config'
+docker compose -f docker-compose.yml logs --tail=200 ferroma | grep -iE 'error|panic|config'
 
 # 4. A configuration typo stops the server at boot. That is by design.
-docker compose -f docker-compose.prod.yml run --rm ferroma \
+docker compose -f docker-compose.yml run --rm ferroma \
   ferroma serve --config /etc/ferroma/ferroma.toml
 ```
 
@@ -1956,18 +1969,18 @@ docker compose -f docker-compose.prod.yml run --rm ferroma \
 
 ```bash
 # What the database believes.
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -c \
   "SELECT m.id, d.name||'@'||m.local_part AS addr, u.used_bytes, u.quota_bytes
      FROM mailboxes m JOIN domains d ON d.id=m.domain_id JOIN users u ON u.id=m.user_id
     ORDER BY u.used_bytes DESC LIMIT 10;"
 
 # What is actually on disk.
-docker compose -f docker-compose.prod.yml exec ferroma \
+docker compose -f docker-compose.yml exec ferroma \
   du -sb /var/lib/ferroma/mail/example.com/alice
 
 # The files that make up the total.
-docker compose -f docker-compose.prod.yml exec ferroma \
+docker compose -f docker-compose.yml exec ferroma \
   sh -c 'find /var/lib/ferroma/mail/example.com/alice -type f -printf "%s %p\n" | sort -rn | head -20'
 ```
 
@@ -1984,17 +1997,17 @@ du -sh /var/lib/docker/volumes/ferroma-data/_data/*
 du -sh /var/lib/docker/volumes/ferroma-data/_data/mail/*
 
 # Garbage from interrupted writes.
-docker compose -f docker-compose.prod.yml exec ferroma \
+docker compose -f docker-compose.yml exec ferroma \
   sh -c 'find /var/lib/ferroma/mail -type d -name tmp -exec du -sh {} +'
 
 # Unreferenced attachment blobs.
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -Atc 'SELECT DISTINCT storage_path FROM attachments' | wc -l
-docker compose -f docker-compose.prod.yml exec ferroma \
+docker compose -f docker-compose.yml exec ferroma \
   sh -c 'find /var/lib/ferroma/attachments -type f ! -name "*.tmp" | wc -l'
 
 # Expunged messages still holding their files.
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -c \
   "SELECT COUNT(*), pg_size_pretty(SUM(size_bytes)) FROM messages WHERE expunged_at IS NOT NULL;"
 ```

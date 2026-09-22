@@ -38,40 +38,42 @@ This image is the server binary, `ferroma`, on a minimal Debian base.
 
 ### Run it
 
-The supported deployment is Docker Compose, and the compose files live in the
+The only supported deployment is one Compose file,
+[`docker-compose.yml`](https://github.com/z1HwanG/Ferroma/blob/main/docker-compose.yml).
+A host that already runs PostgreSQL uses the same file and types that address into
+the setup page. The file lives in the
 [repository](https://github.com/z1HwanG/Ferroma).
-[`docker-compose.prod.yml`](https://github.com/z1HwanG/Ferroma/blob/main/docker-compose.prod.yml)
+[`docker-compose.yml`](https://github.com/z1HwanG/Ferroma/blob/main/docker-compose.yml)
 brings up PostgreSQL and Ferroma and nothing else — there is no backup sidecar and no
 backup volume, so the database and the volume above are yours to copy (see
 [`docs/deployment.md`](https://github.com/z1HwanG/Ferroma/blob/main/docs/deployment.md) §8).
 A host that already runs PostgreSQL uses
-[`docker-compose.external-db.yml`](https://github.com/z1HwanG/Ferroma/blob/main/docker-compose.external-db.yml),
+[`docker-compose.yml`](https://github.com/z1HwanG/Ferroma/blob/main/docker-compose.yml),
 driven by [`scripts/deploy.sh`](https://github.com/z1HwanG/Ferroma/blob/main/scripts/deploy.sh):
 
 ```bash
 git clone https://github.com/z1HwanG/Ferroma && cd Ferroma
 cp .env.example .env      # set POSTGRES_PASSWORD; FERROMA_VERSION picks the release tag
-FERROMA_VERSION=0.1.9 docker compose -f docker-compose.prod.yml up -d
+FERROMA_VERSION=0.1.10 docker compose -f docker-compose.yml up -d
 ```
 
-A bare `docker run` works, but PostgreSQL has to be reachable from the container and the
-schema has to exist. The one environment variable it needs is the database address:
-without `DATABASE_URL` the container still starts and serves a page at `/` that
-asks for it, printing the one-time code to the log. Everything else the first-run wizard
+A single container is the same deployment with the database elsewhere. PostgreSQL has to be reachable from the container and the
+schema has to exist. Leave `DATABASE_URL` unset: the container starts and serves a page at `/` that
+asks for the address, printing a one-time code to the log, and remembers the answer in the volume.
+Everything else the first-run wizard
 collects — the mail domain, the hostname, the public URL — is that wizard's to own, and
 the JWT secret is generated into the volume (`<data_dir>/jwt_secret`) when
 `FERROMA_JWT_SECRET` is unset. The implicit-TLS ports are left out on purpose: `465` and
 `993` are **off in the shipped configuration** (`smtps_port = 0`, `imaps_port = 0`), so
 publishing them here would map ports nothing listens on — a connection that is refused
-rather than an error anyone can read. `docker-compose.prod.yml` turns them on together
+rather than an error anyone can read. `docker-compose.yml` turns them on together
 with the certificates they need:
 
 ```bash
 docker run -d --name ferroma \
   -p 25:25 -p 587:587 -p 143:143 -p 8080:8080 \
-  -e DATABASE_URL=postgres://ferroma:secret@db:5432/ferroma \
   -v ferroma-data:/var/lib/ferroma \
-  wesukilaye/ferroma:0.1.9
+  wesukilaye/ferroma:0.1.10
 ```
 
 The full first-run path — migrations, the first domain, the first administrator, DKIM,
@@ -86,7 +88,7 @@ records is a mail server whose mail lands in Junk.
 
 | Tag | Meaning |
 |---|---|
-| `0.1.9` | an exact release — pin this in production |
+| `0.1.10` | an exact release — pin this in production |
 | `latest` | the newest release |
 
 Built for `linux/amd64` and `linux/arm64`. A release publishes `X.Y.Z` and `latest` and
@@ -136,22 +138,21 @@ AGPL-3.0-only — free to run, modify and self-host. The condition that matters 
 
 #### 运行它
 
-受支持的部署方式是 Docker Compose，compose 文件位于 [仓库](https://github.com/z1HwanG/Ferroma)。[`docker-compose.prod.yml`](https://github.com/z1HwanG/Ferroma/blob/main/docker-compose.prod.yml) 只启动 PostgreSQL 与 Ferroma 两项服务，没有备份边车，也没有备份数据卷，因此数据库与上面那个数据卷需要你自己复制（见 [`docs/deployment.md`](https://github.com/z1HwanG/Ferroma/blob/main/docs/deployment.md) §8）。已经运行 PostgreSQL 的主机使用 [`docker-compose.external-db.yml`](https://github.com/z1HwanG/Ferroma/blob/main/docker-compose.external-db.yml)，由 [`scripts/deploy.sh`](https://github.com/z1HwanG/Ferroma/blob/main/scripts/deploy.sh) 驱动：
+唯一受支持的部署方式是一个 Compose 文件，[`docker-compose.yml`](https://github.com/z1HwanG/Ferroma/blob/main/docker-compose.yml)。宿主机已经有 PostgreSQL 时用同一个文件，把那个地址填进引导页。文件位于 [仓库](https://github.com/z1HwanG/Ferroma)。[`docker-compose.yml`](https://github.com/z1HwanG/Ferroma/blob/main/docker-compose.yml) 只启动 PostgreSQL 与 Ferroma 两项服务，没有备份边车，也没有备份数据卷，因此数据库与上面那个数据卷需要你自己复制（见 [`docs/deployment.md`](https://github.com/z1HwanG/Ferroma/blob/main/docs/deployment.md) §8）。已经运行 PostgreSQL 的主机使用 [`docker-compose.yml`](https://github.com/z1HwanG/Ferroma/blob/main/docker-compose.yml)，由 [`scripts/deploy.sh`](https://github.com/z1HwanG/Ferroma/blob/main/scripts/deploy.sh) 驱动：
 
 ```bash
 git clone https://github.com/z1HwanG/Ferroma && cd Ferroma
 cp .env.example .env      # 设置 POSTGRES_PASSWORD；FERROMA_VERSION 决定发布标签
-FERROMA_VERSION=0.1.9 docker compose -f docker-compose.prod.yml up -d
+FERROMA_VERSION=0.1.10 docker compose -f docker-compose.yml up -d
 ```
 
-单独 `docker run` 也可以，但 PostgreSQL 必须能从容器内访问，并且 schema 已经存在。它需要的唯一环境变量是数据库地址：不设置 `DATABASE_URL` 时容器仍会启动，并在 `/` 提供一个询问地址的页面，一次性代码打印在日志里。其余由首次运行向导收集，邮件域、主机名、公开 URL 都归向导所有；未设置 `FERROMA_JWT_SECRET` 时，JWT 密钥会生成到数据卷（`<data_dir>/jwt_secret`）。隐式 TLS 端口是刻意不发布的：`465` 与 `993` 在随附配置中**处于关闭状态**（`smtps_port = 0`、`imaps_port = 0`），在这里发布它们只会映射到没人监听的端口，连接被拒绝，而不是给出任何人能读懂的错误。`docker-compose.prod.yml` 会把它们连同所需证书一起打开：
+单个容器是同一种部署，只是数据库在别处。PostgreSQL 必须能从容器内访问，并且 schema 已经存在。不要设置 `DATABASE_URL`：容器会启动，并在 `/` 提供一个询问地址的页面，一次性代码打印在日志里，答案记在数据卷中。其余由首次运行向导收集，邮件域、主机名、公开 URL 都归向导所有；未设置 `FERROMA_JWT_SECRET` 时，JWT 密钥会生成到数据卷（`<data_dir>/jwt_secret`）。隐式 TLS 端口是刻意不发布的：`465` 与 `993` 在随附配置中**处于关闭状态**（`smtps_port = 0`、`imaps_port = 0`），在这里发布它们只会映射到没人监听的端口，连接被拒绝，而不是给出任何人能读懂的错误。`docker-compose.yml` 会把它们连同所需证书一起打开：
 
 ```bash
 docker run -d --name ferroma \
   -p 25:25 -p 587:587 -p 143:143 -p 8080:8080 \
-  -e DATABASE_URL=postgres://ferroma:secret@db:5432/ferroma \
   -v ferroma-data:/var/lib/ferroma \
-  wesukilaye/ferroma:0.1.9
+  wesukilaye/ferroma:0.1.10
 ```
 
 完整的首次运行流程（迁移、第一个域、第一位管理员、DKIM，以及你必须发布的 DNS 记录）见 [`docs/deployment.md`](https://github.com/z1HwanG/Ferroma/blob/main/docs/deployment.md)，其余文档在 [`docs/`](https://github.com/z1HwanG/Ferroma/tree/main/docs) 目录。DNS 部分不是可选项：SPF、DKIM、DMARC 或 PTR 记录写错的 Ferroma 再正确，邮件也会落进 Junk。
@@ -160,7 +161,7 @@ docker run -d --name ferroma \
 
 | 标签 | 含义 |
 |---|---|
-| `0.1.9` | 精确版本，生产环境请固定此标签 |
+| `0.1.10` | 精确版本，生产环境请固定此标签 |
 | `latest` | 最新发布版 |
 
 为 `linux/amd64` 与 `linux/arm64` 构建。一次发布会推送 `X.Y.Z` 与 `latest` 两个标签，别无其他：刻意没有滚动的 `X.Y` 标签，也没有 `buildcache` 标签。预发布版只推送自己的精确标签，`latest` 永远不会指向候选发布版。

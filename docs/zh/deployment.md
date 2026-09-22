@@ -8,9 +8,12 @@ Let's Encrypt 证书、首次运行设置、创建域与用户、生成并发布
 自带工具执行的备份与恢复流程以及为什么两半必须在一起、监控与健康检查、升级与回滚，以及
 一节按症状编排的故障排查，每个症状都配上用于诊断的命令。
 
+> **唯一受支持的部署方式是 Docker**——Compose，或一个容器加上它能访问的数据库。
+> 在宿主机上运行二进制不是安装路径。
+>
 > **状态：** 部署产物是真实且完整的 —
-> `Dockerfile`、`docker-compose.yml`、`docker-compose.prod.yml`、
-> `docker-compose.external-db.yml`、`.env.example`、`config/ferroma.toml`、
+> `Dockerfile`、`docker-compose.yml`、`docker-compose.yml`、
+> `docker-compose.yml`、`.env.example`、`config/ferroma.toml`、
 > `scripts/deploy.sh`。
 > `ferroma` 二进制实现了本文用到的全部子命令：`serve`、`config check|show|default`、
 > `database init|status`、`migrate`、`user`、`domain`、`dkim`、`storage`、`sync`、
@@ -53,7 +56,7 @@ Let's Encrypt 证书、首次运行设置、创建域与用户、生成并发布
 `ferroma` 服务能访问它。
 
 > **如果这台服务器上已经有 PostgreSQL**（以及负责 443 的反向代理），就别再起第二个数据库
-> 容器：用 §3.1 的 `docker-compose.external-db.yml` 与 `./scripts/deploy.sh`，那里只有
+> 容器：用 §3.1 的 `docker-compose.yml` 与 `./scripts/deploy.sh`，那里只有
 > Ferroma 自己与已有的数据库；备份是你自己的事，见 §8。
 
 开始之前的要求：
@@ -274,13 +277,22 @@ Admin 的 DNS Health 界面（`GET /api/v1/domains/:id/dns`，[api.md](api.md) �
 
 ---
 
-## 3. 三个 compose 文件
+## 3. 一个 compose 文件
 
-| 文件 | 用途 | TLS | Postgres | 镜像 | 额外内容 |
-|---|---|---|---|---|---|
-| `docker-compose.external-db.yml` | **服务器已有 PostgreSQL 与反向代理**（推荐，见 §3.1） | 由反向代理终结 HTTPS；Ferroma 自己终结 465/993 | **不要**：连本机 Postgres | `wesukilaye/ferroma:<tag>`，`docker pull` 或本机构建——整串引用就是 `FERROMA_IMAGE` | `network_mode: host`、`.env` 即全部配置；备份归你自己，见 §8 |
-| `docker-compose.yml` | 开发、单机、先看一眼 | 关闭；端口 25/587/143/8080 明文 | `postgres:16-alpine`，默认值 | 从 `Dockerfile` 本地构建，标记为 `wesukilaye/ferroma:dev` | — |
-| `docker-compose.prod.yml` | 真正的 MX，自带数据库 | 由 Ferroma 在 465/993 终结（HTTPS 交给反向代理） | 已调优（`shared_buffers=512MB`、`wal_compression=on` 等） | `wesukilaye/ferroma:${FERROMA_VERSION}`，发布标签，从不构建 | 资源限制、`restart: always`、日志上限、`ulimit nofile 65536`；备份归你自己，见 §8 |
+部署只有一个，`docker-compose.yml`。`docker compose up -d` 读的就是它，只启动
+Ferroma。默认这台机器已经在运行 PostgreSQL，引导页会要那台服务器的主机、用户名和密码。
+
+`docker-compose.demo.yml` 是演示。它构建这个工作副本，在 Ferroma 旁边启动一个
+PostgreSQL，并且全部走明文。它用来看一眼这个软件，文件名也要求命令必须点名它：
+
+```bash
+docker compose -f docker-compose.demo.yml up -d
+```
+
+| 文件 | 它是什么 |
+|---|---|
+| `docker-compose.yml` | 部署：只有 Ferroma、资源限制、`restart: always` |
+| `docker-compose.demo.yml` | 演示。明文，自带数据库，没有限制。 |
 
 两者都通过 `FERROMA_REPO` 指向已发布的仓库，默认值是 `wesukilaye/ferroma`，也可以改成
 镜像站或私有 registry。仓库与标签刻意写成两个独立变量：Compose **不会**插值嵌套在另一个
@@ -288,14 +300,14 @@ Admin 的 DNS Health 界面（`GET /api/v1/domains/:id/dns`，[api.md](api.md) �
 默认值会插值成一个只剩冒号的字符串，而不是镜像引用。一旦它重新出现，
 `tools/check-deploy.mjs` 会直接让构建失败。
 
-不要在生产环境使用 `docker-compose.yml`。它以明文提供 IMAP 与 API，没有资源限制，
+不要把 `docker-compose.demo.yml` 当作安装。它以明文提供 IMAP 与 API，没有资源限制，
 并且把端口 143 未加密地绑定到宿主机。
 
-### 3.1 服务器已经有 PostgreSQL：一条命令（推荐）
+### 3.1 服务器已经有 PostgreSQL
 
-如果这台 Linux 服务器**已经跑着 PostgreSQL**、也**已经有反向代理**（nginx、Caddy…）负责
-443，那就不该再起第二个数据库容器：用 `docker-compose.external-db.yml`，由
-`scripts/deploy.sh` 驱动。这是步骤最少、对你现有环境改动最小的一条路。
+启动 `docker-compose.yml`。在引导页上填写已经在运行的那台 PostgreSQL 的主机、用户名和密码。
+已经占着 443 的反向代理继续占着；
+Ferroma 的 web 端口留在它后面。`scripts/deploy.sh` 驱动的是同一个文件。
 
 ```bash
 git clone … && cd Ferroma
@@ -310,7 +322,7 @@ git clone … && cd Ferroma
 | 2. 收集配置 | 交互式问：邮件域、MX 主机名、管理员邮箱、数据库地址、API 端口（默认 `127.0.0.1:18080`） |
 | 3. 写 `.env` | 生成随机数据库密码与 `FERROMA_JWT_SECRET`，权限 600；**它是唯一的配置文件** |
 | 4. 建角色与库 | 依次尝试：`sudo -u postgres`（peer 认证）、本机 PostgreSQL **容器**里的 `psql`（1Panel 这类面板的常见形态，用 `docker exec`）、`--pg-password` 给出的超级用户；都做不到就打印可直接粘贴的 SQL（容器场景给 `docker exec` 形式）并停下 |
-| 5. 构建镜像 | 本机 `docker build`（首次 10–30 分钟）。加上 `--image wesukilaye/ferroma:0.1.9` 改为拉取已发布版本——同一条命令会完全跳过构建 |
+| 5. 构建镜像 | 本机 `docker build`（首次 10–30 分钟）。加上 `--image wesukilaye/ferroma:0.1.10` 改为拉取已发布版本——同一条命令会完全跳过构建 |
 | 6. 建表 | 在容器里跑 `ferroma database init`（库不存在时也会建） |
 | 7. 装证书 | 把证书以 uid 10001 装进 `./tls` 供 465/993 使用，并检查 SAN 是否覆盖 MX 主机名 |
 | 8. 启动 | `docker compose up -d`，最多等 3 分钟健康检查，超时自动打印日志 |
@@ -383,10 +395,10 @@ docker compose logs -f ferroma
 ```bash
 cp .env.example .env
 # 编辑 .env 并设置每一个 REQUIRED 变量：见 §4。
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d
-docker compose -f docker-compose.prod.yml ps
-docker compose -f docker-compose.prod.yml logs -f ferroma
+docker compose -f docker-compose.yml pull
+docker compose -f docker-compose.yml up -d
+docker compose -f docker-compose.yml ps
+docker compose -f docker-compose.yml logs -f ferroma
 ```
 
 运维上要紧的差异：
@@ -418,26 +430,26 @@ Admin / API 由反向代理访问 `127.0.0.1:8080`——把 `127.0.0.1:8080:8080
 
 ```bash
 # 跟一个服务的日志。
-docker compose -f docker-compose.prod.yml logs -f --tail=200 ferroma
+docker compose -f docker-compose.yml logs -f --tail=200 ferroma
 
 # 只重启 Ferroma（PostgreSQL 继续运行）。
-docker compose -f docker-compose.prod.yml restart ferroma
+docker compose -f docker-compose.yml restart ferroma
 
 # 容器内的一个 shell，以 ferroma 用户身份。
-docker compose -f docker-compose.prod.yml exec ferroma sh
+docker compose -f docker-compose.yml exec ferroma sh
 
 # 针对数据库开一个 psql 会话。
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma
 
 # 两个卷的磁盘占用。
 docker system df -v | grep -E 'ferroma-data|ferroma-postgres-data'
 
 # 停掉一切，保留卷。
-docker compose -f docker-compose.prod.yml down
+docker compose -f docker-compose.yml down
 
 # 停掉一切并销毁卷。这会删除所有邮件与用户。
-# docker compose -f docker-compose.prod.yml down -v
+# docker compose -f docker-compose.yml down -v
 ```
 
 ---
@@ -492,7 +504,7 @@ No database is connected yet. Open http://0.0.0.0:8080/ and enter:
 这三项只要在环境里声明就优先于向导——这正是设计意图：清楚自己身份的部署声明一次，
 手工搭建的实例则被逐个询问。`scripts/deploy.sh --wizard`不写其中任何一项，因此全新
 容器只需要发布 web 端口，另加`POSTGRES_PASSWORD`（该脚本会自动生成）。
-| `FERROMA_VERSION` | `0.1.9` | prod（`:?`） | 已发布的镜像标签；prod 从不构建 |
+| `FERROMA_VERSION` | `0.1.10` | prod（`:?`） | 已发布的镜像标签；prod 从不构建 |
 
 ### 4.2 常设变量
 
@@ -584,8 +596,8 @@ SMTP 端口冲突时、在 `smtp.port` 为 `0` 时，或在 `tls.enabled = false
 
 ### 5.2 方案 A — Ferroma 终结 SMTP/IMAP 的 TLS
 
-`docker-compose.prod.yml` 采用的做法：465 与 993 由 rustls 直接提供（`network_mode: host`
-的 `docker-compose.external-db.yml` 同样如此），PEM 包与私钥只读挂载。HTTPS 不在其中——
+`docker-compose.yml` 采用的做法：465 与 993 由 rustls 直接提供（`network_mode: host`
+的 `docker-compose.yml` 同样如此），PEM 包与私钥只读挂载。HTTPS 不在其中——
 见本文开头的状态说明。两个隐式 TLS 监听默认关闭，所以要显式打开：
 
 ```bash
@@ -621,11 +633,11 @@ tls.cert_path and tls.key_path must be set together (or enable self_signed_fallb
 
 当别的东西已经占着 443 并管理证书时使用它，或者当你希望 HTTP 安全头集中在一处时使用
 它。SMTP 与 IMAP **不**走代理；Ferroma 仍然自己终结它们。§3.1 的
-`docker-compose.external-db.yml` 就是这种形态：它用 `network_mode: host`，于是不必再映射
+`docker-compose.yml` 就是这种形态：它用 `network_mode: host`，于是不必再映射
 端口，API 直接听 `127.0.0.1:18080`（`FERROMA_API_HOST` / `FERROMA_API_PORT`）。
 
 ```yaml
-# 添加到 docker-compose.prod.yml 的 ferroma 服务。
+# 添加到 docker-compose.yml 的 ferroma 服务。
     ports:
       - '25:25'
       - '587:587'
@@ -778,7 +790,7 @@ sudo install -o 10001 -g 10001 -m 0640 \
   /etc/letsencrypt/live/mail.example.com/fullchain.pem tls/fullchain.pem
 sudo install -o 10001 -g 10001 -m 0600 \
   /etc/letsencrypt/live/mail.example.com/privkey.pem   tls/privkey.pem
-docker compose -f docker-compose.prod.yml restart ferroma
+docker compose -f docker-compose.yml restart ferroma
 ```
 
 注意：
@@ -818,9 +830,9 @@ sudo certbot renew --dry-run
 ### 6.1 启动
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d
-docker compose -f docker-compose.prod.yml ps
-docker compose -f docker-compose.prod.yml logs ferroma | tail -50
+docker compose -f docker-compose.yml up -d
+docker compose -f docker-compose.yml ps
+docker compose -f docker-compose.yml logs ferroma | tail -50
 ```
 
 一次健康的启动会记录解析后的配置摘要、每个监听器一行 `info`，以及
@@ -886,7 +898,7 @@ Maildir 与文件夹行由 `Maildir::ensure_mailbox` 与 `FoldersRepository::ens
 
 ```bash
 # 在容器里确认磁盘上的结果。
-docker compose -f docker-compose.prod.yml exec ferroma \
+docker compose -f docker-compose.yml exec ferroma \
   ls -la /var/lib/ferroma/mail/example.com/alice/Maildir
 ```
 
@@ -898,7 +910,7 @@ printf 'EHLO test\r\nMAIL FROM:<admin@example.com>\r\nRCPT TO:<alice@example.com
   | nc 127.0.0.1 25
 
 # 它落库了吗？
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -c \
   "SELECT id, uid, subject, sender, size_bytes, storage_path FROM messages ORDER BY id DESC LIMIT 5;"
 ```
@@ -934,7 +946,7 @@ sudo chown 10001:10001 dkim/default.private
 chmod 0600 dkim/default.private
 ```
 
-用 §3.1 的 `docker-compose.external-db.yml` 时不需要上面这些手工步骤：
+用 §3.1 的 `docker-compose.yml` 时不需要上面这些手工步骤：
 `./scripts/deploy.sh` 会把密钥生成到 `ferroma-data` 卷里的
 `/var/lib/ferroma/dkim/<selector>.private`（属主天然就是 uid 10001），并打印要发布的
 TXT 记录；发布之后 `./scripts/deploy.sh dkim --enable` 打开签名。
@@ -972,11 +984,11 @@ add_auth_results = true
 ```
 
 ```bash
-# 或者通过环境变量，docker-compose.prod.yml 就是这么做的。
+# 或者通过环境变量，docker-compose.yml 就是这么做的。
 FERROMA_DKIM_ENABLED=true
 FERROMA_DKIM_SELECTOR=default
 FERROMA_DKIM_KEY=/etc/ferroma/dkim/default.private
-docker compose -f docker-compose.prod.yml restart ferroma
+docker compose -f docker-compose.yml restart ferroma
 ```
 
 在 `dkim.enabled = true` 而 `dkim.private_key_path` 未设置时、在 `dkim.selector` 为空
@@ -1003,7 +1015,7 @@ swaks --server mail.example.com --port 587 --tls \
 确认签名程序正在运行最快的方式：
 
 ```bash
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -Atc \
   "SELECT storage_path FROM messages ORDER BY id DESC LIMIT 1"
 ```
@@ -1036,13 +1048,13 @@ Ferroma 版本、时间、`pg_dump` 大版本、文件数和每一段的 SHA-256
 ```bash
 # 先停服务器。不带 --live 时，导出若发现 `ferroma serve` 仍在运行就拒绝，
 # 因为运行中的副本可能漏掉一封正在投递的信。
-docker compose -f docker-compose.prod.yml stop ferroma
-docker compose -f docker-compose.prod.yml run --rm ferroma \
+docker compose -f docker-compose.yml stop ferroma
+docker compose -f docker-compose.yml run --rm ferroma \
   storage export --to /var/lib/ferroma/ferroma.tar
 
 # 或者，停机不可接受时。归档会在清单里标明 `live`：Maildir 的原子改名保证
 # 拷不到半封信，但可能漏掉一封正在投递的。
-docker compose -f docker-compose.prod.yml exec ferroma \
+docker compose -f docker-compose.yml exec ferroma \
   storage export --live --to /var/lib/ferroma/ferroma.tar
 ```
 
@@ -1059,7 +1071,7 @@ docker compose -f docker-compose.prod.yml exec ferroma \
 
 ```bash
 # 在新主机上，服务器已停、数据库为空。
-docker compose -f docker-compose.prod.yml run --rm ferroma \
+docker compose -f docker-compose.yml run --rm ferroma \
   storage import --from /var/lib/ferroma/ferroma.tar
 ```
 
@@ -1130,7 +1142,7 @@ docker run --rm --network host -i -e PGPASSWORD="$POSTGRES_PASSWORD" \
 
 # prod 栈：PostgreSQL 就是 `postgres` 容器。这里用容器自己的
 # POSTGRES_USER/POSTGRES_DB，所以改过这两个名字的部署也能导出正确的库。
-docker compose -f docker-compose.prod.yml exec -T postgres \
+docker compose -f docker-compose.yml exec -T postgres \
   sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom --compress=6' \
   > "/backups/$STAMP/ferroma.dump"
 ```
@@ -1184,9 +1196,9 @@ restic -r s3:s3.example.com/ferroma-offsite forget --keep-daily 14 --prune
 它们仍然是两个系统在两个时刻的两张快照。要得到完全一致的一对，就在此期间停掉服务：
 
 ```bash
-docker compose -f docker-compose.prod.yml stop ferroma
+docker compose -f docker-compose.yml stop ferroma
 # 现在按 §8.2 取 pg_dump 与卷副本
-docker compose -f docker-compose.prod.yml start ferroma
+docker compose -f docker-compose.yml start ferroma
 ```
 
 这是保证没有事务被拆到两半的唯一办法，在小型存储上只需要几秒钟。
@@ -1204,15 +1216,15 @@ docker compose -f docker-compose.prod.yml start ferroma
 `ferroma-data` 里，卷已经覆盖了它。
 
 ```bash
-docker compose -f docker-compose.prod.yml stop ferroma
+docker compose -f docker-compose.yml stop ferroma
 
 # 1. 数据库。先重建一个空库：pg_restore 进一个非空数据库是合并而不是替换，
 #    而一次悄悄发生的合并，正是运维人员丢掉一周邮件的方式。
-docker compose -f docker-compose.prod.yml exec -T postgres \
+docker compose -f docker-compose.yml exec -T postgres \
   sh -c 'dropdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
-docker compose -f docker-compose.prod.yml exec -T postgres \
+docker compose -f docker-compose.yml exec -T postgres \
   sh -c 'createdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
-docker compose -f docker-compose.prod.yml exec -T postgres \
+docker compose -f docker-compose.yml exec -T postgres \
   sh -c 'pg_restore --no-owner --no-privileges -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
   < "/backups/$STAMP/ferroma.dump"
 
@@ -1225,8 +1237,8 @@ docker run --rm \
   alpine sh -c 'rm -rf /data/* /data/.[!.]*; tar -xzf /in/ferroma-data.tar.gz -C /data'
 
 # 3. 启动它，并检查两半是否一致。
-docker compose -f docker-compose.prod.yml up -d ferroma
-docker compose -f docker-compose.prod.yml exec ferroma ferroma storage verify
+docker compose -f docker-compose.yml up -d ferroma
+docker compose -f docker-compose.yml exec ferroma ferroma storage verify
 ```
 
 两半都是普通的标准格式，所以恢复不需要这套部署处于运行状态：在新宿主机上做裸机恢复，
@@ -1237,13 +1249,13 @@ external-db 栈上，数据库那一半走宿主机的 `psql` 或客户端容器
 `--profile tools` 恢复服务：
 
 ```bash
-docker compose -f docker-compose.external-db.yml stop ferroma
+docker compose -f docker-compose.yml stop ferroma
 docker run --rm --network host -i \
   -e PGPASSWORD="$POSTGRES_PASSWORD" -e PGUSER="$POSTGRES_USER" -e PGDATABASE="$POSTGRES_DB" \
   postgres:16-alpine \
   pg_restore --no-owner --no-privileges --clean --if-exists -h 127.0.0.1 \
   < "/backups/$STAMP/ferroma.dump"
-docker compose -f docker-compose.external-db.yml up -d ferroma
+docker compose -f docker-compose.yml up -d ferroma
 ```
 
 只恢复其中一半有时是正确的——旧二进制读不了的迁移只需要把数据库恢复回来（§9.2）——但要
@@ -1255,11 +1267,11 @@ docker compose -f docker-compose.external-db.yml up -d ferroma
 ```bash
 # 1. 第一道体检：恢复回来的行描述了多少封存活的邮件。
 #    完整流程见 docs/storage.md §9。
-docker compose -f docker-compose.prod.yml exec ferroma sh -c '
+docker compose -f docker-compose.yml exec ferroma sh -c '
   psql "$DATABASE_URL" -Atc "SELECT COUNT(*) FROM messages WHERE expunged_at IS NULL"'
 
 # 2. 用二进制自带的完整性检查：没有正文的行、没有对应行的文件、计数器、uid_next。
-docker compose -f docker-compose.prod.yml exec ferroma \
+docker compose -f docker-compose.yml exec ferroma \
   ferroma storage verify --details
 
 # 3. 校正那些允许漂移的计数器。
@@ -1269,8 +1281,8 @@ docker compose -f docker-compose.prod.yml exec ferroma \
 #      -H "Authorization: Bearer $TOKEN"
 
 # 4. 启动 Ferroma 并观察头一分钟的日志。
-docker compose -f docker-compose.prod.yml up -d ferroma
-docker compose -f docker-compose.prod.yml logs -f --tail=100 ferroma
+docker compose -f docker-compose.yml up -d ferroma
+docker compose -f docker-compose.yml logs -f --tail=100 ferroma
 ```
 
 完整的完整性流程（孤立查询、校验和循环、计数器比对、`uid_next`/`uid_validity` 规则）
@@ -1285,13 +1297,13 @@ docker compose -f docker-compose.prod.yml logs -f --tail=100 ferroma
 ```bash
 # 把 dump 恢复到同一台宿主机上的临时数据库，不碰生产。
 # 卷那一半同样恢复，只是恢复进一个一次性卷。
-docker compose -f docker-compose.prod.yml exec postgres createdb -U ferroma ferroma_drill
-docker compose -f docker-compose.prod.yml exec -T postgres \
+docker compose -f docker-compose.yml exec postgres createdb -U ferroma ferroma_drill
+docker compose -f docker-compose.yml exec -T postgres \
   pg_restore --no-owner --no-privileges --dbname=ferroma_drill \
   < "/backups/$STAMP/ferroma.dump"
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma_drill -c 'SELECT COUNT(*) FROM messages;'
-docker compose -f docker-compose.prod.yml exec postgres dropdb -U ferroma ferroma_drill
+docker compose -f docker-compose.yml exec postgres dropdb -U ferroma ferroma_drill
 ```
 
 每季度做一次，并在每次模式迁移之后做一次。
@@ -1317,11 +1329,11 @@ docker compose -f docker-compose.prod.yml exec postgres dropdb -U ferroma ferrom
 sed -i 's/^FERROMA_VERSION=.*/FERROMA_VERSION=0.2.0/' .env
 
 # 4. 只拉取并重建 ferroma 服务。
-docker compose -f docker-compose.prod.yml pull ferroma
-docker compose -f docker-compose.prod.yml up -d ferroma
+docker compose -f docker-compose.yml pull ferroma
+docker compose -f docker-compose.yml up -d ferroma
 
 # 5. 看着它起来。
-docker compose -f docker-compose.prod.yml logs -f --tail=100 ferroma
+docker compose -f docker-compose.yml logs -f --tail=100 ferroma
 ```
 
 **从带备份边车的版本升级过来。** `./scripts/deploy.sh upgrade` 会用 `--remove-orphans`
@@ -1342,9 +1354,9 @@ docker volume rm ferroma-backups
 
 ```bash
 # 把镜像回滚。
-sed -i 's/^FERROMA_VERSION=.*/FERROMA_VERSION=0.1.9/' .env
-docker compose -f docker-compose.prod.yml pull ferroma
-docker compose -f docker-compose.prod.yml up -d ferroma
+sed -i 's/^FERROMA_VERSION=.*/FERROMA_VERSION=0.1.10/' .env
+docker compose -f docker-compose.yml pull ferroma
+docker compose -f docker-compose.yml up -d ferroma
 ```
 
 镜像回滚**只有在模式兼容时**才有效。如果新版本应用了旧版本读不了的迁移，只回滚二进制
@@ -1352,13 +1364,13 @@ docker compose -f docker-compose.prod.yml up -d ferroma
 镜像形式：
 
 ```bash
-docker compose -f docker-compose.external-db.yml stop ferroma
+docker compose -f docker-compose.yml stop ferroma
 docker run --rm --network host -i -e PGPASSWORD="$POSTGRES_PASSWORD" \
   postgres:16-alpine \
   pg_restore --no-owner --no-privileges --clean --if-exists \
   -h 127.0.0.1 -U ferroma -d ferroma \
   < /backups/<pre-upgrade-stamp>/ferroma.dump
-docker compose -f docker-compose.external-db.yml up -d ferroma
+docker compose -f docker-compose.yml up -d ferroma
 ```
 
 这里回滚邮件存储没有必要，因为 dump 与卷是两份独立的归档：只恢复数据库，备份之后收到的
@@ -1372,7 +1384,7 @@ docker compose -f docker-compose.external-db.yml up -d ferroma
 进程；两者都更可能是瓶颈。
 
 一次重启的代价是 `server.shutdown_timeout_secs` 的时长（30 秒）加上启动时间：监听器停止
-接受连接，在途的 SMTP 事务与队列投递完成，然后进程退出。`docker-compose.prod.yml` 中的
+接受连接，在途的 SMTP 事务与队列投递完成，然后进程退出。`docker-compose.yml` 中的
 `stop_grace_period: 60s` 给了它余量。这期间收到的邮件会由发信 MTA 重试，因为 SMTP 按设计
 就是存储转发。
 
@@ -1392,7 +1404,7 @@ git push origin main v0.2.0
 ```
 
 `.github/workflows/docker-publish.yml` 会先核对标签与 `Cargo.toml` 是否一致——在写着
-`0.1.9` 的树上打 `v0.2.0` 标签会在构建任何东西之前失败——再跑
+`0.1.10` 的树上打 `v0.2.0` 标签会在构建任何东西之前失败——再跑
 `node tools/check-deploy.mjs`，然后用 GitHub Actions 层缓存构建两个架构，推送 `0.2.0`
 与 `latest`。一次发布只推这两个标签：刻意没有滚动的次版本标签（`0.2`、`0.3`…），也没有
 `buildcache` 标签。预发布版本（`0.2.0-rc.1`）只推它自己的精确标签，并且绝不移动 `latest`：
@@ -1484,7 +1496,7 @@ characters` 结束——尽管镜像其实已经推上 Docker Hub 了。脚本�
 ```json
 {
   "status": "ok",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "protocol_version": 1,
   "uptime_secs": 84213,
   "database": { "ok": true, "server_version": "PostgreSQL 16.15",
@@ -1498,17 +1510,17 @@ characters` 结束——尽管镜像其实已经推上 Docker Hub 了。脚本�
 数据库不可达时返回 `503` 与 `"status": "degraded"`。
 
 ```bash
-docker compose -f docker-compose.prod.yml exec ferroma \
+docker compose -f docker-compose.yml exec ferroma \
   ferroma healthcheck --url http://127.0.0.1:8080/api/v1/health
 
 # 或者不用 CLI。
-docker compose -f docker-compose.prod.yml exec ferroma \
+docker compose -f docker-compose.yml exec ferroma \
   sh -c 'wget -qO- http://127.0.0.1:8080/api/v1/health || echo unreachable'
 ```
 
 几个 compose 文件与 `Dockerfile` 中的 Docker 健康检查每 30 秒运行一次
 `ferroma healthcheck --url http://127.0.0.1:8080/api/v1/health`，启动期为 20 到 30 秒，
-重试 3 次。`docker-compose.external-db.yml` 里的地址跟随 `FERROMA_API_HOST` 与
+重试 3 次。`docker-compose.yml` 里的地址跟随 `FERROMA_API_HOST` 与
 `FERROMA_API_PORT`（默认 `127.0.0.1:18080`）——API 绑在哪儿，探针就打哪儿。代理在容器里
 因而 API 绑到 Docker 网桥地址时（§5.4 末尾），探针也跟着换过去，不会误报 unhealthy。
 
@@ -1529,19 +1541,19 @@ docker compose -f docker-compose.prod.yml exec ferroma \
 
 ```bash
 # 队列，按状态分组。
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -c \
   "SELECT status, COUNT(*) FROM mail_queue GROUP BY status ORDER BY 2 DESC;"
 
 # 等待重试中最久的那一条。
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -c \
   "SELECT id, recipient, attempts, next_attempt_at, last_status_code, left(last_error,60)
      FROM mail_queue WHERE status IN ('pending','retry')
     ORDER BY next_attempt_at LIMIT 20;"
 
 # 存储。
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -c \
   "SELECT pg_size_pretty(pg_database_size('ferroma')) AS db,
           (SELECT COUNT(*) FROM messages WHERE expunged_at IS NULL) AS live_messages,
@@ -1550,7 +1562,7 @@ docker compose -f docker-compose.prod.yml exec postgres \
 du -sh "$(docker volume inspect -f '{{.Mountpoint}}' ferroma-data)"
 
 # 过去一天的登录失败。
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -c \
   "SELECT email, ip, COUNT(*) FROM login_attempts
     WHERE NOT success AND created_at > NOW() - INTERVAL '1 day'
@@ -1567,16 +1579,16 @@ docker compose -f docker-compose.prod.yml exec postgres \
 
 ```bash
 # 只看错误。
-docker compose -f docker-compose.prod.yml logs ferroma | grep -i '"level":"ERROR"'
+docker compose -f docker-compose.yml logs ferroma | grep -i '"level":"ERROR"'
 
 # 关于某个 message id 的一切。
-docker compose -f docker-compose.prod.yml logs ferroma | grep '4821'
+docker compose -f docker-compose.yml logs ferroma | grep '4821'
 
 # 一次失败的投递。
-docker compose -f docker-compose.prod.yml logs ferroma | grep -i 'delivery'
+docker compose -f docker-compose.yml logs ferroma | grep -i 'delivery'
 
 # 实时到来的新日志行，已过滤。
-docker compose -f docker-compose.prod.yml logs -f ferroma | grep -E 'WARN|ERROR'
+docker compose -f docker-compose.yml logs -f ferroma | grep -E 'WARN|ERROR'
 ```
 
 几个 compose 文件都对日志轮转设了上限（prod 中是 `max-size: 20m`、`max-file: 10`），
@@ -1624,7 +1636,7 @@ dig +short TXT _dmarc.example.com
 dig +short 10.113.0.203.zen.spamhaus.org
 
 # 6. 队列在报告带远端状态码的失败吗？
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -c \
   "SELECT recipient, last_status_code, last_status_text FROM mail_queue
     WHERE status = 'failed' ORDER BY updated_at DESC LIMIT 10;"
@@ -1649,11 +1661,11 @@ dig +short MX example.com
 dig +short A mail.example.com
 
 # 3. Ferroma 在容器内监听 25 吗？
-docker compose -f docker-compose.prod.yml exec ferroma \
+docker compose -f docker-compose.yml exec ferroma \
   sh -c 'netstat -tlnp 2>/dev/null || ss -tlnp'
 
 # 4. 连接到底有没有到？如果一行日志都没有，它就从未到达这里。
-docker compose -f docker-compose.prod.yml logs ferroma | grep -i 'connection\|reject\|550\|554'
+docker compose -f docker-compose.yml logs ferroma | grep -i 'connection\|reject\|550\|554'
 
 # 5. 从外部看证书有效吗？
 openssl s_client -starttls smtp -connect mail.example.com:25 -crlf < /dev/null 2>&1 | head -30
@@ -1671,34 +1683,34 @@ printf 'EHLO test\r\nQUIT\r\n' | nc mail.example.com 25
 
 ```bash
 # 1. 队列真的在增长吗，第一次尝试是最近的吗？
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -c \
   "SELECT status, COUNT(*), MIN(next_attempt_at), MAX(created_at)
      FROM mail_queue GROUP BY status;"
 
 # 2. 主要的失败都说了什么？
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -c \
   "SELECT recipient, attempts, last_status_code, last_error
      FROM mail_queue WHERE status IN ('retry','failed')
     ORDER BY attempts DESC LIMIT 20;"
 
 # 3. 一次卡住的投递的尝试历史。
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -c \
   "SELECT a.attempt, a.remote_mx, a.status_code, a.status_text, a.duration_ms, a.created_at
      FROM delivery_attempts a JOIN mail_queue q ON q.id = a.queue_id
     WHERE q.id = 1234 ORDER BY a.attempt;"
 
 # 4. 这台主机到底能不能在端口 25 上连到远端的 MX？
-docker compose -f docker-compose.prod.yml exec ferroma \
+docker compose -f docker-compose.yml exec ferroma \
   sh -c 'nc -vz gmail-smtp-in.l.google.com 25'
 
 # 5. 出站 25 被供应商封了吗？从宿主机上测。
 nc -vz alt1.gmail-smtp-in.l.google.com 25
 
 # 6. 调度程序到底在跑吗？
-docker compose -f docker-compose.prod.yml logs ferroma | grep -i 'queue\|dispatch'
+docker compose -f docker-compose.yml logs ferroma | grep -i 'queue\|dispatch'
 grep -A6 '^\[queue\]' config/ferroma.toml
 ```
 
@@ -1730,7 +1742,7 @@ SELECT user_id, COUNT(*) FROM mail_queue
 
 ```bash
 # 1. IMAP 在监听吗？
-docker compose -f docker-compose.prod.yml exec ferroma \
+docker compose -f docker-compose.yml exec ferroma \
   sh -c 'netstat -tlnp 2>/dev/null | grep -E "143|993"'
 
 # 2. 问候语与能力列表说了什么？
@@ -1747,18 +1759,18 @@ grep -E 'require_tls_for_login|imaps_port' config/ferroma.toml
 grep FERROMA__IMAP__REQUIRE_TLS_FOR_LOGIN .env
 
 # 5. 账号被登录限流锁了吗？
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -c \
   "SELECT id, email, enabled, failed_logins, locked_until FROM users WHERE email='alice@example.com';"
 
 # 6. 最近的尝试说了什么？
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -c \
   "SELECT email, ip, success, created_at FROM login_attempts
     ORDER BY created_at DESC LIMIT 20;"
 
 # 7. 服务器对这次失败的看法。
-docker compose -f docker-compose.prod.yml logs ferroma | grep -i 'imap\|login'
+docker compose -f docker-compose.yml logs ferroma | grep -i 'imap\|login'
 ```
 
 | 应答 | 原因 | 修复 |
@@ -1778,18 +1790,18 @@ docker compose -f docker-compose.prod.yml logs ferroma | grep -i 'imap\|login'
 
 ```bash
 # 1. 健康检查，从容器内部发起。
-docker compose -f docker-compose.prod.yml exec ferroma \
+docker compose -f docker-compose.yml exec ferroma \
   sh -c 'wget -qO- http://127.0.0.1:8080/api/v1/health || echo unreachable'
 
 # 2. 容器健康吗？
-docker compose -f docker-compose.prod.yml ps
+docker compose -f docker-compose.yml ps
 docker inspect -f '{{.State.Health.Status}} restarts={{.RestartCount}}' ferroma
 
 # 3. 它为什么退出？
-docker compose -f docker-compose.prod.yml logs --tail=200 ferroma | grep -iE 'error|panic|config'
+docker compose -f docker-compose.yml logs --tail=200 ferroma | grep -iE 'error|panic|config'
 
 # 4. 一个配置拼写错误会让服务器在启动时停下。这是有意设计的。
-docker compose -f docker-compose.prod.yml run --rm ferroma \
+docker compose -f docker-compose.yml run --rm ferroma \
   ferroma serve --config /etc/ferroma/ferroma.toml
 ```
 
@@ -1802,18 +1814,18 @@ docker compose -f docker-compose.prod.yml run --rm ferroma \
 
 ```bash
 # 数据库相信的情况。
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -c \
   "SELECT m.id, d.name||'@'||m.local_part AS addr, u.used_bytes, u.quota_bytes
      FROM mailboxes m JOIN domains d ON d.id=m.domain_id JOIN users u ON u.id=m.user_id
     ORDER BY u.used_bytes DESC LIMIT 10;"
 
 # 磁盘上实际的情况。
-docker compose -f docker-compose.prod.yml exec ferroma \
+docker compose -f docker-compose.yml exec ferroma \
   du -sb /var/lib/ferroma/mail/example.com/alice
 
 # 构成总数的那些文件。
-docker compose -f docker-compose.prod.yml exec ferroma \
+docker compose -f docker-compose.yml exec ferroma \
   sh -c 'find /var/lib/ferroma/mail/example.com/alice -type f -printf "%s %p\n" | sort -rn | head -20'
 ```
 
@@ -1829,17 +1841,17 @@ du -sh /var/lib/docker/volumes/ferroma-data/_data/*
 du -sh /var/lib/docker/volumes/ferroma-data/_data/mail/*
 
 # 中断写入留下的垃圾。
-docker compose -f docker-compose.prod.yml exec ferroma \
+docker compose -f docker-compose.yml exec ferroma \
   sh -c 'find /var/lib/ferroma/mail -type d -name tmp -exec du -sh {} +'
 
 # 未被引用的附件二进制对象。
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -Atc 'SELECT DISTINCT storage_path FROM attachments' | wc -l
-docker compose -f docker-compose.prod.yml exec ferroma \
+docker compose -f docker-compose.yml exec ferroma \
   sh -c 'find /var/lib/ferroma/attachments -type f ! -name "*.tmp" | wc -l'
 
 # 已清除但仍占着文件的邮件。
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.yml exec postgres \
   psql -U ferroma -d ferroma -c \
   "SELECT COUNT(*), pg_size_pretty(SUM(size_bytes)) FROM messages WHERE expunged_at IS NOT NULL;"
 ```
