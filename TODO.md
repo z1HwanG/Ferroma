@@ -2,10 +2,10 @@
 
 The Chinese translation is at [`TODO_zh.md`](TODO_zh.md).
 
-This queue holds only what the repository already admits is not done. It is seeded from
-the open items in [`CHANGELOG.md`](CHANGELOG.md) and the gaps in the documentation set
-itself. Nothing here is a new idea; what has shipped is in [`CHANGELOG.md`](CHANGELOG.md),
-and the reasoning behind the retired pieces is in its `## [Unreleased]` section.
+This list records only what the repository already marks as unfinished. The sources are
+the open items in [`CHANGELOG.md`](CHANGELOG.md) and the gaps in the documentation set.
+It does not record new proposals. What has shipped is in [`CHANGELOG.md`](CHANGELOG.md),
+and the reasoning for the retired pieces is in its `## [Unreleased]` section.
 
 ## Documentation
 

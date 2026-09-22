@@ -55,9 +55,8 @@ Let's Encrypt 证书、首次运行设置、创建域与用户、生成并发布
 最少两个容器。PostgreSQL 从不发布到宿主机：它位于 `ferroma-internal` 上，只有
 `ferroma` 服务能访问它。
 
-> **如果这台服务器上已经有 PostgreSQL**（以及负责 443 的反向代理），就别再起第二个数据库
-> 容器：用 §3.1 的 `docker-compose.yml` 与 `./scripts/deploy.sh`，那里只有
-> Ferroma 自己与已有的数据库；备份是你自己的事，见 §8。
+> **服务器已有 PostgreSQL**（以及负责 443 的反向代理）时，不另起数据库容器：使用 §3.1 的
+> `docker-compose.yml` 与 `./scripts/deploy.sh`。该部署只含 Ferroma 与已有数据库；备份由运维者负责，见 §8。
 
 开始之前的要求：
 
@@ -279,11 +278,11 @@ Admin 的 DNS Health 界面（`GET /api/v1/domains/:id/dns`，[api.md](api.md) �
 
 ## 3. 一个 compose 文件
 
-部署只有一个，`docker-compose.yml`。`docker compose up -d` 读的就是它，只启动
-Ferroma。默认这台机器已经在运行 PostgreSQL，引导页会要那台服务器的主机、用户名和密码。
+部署只有一个，`docker-compose.yml`。`docker compose up -d` 读取该文件，只启动
+Ferroma。部署需要 PostgreSQL；引导页收集数据库的主机、用户名和密码。
 
-`docker-compose.demo.yml` 是演示。它构建这个工作副本，在 Ferroma 旁边启动一个
-PostgreSQL，并且全部走明文。它用来看一眼这个软件，文件名也要求命令必须点名它：
+`docker-compose.demo.yml` 是演示。它构建当前工作副本，在 Ferroma 旁启动一个
+PostgreSQL，全部以明文提供服务。该文件仅供查看运行效果，因此命令必须显式指定文件名：
 
 ```bash
 docker compose -f docker-compose.demo.yml up -d
@@ -314,7 +313,7 @@ git clone … && cd Ferroma
 ./scripts/deploy.sh
 ```
 
-它会依次做完下面这些事。任何一步失败，都会打印出修复它的确切命令，而不是让你去猜：
+脚本按下列步骤执行。任一步骤失败时，输出中给出修复该步骤的命令：
 
 | 步骤 | 做什么 |
 |---|---|
@@ -347,7 +346,7 @@ git clone … && cd Ferroma
   TLS 由代理终结——就是 §5.3 / §5.4 描述的做法。代理本身跑在容器里、或者公网端口不是
   443（例如容器内 80/443、宿主机发布成 180/1443）时，看 §5.4 末尾那一节：API 要绑到
   Docker 网桥地址，`--public-port` 也要一起给。
-* **备份是你自己的事。** 这套部署什么都不替你备份：没有边车、没有定时器、没有脚本，
+* **备份由运维者负责。** 该部署不执行备份：没有边车、没有定时器、没有脚本，
   `scripts/deploy.sh` 也没有 `backup` 或 `restore` 子命令。用宿主机自带的工具导出
   PostgreSQL 并复制 `ferroma-data` 卷，两半要放在一起——§8 有具体命令，也说明了备份必须
   包含什么。
@@ -1172,9 +1171,9 @@ docker run --rm \
 docker volume inspect -f '{{.Mountpoint}}' ferroma-data   # 卷实际在哪
 ```
 
-**把副本弄出这台机器。** 与邮件存储放在同一块盘上的备份不是备份，放在同一个云账号里而没有
-版本控制的也不是。把你已经在用的东西——`restic`、`borg`、`rclone`、开了版本控制的对象
-存储——指向那个带时间戳的目录：
+**将副本移出本机。** 与邮件存储位于同一块磁盘的备份不能作为备份；位于同一云账号且未开启
+版本控制的副本同样不能。将现有工具（`restic`、`borg`、`rclone` 或已开启版本控制的对象
+存储）指向该带时间戳的目录：
 
 ```bash
 restic -r s3:s3.example.com/ferroma-offsite backup "/backups/$STAMP"

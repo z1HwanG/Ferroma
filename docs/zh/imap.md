@@ -38,9 +38,9 @@ Apple Mail、Outlook、iPhone Mail 与 Android 客户端都是一等公民，不
 `FERROMA__IMAP__REQUIRE_TLS_FOR_LOGIN` 设为 `'true'`；生产部署应当保持这一设置。
 `LOGIN` 以明文发送密码，而没有 `CRAM-MD5` 或 `SCRAM-*` 可以退而求其次（见 §8）。
 
-**只用 rustls，不搞 `LOGINDISABLED` 对 `AUTH=PLAIN` 的那套花样。** 当
-`require_tls_for_login` 开启时，不会通告 `LOGIN` 在明文上可用；客户端会在
-`CAPABILITY` 中看到 `STARTTLS`，并应当使用它。
+**仅使用 rustls，不依赖 `LOGINDISABLED` 与 `AUTH=PLAIN` 的通告组合。** 当
+`require_tls_for_login` 开启时，不会通告 `LOGIN` 在明文连接上可用；客户端在
+`CAPABILITY` 中看到 `STARTTLS`，并应使用该命令。
 
 ---
 
@@ -295,7 +295,7 @@ fn maildir_folder_name(folder: &str) -> Result<String> {
 
 ## 5. UID 与 UIDVALIDITY
 
-两个数字，两种不同的职责。把它们搞混是经典的 IMAP 缺陷。
+两个数值，两种职责。混淆二者是 IMAP 实现中的常见缺陷。
 
 | | UID | UIDVALIDITY |
 |---|---|---|
@@ -729,8 +729,8 @@ CAPABILITY   LOGIN   SELECT   FETCH   STORE   SEARCH   UID   IDLE
 的大部分问题。
 
 与特殊用途标记（§4.3）的配合，是让文件夹安置在五者上都能工作的关键：一个按
-`\Sent` 映射、而不是去猜名称 `Sent` 的客户端，在某账户的文件夹叫 `Sent Items` 时
-依然能对上。
+`\Sent` 映射、而不是按名称 `Sent` 推断的客户端，在某账户的文件夹名为 `Sent Items` 时
+仍能对应。
 
 ---
 

@@ -1,7 +1,7 @@
 # Ferroma 中的 SMTP
 
-**本文读者：** 所有实现、测试或排查 `ferroma-smtp` 的人，以及任何想弄清远端服务器
-为何拒收自己邮件的运维者。
+**本文读者：** 实现、测试或排查 `ferroma-smtp` 的开发者，以及需要确认远端服务器
+拒收原因的运维者。
 
 本文覆盖 SMTP 的两个方向。收信侧既包括从其它 MTA 接收邮件的监听器，也包括从你自己
 用户的邮件客户端接收邮件的提交监听器。发信侧是解析 MX 记录、把你用户的邮件
@@ -335,7 +335,7 @@ max_message_size` 时，当 `max_message_size` 为 `0` 时，或者当 `max_mime
 | 587 | 同样的升级路径，但适用提交策略：`require_auth_on_submission` 意味着在 AUTH 成功之前 `MAIL FROM` 被拒绝，`require_tls_for_auth` 意味着在 TLS 成功之前 AUTH 被拒绝。 | 提交。不会 `STARTTLS` 的客户端无法发信。 |
 | 465 | 从第一个八位组起就是 TLS（SMTPS）。不宣告 `STARTTLS`——没有东西可升级。 | 提交。 |
 
-那些容易弄错、因此被明确规定的细节：
+下列行为容易被实现错，因此在此明确规定：
 
 * **`STARTTLS` 之后状态被重置。** `helo`、`envelope_from`、`recipients`、
   `declared_size` 以及 AUTH 标志全部清空；只有 `connection_id` 和
@@ -480,8 +480,8 @@ Received: from mail.example.net (mail.example.net [203.0.113.25])
 7. **CNAME 链**由解析器跟进，受 `dns.attempts` 限制。
 8. 超时取自 `[dns]`（`timeout_secs`、`attempts`、`tcp_fallback`）。
 
-对单一主机的连接并发数由 `queue.max_connections_per_host`（4）封顶：用四百条并行连接
-猛砸一台远端 MX，正是一台邮件服务器把自己搞进黑名单的方式。
+对单一主机的连接并发数由 `queue.max_connections_per_host`（4）限制。以数百条并行连接
+访问同一台远端 MX，是邮件服务器被列入黑名单的常见原因。
 
 ### 11.3 重试计划（§11）
 

@@ -861,9 +861,9 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 ### Known issues carried into 0.1.9
 
 One item found while cutting 0.1.3 is still open: seven documents still carry
-`_(planned)_` claims written before those crates existed. It is now tracked in
-[`TODO.md`](TODO.md) under "Next release (0.1.9)"; the reasoning is in
-[README — Carried into 0.1.9](README.md#carried-into-019).
+`_(planned)_` claims written before those crates existed. It is tracked in
+[`TODO.md`](TODO.md) under "Next release (0.1.9)". That work closed in 0.1.9, and
+the README no longer restates it.
 
 ## [0.1.3] — 2026-09-19
 
