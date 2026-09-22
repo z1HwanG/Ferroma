@@ -344,7 +344,7 @@ fixes it rather than leaving you to guess:
 | 2. Collect configuration | asks interactively: mail domain, MX hostname, admin address, database address, API port (default `127.0.0.1:18080`) |
 | 3. Write `.env` | generates a random database password and `FERROMA_JWT_SECRET`, mode 600; **it is the only configuration file** |
 | 4. Create the role and the database | tries, in order: `sudo -u postgres` (peer auth), the `psql` **inside a PostgreSQL container on this host** (how 1Panel and similar panels run it, through `docker exec`), and the superuser named by `--pg-password`; if none works it prints SQL you can paste — in the `docker exec` form when the database is a container |
-| 5. Build the image | a local `docker build` (10–30 minutes the first time). Pass `--image wesukilaye/ferroma:0.1.10` to pull the release instead — the same command skips the build entirely |
+| 5. Build the image | a local `docker build` (10–30 minutes the first time). Pass `--image wesukilaye/ferroma:0.1.11` to pull the release instead — the same command skips the build entirely |
 | 6. Create the schema | runs `ferroma database init` in the container (which also creates the database when it is missing) |
 | 7. Install the certificate | installs the certificate into `./tls` as uid 10001 for 465/993, and checks that the SAN covers the MX hostname |
 | 8. Start | `docker compose up -d`, waiting up to 3 minutes for the health check and printing the log on timeout |
@@ -548,7 +548,7 @@ Stating any of these in the environment wins over the wizard, which is the point
 deployment that knows its identity sets it once, and an instance being set up by hand gets
 asked. `scripts/deploy.sh --wizard` writes none of them, so a fresh container needs only
 the web port published — plus `POSTGRES_PASSWORD`, which the script generates.
-| `FERROMA_VERSION` | `0.1.10` | prod (`:?`) | a released image tag; prod never builds |
+| `FERROMA_VERSION` | `0.1.11` | prod (`:?`) | a released image tag; prod never builds |
 
 ### 4.2 Commonly set
 
@@ -1160,11 +1160,11 @@ from the environment — `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (and
 into the archive. The transfer uses the same rustls stack as the rest of the
 server; it does not pull in `native-tls`, `openssl` or `schannel`.
 
-The runtime image ships `pg_dump` and `pg_restore` from `postgresql-client-16`,
-which matches the `postgres:16` the compose files run. An import refuses an archive
-whose `pg_dump` major version is not the server's: a dump written by a newer client
-cannot be loaded by an older server, and a mismatched pair is how a restore
-"succeeds" into nothing usable.
+The runtime image ships `pg_dump` and `pg_restore` from `postgresql-client-18`.
+The export reads the server's major version and runs the client of that version;
+a client older than the server aborts before it writes anything. An import refuses
+an archive whose `pg_dump` major version is not the server's: a dump written by a
+newer client cannot be loaded by an older server.
 
 ```bash
 # On the new host, with the server stopped and the database empty.
@@ -1481,7 +1481,7 @@ file rather than an edit. That is why step 1 is step 1.
 
 ```bash
 # Roll the image back.
-sed -i 's/^FERROMA_VERSION=.*/FERROMA_VERSION=0.1.10/' .env
+sed -i 's/^FERROMA_VERSION=.*/FERROMA_VERSION=0.1.11/' .env
 docker compose -f docker-compose.yml pull ferroma
 docker compose -f docker-compose.yml up -d ferroma
 ```
@@ -1618,7 +1618,7 @@ For a **single-host private registry** instead of Docker Hub, point
 ```json
 {
   "status": "ok",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "protocol_version": 1,
   "uptime_secs": 84213,
   "database": { "ok": true, "server_version": "PostgreSQL 16.15",

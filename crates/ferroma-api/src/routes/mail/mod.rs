@@ -14,6 +14,7 @@
 //! * [`mailboxes`], [`messages`], [`attachments`], [`drafts`] — the handlers.
 
 pub mod attachments;
+pub mod contacts;
 pub mod drafts;
 pub mod mailboxes;
 pub mod messages;

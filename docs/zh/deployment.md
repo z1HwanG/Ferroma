@@ -321,7 +321,7 @@ git clone … && cd Ferroma
 | 2. 收集配置 | 交互式问：邮件域、MX 主机名、管理员邮箱、数据库地址、API 端口（默认 `127.0.0.1:18080`） |
 | 3. 写 `.env` | 生成随机数据库密码与 `FERROMA_JWT_SECRET`，权限 600；**它是唯一的配置文件** |
 | 4. 建角色与库 | 依次尝试：`sudo -u postgres`（peer 认证）、本机 PostgreSQL **容器**里的 `psql`（1Panel 这类面板的常见形态，用 `docker exec`）、`--pg-password` 给出的超级用户；都做不到就打印可直接粘贴的 SQL（容器场景给 `docker exec` 形式）并停下 |
-| 5. 构建镜像 | 本机 `docker build`（首次 10–30 分钟）。加上 `--image wesukilaye/ferroma:0.1.10` 改为拉取已发布版本——同一条命令会完全跳过构建 |
+| 5. 构建镜像 | 本机 `docker build`（首次 10–30 分钟）。加上 `--image wesukilaye/ferroma:0.1.11` 改为拉取已发布版本——同一条命令会完全跳过构建 |
 | 6. 建表 | 在容器里跑 `ferroma database init`（库不存在时也会建） |
 | 7. 装证书 | 把证书以 uid 10001 装进 `./tls` 供 465/993 使用，并检查 SAN 是否覆盖 MX 主机名 |
 | 8. 启动 | `docker compose up -d`，最多等 3 分钟健康检查，超时自动打印日志 |
@@ -503,7 +503,7 @@ No database is connected yet. Open http://0.0.0.0:8080/ and enter:
 这三项只要在环境里声明就优先于向导——这正是设计意图：清楚自己身份的部署声明一次，
 手工搭建的实例则被逐个询问。`scripts/deploy.sh --wizard`不写其中任何一项，因此全新
 容器只需要发布 web 端口，另加`POSTGRES_PASSWORD`（该脚本会自动生成）。
-| `FERROMA_VERSION` | `0.1.10` | prod（`:?`） | 已发布的镜像标签；prod 从不构建 |
+| `FERROMA_VERSION` | `0.1.11` | prod（`:?`） | 已发布的镜像标签；prod 从不构建 |
 
 ### 4.2 常设变量
 
@@ -1063,10 +1063,9 @@ docker compose -f docker-compose.yml exec ferroma \
 `WEBDAV_USERNAME` 与 `WEBDAV_PASSWORD` —— 绝不从 `ferroma.toml` 读取，也绝不写进归档。
 传输沿用服务器其余部分的 rustls，不引入 `native-tls`、`openssl` 或 `schannel`。
 
-运行镜像带的是 `postgresql-client-16` 的 `pg_dump` 与 `pg_restore`，与 compose 文件
-运行的 `postgres:16` 一致。导入会拒绝 `pg_dump` 大版本与服务器不一致的归档：较新客户端
-写出的转储无法灌进较旧的服务器，而版本对不上的一对正是“恢复成功了、结果什么都用不了”
-的来源。
+运行镜像带的是 `postgresql-client-18` 的 `pg_dump` 与 `pg_restore`。导出先读取
+服务器的主版本，再运行同版本的客户端；比服务器旧的客户端会在写入任何内容之前中止。
+导入会拒绝 `pg_dump` 主版本与服务器不一致的归档：较新客户端写出的转储无法灌进较旧的服务器。
 
 ```bash
 # 在新主机上，服务器已停、数据库为空。
@@ -1353,7 +1352,7 @@ docker volume rm ferroma-backups
 
 ```bash
 # 把镜像回滚。
-sed -i 's/^FERROMA_VERSION=.*/FERROMA_VERSION=0.1.10/' .env
+sed -i 's/^FERROMA_VERSION=.*/FERROMA_VERSION=0.1.11/' .env
 docker compose -f docker-compose.yml pull ferroma
 docker compose -f docker-compose.yml up -d ferroma
 ```
@@ -1473,7 +1472,7 @@ characters` 结束——尽管镜像其实已经推上 Docker Hub 了。脚本�
 ```json
 {
   "status": "ok",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "protocol_version": 1,
   "uptime_secs": 84213,
   "database": { "ok": true, "server_version": "PostgreSQL 16.15",

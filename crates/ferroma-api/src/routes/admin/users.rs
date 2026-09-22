@@ -98,6 +98,18 @@ pub struct CreateMailboxRequest {
     pub quota_bytes: Option<i64>,
 }
 
+/// The `PATCH /api/v1/users/:id/mailboxes/:mailbox_id` body.
+///
+/// The address itself is not a field: renaming one would leave the mail that
+/// already arrived for it pointing at a name SMTP no longer resolves.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateMailboxRequest {
+    /// Whether it is the account's primary address.
+    pub is_primary: Option<bool>,
+    /// A per-address quota in bytes. `0` clears it, so the address inherits the account's.
+    pub quota_bytes: Option<i64>,
+}
+
 /// A page of accounts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserListResponse {
@@ -529,6 +541,61 @@ pub async fn create_user_mailbox(
             folders,
         }),
     ))
+}
+
+/// `PATCH /api/v1/users/:id/mailboxes/:mailbox_id` — quota and primary flag only.
+pub async fn update_user_mailbox(
+    State(state): State<AppState>,
+    admin: AdminUser,
+    Path((id, mailbox_id)): Path<(i64, i64)>,
+    Json(request): Json<UpdateMailboxRequest>,
+) -> Result<Json<MailboxResponse>, ApiError> {
+    let user_id = UserId::new(id);
+    let mailbox_id = MailboxId::new(mailbox_id);
+    let mailbox = state
+        .repos
+        .mailboxes
+        .find_by_id(mailbox_id)
+        .await?
+        .filter(|row| row.user_id == user_id.get())
+        .ok_or_else(|| ApiError::new(FerromaError::NotFound(format!("mailbox {mailbox_id}"))))?;
+
+    if let Some(quota) = request.quota_bytes {
+        let quota = if quota == 0 { None } else { Some(quota) };
+        state.repos.mailboxes.set_quota(mailbox_id, quota).await?;
+    }
+    if let Some(primary) = request.is_primary {
+        state.repos.mailboxes.set_primary(mailbox_id, primary).await?;
+    }
+
+    let mailbox = state
+        .repos
+        .mailboxes
+        .find_by_id(mailbox_id)
+        .await?
+        .unwrap_or(mailbox);
+    let domain = state
+        .repos
+        .domains
+        .find_by_id(DomainId::new(mailbox.domain_id))
+        .await?
+        .map(|row| row.name)
+        .unwrap_or_default();
+
+    audit(
+        &state,
+        &admin,
+        "mailbox.updated",
+        Some("mailbox"),
+        Some(&mailbox.id.to_string()),
+        serde_json::json!({
+            "is_primary": request.is_primary,
+            "quota_bytes": request.quota_bytes,
+        }),
+    )
+    .await;
+
+    Ok(Json(MailboxResponse::from_row(&mailbox, &domain)))
 }
 
 /// Create one address: its row, its Maildir and its six standard folders.

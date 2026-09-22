@@ -204,25 +204,81 @@ export async function render() {
  * @param {HTMLElement} resultLine
  */
 function backupCard(resultLine) {
-  const destination = el('input', {
+  const list = el('div', { id: 'backup-destinations' });
+  const draft = el('input', {
     class: 'input',
     id: 'backup-destination',
     type: 'text',
     spellcheck: 'false',
     placeholder: '/var/lib/ferroma/ferroma.tar',
   });
+  const add = el('button', { type: 'button', class: 'btn btn-small', text: t('Save destination') });
+  const exportSelected = el('button', { type: 'button', class: 'btn btn-small btn-primary', text: t('Export selected') });
   const command = el('pre', { class: 'code-block', id: 'backup-command' });
-  const button = el('button', { type: 'button', class: 'btn', text: t('Export archive') });
+  let items = [];
 
-  const target = () => destination.value.trim();
-  const refreshCommand = () => {
-    const where = target() || '/var/lib/ferroma/ferroma.tar';
+  function selected() {
+    return [...list.querySelectorAll('input[type="checkbox"]:checked')].map((box) => box.value);
+  }
+
+  function paint() {
+    list.replaceChildren();
+    if (items.length === 0) {
+      list.append(el('p', { class: 'view-sub', text: t('No destination saved yet.') }));
+    }
+    for (const item of items) {
+      const box = el('input', { type: 'checkbox', value: item.to });
+      box.addEventListener('change', refreshCommand);
+      const remove = el('button', { type: 'button', class: 'btn btn-small btn-danger', text: t('Remove') });
+      remove.addEventListener('click', async () => {
+        items = items.filter((entry) => entry.id !== item.id);
+        await save();
+      });
+      list.append(el('div', { class: 'row' }, [
+        el('label', { class: 'checkbox' }, [box, el('span', { class: 'cell-mono', text: item.to })]),
+        remove,
+      ]));
+    }
+    refreshCommand();
+  }
+
+  function refreshCommand() {
+    const chosen = selected();
+    const where = chosen[0] || '/var/lib/ferroma/ferroma.tar';
     command.textContent = `ferroma storage import --from ${shellQuote(where)}`;
-  };
-  destination.addEventListener('input', refreshCommand);
-  refreshCommand();
+  }
 
-  button.addEventListener('click', () => exportArchive(button, destination, resultLine));
+  async function save() {
+    const payload = await request(`${API_BASE}/storage/destinations`, {
+      method: 'PUT',
+      body: { items },
+      toast: false,
+    });
+    items = Array.isArray(payload && payload.items) ? payload.items : items;
+    paint();
+  }
+
+  add.addEventListener('click', async () => {
+    const to = draft.value.trim();
+    if (to === '' || items.some((item) => item.to === to)) return;
+    items = [...items, { id: '', to }];
+    draft.value = '';
+    try {
+      await save();
+      toastSuccess(t('Destination saved.'));
+    } catch (error) {
+      setText(resultLine, error instanceof ApiError ? error.message : t('The destination could not be saved.'));
+    }
+  });
+
+  exportSelected.addEventListener('click', () => exportArchives(exportSelected, selected(), resultLine));
+
+  request(`${API_BASE}/storage/destinations`, { toast: false })
+    .then((payload) => {
+      items = Array.isArray(payload && payload.items) ? payload.items : [];
+      paint();
+    })
+    .catch(() => paint());
 
   return el('section', { class: 'card' }, [
     el('header', { class: 'card-head' }, [
@@ -230,14 +286,15 @@ function backupCard(resultLine) {
         el('h2', { class: 'card-title', text: t('Move to another server') }),
         el('p', {
           class: 'card-sub',
-          text: t('One archive: the database and the mail files. A path inside the container, an s3:// URL or a webdav:// URL.'),
+          text: t('One archive: the database and the mail files. A path inside the container, an s3:// URL or a webdav:// URL. Saved destinations stay on this server.'),
         }),
       ]),
     ]),
     el('div', { class: 'card-body' }, [
+      list,
       el('label', { class: 'field-label', for: 'backup-destination', text: t('Archive') }),
-      destination,
-      el('div', { class: 'card-actions' }, [button]),
+      el('div', { class: 'row' }, [draft, add]),
+      el('div', { class: 'card-actions' }, [exportSelected]),
       el('p', {
         class: 'view-sub',
         text: t('Import refuses while a server is running. On the new host, with its server stopped, run:'),
@@ -258,37 +315,38 @@ function backupCard(resultLine) {
  * @param {HTMLInputElement} destination
  * @param {HTMLElement} resultLine
  */
-async function exportArchive(button, destination, resultLine) {
-  const to = destination.value.trim();
-  if (to === '') {
-    setText(resultLine, t('Say where the archive should go.'));
-    destination.focus();
+async function exportArchives(button, destinations, resultLine) {
+  if (destinations.length === 0) {
+    setText(resultLine, t('Select a destination first.'));
     return;
   }
   const confirmed = await confirmDialog({
     title: t('Export an archive?'),
-    message: t('The database and the mail files are written to {to}. The server stays up, so a message delivered during the export may be missing.', { to }),
+    message: t('The database and the mail files are written to {count} destination(s). The server stays up, so a message delivered during the export may be missing.', { count: destinations.length }),
     confirmLabel: t('Export'),
   });
   if (!confirmed) return;
 
   button.disabled = true;
-  setText(resultLine, t('Exporting…'));
+  const done = [];
   try {
-    const payload = await request(`${API_BASE}/storage/export`, {
-      method: 'POST',
-      body: { to, live: true },
-      toast: false,
-    });
-    const bytes = num(payload && payload.bytes, 0);
-    setText(
-      resultLine,
-      t('Exported {size} to {to}.', { size: formatBytes(bytes), to: (payload && payload.destination) || to }),
-    );
+    for (const to of destinations) {
+      setText(resultLine, t('Exporting to {to}…', { to }));
+      const payload = await request(`${API_BASE}/storage/export`, {
+        method: 'POST',
+        body: { to, live: true },
+        toast: false,
+      });
+      done.push(t('Exported {size} to {to}.', {
+        size: formatBytes(num(payload && payload.bytes, 0)),
+        to: (payload && payload.destination) || to,
+      }));
+    }
+    setText(resultLine, done.join(' '));
     toastSuccess(t('Archive exported.'));
   } catch (error) {
     const message = error instanceof ApiError ? error.message : t('The export failed.');
-    setText(resultLine, message);
+    setText(resultLine, [...done, message].join(' '));
     toastError(message);
   } finally {
     button.disabled = false;

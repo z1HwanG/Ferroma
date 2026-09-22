@@ -12,6 +12,40 @@ a section a release has nothing for is left out rather than written empty.
 
 The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
+## [0.1.11] — 2026-09-23
+
+### Fixed
+
+- **A mail client can send after it authenticates.** `AUTH PLAIN` carrying its
+  payload on the same line left the session waiting for a further SASL response, so
+  the `MAIL FROM` a client pipelined behind it was read as that response and
+  discarded. The client then disconnected, and the message never reached the queue.
+  Authentication now ends the exchange, and the next command is a command.
+
+- **The JMAP session document is valid.** `eventSourceUrl` was `null`. RFC 8620
+  requires a string, and a client stopped parsing at that field. Ferroma has no
+  JMAP push, so the field is an empty string.
+
+- **An export uses a `pg_dump` of the server's major version.** The image shipped
+  PostgreSQL 16's client, which aborts against a PostgreSQL 18 server before
+  anything is written. The export reads the server version and runs the matching
+  client; the image ships `postgresql-client-18`.
+
+### Added
+
+- **Contacts.** An address is remembered when the account sends to it or receives
+  mail that names it. The Webmail lists them, searches by address, name or note,
+  and edits the name, the note, a favorite mark and a block. Mail from a blocked
+  address is delivered to Junk. Deleting a contact forgets it until a later message
+  names it again. `GET`, `POST`, `PATCH` and `DELETE /api/v1/contacts`.
+
+- **An existing address can change its quota and which address is primary.**
+  `PATCH /api/v1/users/{id}/mailboxes/{mailbox_id}`. The address itself is unchanged.
+
+- **Archive destinations are kept.** The Storage page saves more than one, on the
+  server, and exports the ones that are selected. `GET` and
+  `PUT /api/v1/storage/destinations`.
+
 ## [0.1.10] — 2026-09-23
 
 ### Fixed

@@ -374,6 +374,71 @@ pub struct StorageExportResponse {
     pub live: bool,
 }
 
+/// One archive destination the console remembers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArchiveDestination {
+    /// Stable id, assigned when the destination is saved.
+    pub id: String,
+    /// A path inside the container, or an `s3://` / `webdav://` URL.
+    pub to: String,
+}
+
+/// The `PUT /api/v1/storage/destinations` body.
+#[derive(Debug, Deserialize)]
+pub struct ArchiveDestinationsRequest {
+    /// The whole list. Saving replaces what was stored.
+    pub items: Vec<ArchiveDestination>,
+}
+
+const DESTINATIONS_KEY: &str = "storage.destinations";
+
+/// `GET /api/v1/storage/destinations`
+pub async fn storage_destinations(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let stored = state.repos.settings.get(DESTINATIONS_KEY).await?;
+    let items = stored
+        .and_then(|value| serde_json::from_value::<Vec<ArchiveDestination>>(value).ok())
+        .unwrap_or_default();
+    Ok(Json(serde_json::json!({ "items": items })))
+}
+
+/// `PUT /api/v1/storage/destinations`
+pub async fn save_storage_destinations(
+    State(state): State<AppState>,
+    admin: AdminUser,
+    Json(request): Json<ArchiveDestinationsRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let mut items = Vec::new();
+    for (index, item) in request.items.into_iter().enumerate() {
+        let to = item.to.trim().to_string();
+        if to.is_empty() {
+            continue;
+        }
+        let id = {
+            let given = item.id.trim();
+            if given.is_empty() { format!("d{index}") } else { given.to_string() }
+        };
+        items.push(ArchiveDestination { id, to });
+    }
+    state
+        .repos
+        .settings
+        .set(DESTINATIONS_KEY, serde_json::json!(items))
+        .await?;
+    audit(
+        &state,
+        &admin,
+        "storage.destinations",
+        Some("storage"),
+        None,
+        serde_json::json!({ "count": items.len() }),
+    )
+    .await;
+    Ok(Json(serde_json::json!({ "items": items })))
+}
+
 /// `POST /api/v1/storage/export`
 ///
 /// Runs `ferroma storage export --live`. Import is not offered here: it refuses

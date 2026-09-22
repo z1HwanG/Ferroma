@@ -271,6 +271,7 @@ Admin-only. `403 forbidden` for ordinary users.
 | `DELETE` | `/api/v1/users/:id` | cascades: addresses, folders, messages, queue rows |
 | `GET` | `/api/v1/users/:id/mailboxes` | addresses owned by the user |
 | `POST` | `/api/v1/users/:id/mailboxes` | `{domain, local_part, is_primary?, quota_bytes?}` — creates the Maildir and the standard folders |
+| `PATCH` | `/api/v1/users/:id/mailboxes/:mailbox_id` | `{is_primary?, quota_bytes?}`. `quota_bytes: 0` inherits the account quota. The address itself is not editable. |
 
 ### 4.2 Domains
 
@@ -349,6 +350,9 @@ delegates sending is accepted, with a hint naming the condition, rather than war
 |---|---|---|
 | `GET` | `/api/v1/storage` | see the shape below |
 | `POST` | `/api/v1/storage/gc` | drops unreferenced attachment blobs and stale `tmp/` files |
+| `GET` | `/api/v1/storage/destinations` | the archive destinations the server remembers |
+| `PUT` | `/api/v1/storage/destinations` | `{items: [{id, to}]}` replaces the list |
+| `POST` | `/api/v1/storage/export` | `{to, live?}` writes one archive while the server stays up |
 | `GET` | `/api/v1/audit` | `?actor_user_id=&action=&since=&limit=&offset=` |
 | `GET` | `/api/v1/settings` | DB-backed settings |
 | `PUT` | `/api/v1/settings/:key` | `{ "value": … }` |
@@ -641,7 +645,21 @@ A draft is also mirrored into the mailbox's `Drafts` folder as a real message
 carrying `\Draft`, so an IMAP client sees it too; deleting it from either surface
 removes it from both.
 
-### 5.4 Attachments
+### 5.4 Contacts
+
+An address is remembered when the account sends to it or receives mail that names it.
+The owner edits everything except the address.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/v1/contacts` | `?q=` matches the address, the name or the note. Favorites first. |
+| `POST` | `/api/v1/contacts` | `{address, display_name?}` |
+| `PATCH` | `/api/v1/contacts/:id` | `{display_name?, note?, favorite?, blocked?}`. An empty string clears the name or the note. |
+| `DELETE` | `/api/v1/contacts/:id` | forgets it. The next message that names the address remembers it again, unblocked. |
+
+Mail from a blocked address is delivered to Junk.
+
+### 5.5 Attachments
 
 | Method | Path | Notes |
 |---|---|---|

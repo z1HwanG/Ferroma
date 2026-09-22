@@ -308,6 +308,12 @@ impl MessageService {
             (outcome.queued, outcome.recipients)
         };
 
+        if !request.draft {
+            for address in request.to.iter().chain(request.cc.iter()).chain(request.bcc.iter()) {
+                let _ = self.repos.contacts.remember(user, address, None).await;
+            }
+        }
+
         // Every attachment now hangs from the real message, so the uploader's
         // placeholder has nothing left to own.
         if let Err(err) = self.cleanup_stub(user).await {

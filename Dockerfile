@@ -111,11 +111,11 @@ LABEL org.opencontainers.image.title="Ferroma" \
 #   the Rust RSA implementation and needs neither.)
 # libcap2-bin: supplies `setcap`, used below so that the unprivileged service user
 #   can bind the privileged mail ports.
-# postgresql-client-16: `ferroma storage export` / `import` shell out to `pg_dump`
-#   and `pg_restore`. Bookworm's own archive ships PostgreSQL 15, and the compose
-#   files run `postgres:16`, so the client comes from the PostgreSQL project's
-#   repository — the dump's major version has to match the server's or the import
-#   refuses. `curl` is only there to fetch the repository key and is removed after.
+# postgresql-client-18: `ferroma storage export` / `import` shell out to `pg_dump`
+#   and `pg_restore`, and pick the client whose major version matches the server.
+#   Bookworm's own archive ships PostgreSQL 15, so the client comes from the
+#   PostgreSQL project's repository. A client older than the server aborts. `curl`
+#   is only there to fetch the repository key and is removed after.
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
@@ -126,7 +126,7 @@ RUN set -eux; \
     echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
         > /etc/apt/sources.list.d/pgdg.list; \
     apt-get update; \
-    apt-get install -y --no-install-recommends postgresql-client-16; \
+    apt-get install -y --no-install-recommends postgresql-client-18; \
     apt-get purge -y --auto-remove curl gnupg; \
     rm -rf /var/lib/apt/lists/*; \
     groupadd --system --gid 10001 ferroma; \

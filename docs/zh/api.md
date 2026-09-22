@@ -263,6 +263,7 @@ UTC 下的 RFC 3339 / ISO 8601，例如`2026-09-16T12:00:00Z`。除
 | `DELETE` | `/api/v1/users/:id` | 级联：地址、文件夹、邮件、队列行 |
 | `GET` | `/api/v1/users/:id/mailboxes` | 该用户拥有的地址 |
 | `POST` | `/api/v1/users/:id/mailboxes` | `{domain, local_part, is_primary?, quota_bytes?}`，创建 Maildir 与标准文件夹 |
+| `PATCH` | `/api/v1/users/:id/mailboxes/:mailbox_id` | `{is_primary?, quota_bytes?}`。`quota_bytes: 0` 表示继承账号配额。地址本身不可编辑。 |
 
 ### 4.2 域名
 
@@ -339,6 +340,9 @@ UTC 下的 RFC 3339 / ISO 8601，例如`2026-09-16T12:00:00Z`。除
 |---|---|---|
 | `GET` | `/api/v1/storage` | 见下面的结构 |
 | `POST` | `/api/v1/storage/gc` | 清除无人引用的附件二进制对象与陈旧的`tmp/`文件 |
+| `GET` | `/api/v1/storage/destinations` | 服务器记住的归档地址 |
+| `PUT` | `/api/v1/storage/destinations` | `{items: [{id, to}]}`，替换整份列表 |
+| `POST` | `/api/v1/storage/export` | `{to, live?}`，服务器保持运行时写出一份归档 |
 | `GET` | `/api/v1/audit` | `?actor_user_id=&action=&since=&limit=&offset=` |
 | `GET` | `/api/v1/settings` | 由数据库支撑的设置 |
 | `PUT` | `/api/v1/settings/:key` | `{ "value": … }` |
@@ -620,7 +624,20 @@ PEM 文件，以及哪些端口提供 TLS。
 草稿也会作为一封携带`\Draft`的真实邮件镜像到邮箱的`Drafts`文件夹，
 因此 IMAP 客户端也能看到它；从任一面删除它都会同时从两者中移除。
 
-### 5.4 附件
+### 5.4 联系人
+
+账号发信给一个地址，或收到提到该地址的邮件时，会记住它。除地址外，其余字段由所有者编辑。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET` | `/api/v1/contacts` | `?q=` 匹配地址、名称或备注。收藏排在前面。 |
+| `POST` | `/api/v1/contacts` | `{address, display_name?}` |
+| `PATCH` | `/api/v1/contacts/:id` | `{display_name?, note?, favorite?, blocked?}`。空字符串清除名称或备注。 |
+| `DELETE` | `/api/v1/contacts/:id` | 忘掉它。之后的邮件再次提到该地址时会重新记住，且不再拉黑。 |
+
+被拉黑地址发来的邮件进入垃圾邮件。
+
+### 5.5 附件
 
 | 方法 | 路径 | 说明 |
 |---|---|---|

@@ -529,6 +529,11 @@ impl DeliveryService {
                     {
                         Ok(message_id) => {
                             per_mailbox.insert(mailbox_id, message_id);
+                            let owner = ferroma_core::UserId::new(mailbox.user_id);
+                            let _ = self.repos.contacts.remember(owner, &address.to_string(), None).await;
+                            if let Some(sender) = message.sender.as_ref() {
+                                let _ = self.repos.contacts.remember(owner, &sender.to_string(), None).await;
+                            }
                             report.outcomes.push(RecipientOutcome::Delivered {
                                 address: address.to_string(),
                                 resolved_to: mailbox.address(address.domain()),
@@ -565,8 +570,20 @@ impl DeliveryService {
     ) -> Result<MessageId> {
         let mailbox_id = mailbox.mailbox_id();
         let size = bytes.len() as i64;
-        // `INBOX` unless the DMARC quarantine action asked for `Junk`.
-        let folder = message.folder();
+        // `INBOX` unless the DMARC quarantine action asked for `Junk`, or the
+        // recipient has blocked the sender.
+        let mut folder = message.folder().to_string();
+        if let Some(sender) = message.sender.as_ref() {
+            if self
+                .repos
+                .contacts
+                .is_blocked(ferroma_core::UserId::new(mailbox.user_id), &sender.to_string())
+                .await
+                .unwrap_or(false)
+            {
+                folder = crate::delivery::JUNK.to_string();
+            }
+        }
 
         // --- quota ----------------------------------------------------
         self.repos
@@ -584,7 +601,7 @@ impl DeliveryService {
             .map_err(map_storage)?;
         let target = folders
             .iter()
-            .find(|f| f.name.eq_ignore_ascii_case(folder))
+            .find(|f| f.name.eq_ignore_ascii_case(&folder))
             // A mailbox created before `Junk` existed still has to accept a
             // quarantined message: falling back to `INBOX` loses the quarantine but
             // never loses the mail.
@@ -806,7 +823,7 @@ impl DeliveryService {
             .map_err(map_storage)?;
         let target = folders
             .iter()
-            .find(|f| f.name.eq_ignore_ascii_case(folder))
+            .find(|f| f.name.eq_ignore_ascii_case(&folder))
             .or_else(|| folders.iter().find(|f| f.name.eq_ignore_ascii_case(INBOX)))
             .cloned()
             .ok_or_else(|| FerromaError::internal("mailbox has no folders"))?;

@@ -1243,7 +1243,16 @@ async fn run_session(
                     Ok(()) => continue,
                     Err(e) => return internal(connection_id, peer, e),
                 },
-                CommandWait::Input(Ok(None)) => return SessionResult::Disconnected,
+                CommandWait::Input(Ok(None)) => {
+                tracing::info!(
+                    connection_id = %connection_id,
+                    remote_ip = %peer.ip(),
+                    authenticated = session.is_authenticated(),
+                    result = "disconnected",
+                    "SMTP peer closed the connection"
+                );
+                return SessionResult::Disconnected;
+            },
                 CommandWait::Input(Err(e)) if is_timeout(&e) => {
                     let _ = write_reply(io, &Reply::timeout()).await;
                     return SessionResult::Timeout;
@@ -1258,7 +1267,16 @@ async fn run_session(
 
         let line = match read_command_until(io, context.command_timeout(), shutdown).await {
             CommandWait::Input(Ok(Some(line))) => line,
-            CommandWait::Input(Ok(None)) => return SessionResult::Disconnected,
+            CommandWait::Input(Ok(None)) => {
+                tracing::info!(
+                    connection_id = %connection_id,
+                    remote_ip = %peer.ip(),
+                    authenticated = session.is_authenticated(),
+                    result = "disconnected",
+                    "SMTP peer closed the connection"
+                );
+                return SessionResult::Disconnected;
+            },
             CommandWait::Input(Err(e)) if is_timeout(&e) => {
                 let _ = write_reply(io, &Reply::timeout()).await;
                 return SessionResult::Timeout;
@@ -1315,6 +1333,16 @@ async fn run_session(
         };
 
         let verb = command.verb();
+        // A client that authenticates and then leaves without MAIL FROM produces no other
+        // record of what it sent. The verb is enough; arguments can carry a password.
+        if session.is_authenticated() {
+            tracing::info!(
+                connection_id = %connection_id,
+                remote_ip = %peer.ip(),
+                verb,
+                "SMTP command after authentication"
+            );
+        }
         let reply_or_upgrade = dispatch(io, kind, session, &command, context, connection_id).await;
 
         match reply_or_upgrade {
@@ -2044,6 +2072,11 @@ async fn finish_auth(
         match user_id {
             Some(user_id) => {
                 session.authenticate(user_id, email.clone());
+                // `AUTH PLAIN` with the payload on the same line never called
+                // `begin_auth`, but a client that pipelined `MAIL FROM` behind it
+                // is still read as the SASL response unless this is cleared. The
+                // message is then never accepted, and the client disconnects.
+                session.abort_auth();
                 // A successful AUTH clears any transaction state that preceded it.
                 session.reset();
                 tracing::info!(

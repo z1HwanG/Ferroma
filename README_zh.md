@@ -27,7 +27,7 @@ cp .env.example .env          # 把 FERROMA_VERSION 设成要部署的版本
 docker compose up -d
 ```
 
-打开 `http://localhost:8080`。以 `FERROMA_VERSION=0.1.10` 锁定镜像；`latest` 会随新发布移动。`docker-compose.demo.yml` 是明文演示，不属于上述命令。
+打开 `http://localhost:8080`。以 `FERROMA_VERSION=0.1.11` 锁定镜像；`latest` 会随新发布移动。`docker-compose.demo.yml` 是明文演示，不属于上述命令。
 
 DNS、TLS、DKIM 和备份见[部署指南](docs/zh/deployment.md)。
 

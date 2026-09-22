@@ -80,7 +80,7 @@ pub async fn session(State(state): State<AppState>, auth: JmapAuth) -> Result<Re
         "apiUrl": format!("{base}/api/jmap/"),
         "downloadUrl": format!("{base}/api/jmap/download/{{accountId}}/{{blobId}}?type={{type}}&name={{name}}"),
         "uploadUrl": format!("{base}/api/jmap/upload/{{accountId}}"),
-        "eventSourceUrl": null,
+        "eventSourceUrl": "",
         "state": session_state(&state, auth.user_id().get()).await
     });
     let mut response = Json(payload).into_response();

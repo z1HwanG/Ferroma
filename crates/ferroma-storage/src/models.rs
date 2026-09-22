@@ -31,6 +31,20 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
+/// An address an account has sent to or received from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, FromRow)]
+pub struct Contact {
+    pub id: i64,
+    pub user_id: i64,
+    pub address: String,
+    pub display_name: Option<String>,
+    pub note: Option<String>,
+    pub favorite: bool,
+    pub blocked: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// A login identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, FromRow)]
 pub struct User {

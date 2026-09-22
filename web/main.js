@@ -435,6 +435,11 @@ function wireChrome() {
     openCompose({ mode: 'new' });
   });
 
+  byId('contacts-button').addEventListener('click', async () => {
+    const { showContacts } = await import('./contacts.js');
+    await showContacts(byId('message-list'));
+  });
+
   byId('account-settings').addEventListener('click', () => {
     closeAccountMenu();
     openSettings();

@@ -13,6 +13,7 @@
 //! via [`Repositories::pool`].
 
 mod audit;
+mod contacts;
 mod auth;
 mod domains;
 mod mailboxes;
@@ -23,6 +24,7 @@ mod sync;
 mod users;
 
 pub use audit::{AuditFilter, AuditRepository, NewAuditLog};
+pub use contacts::ContactsRepository;
 pub use auth::{DeviceUpsert, DevicesRepository, NewSession, SessionsRepository};
 pub use domains::{AliasesRepository, DomainsRepository};
 pub use mailboxes::{FoldersRepository, MailboxWithDomain, MailboxesRepository, NewMailbox};
@@ -82,6 +84,8 @@ pub struct Repositories {
     pub login_attempts: LoginAttemptsRepository,
     /// DB-backed settings.
     pub settings: SettingsRepository,
+    /// Addresses the account has sent to or received from.
+    pub contacts: ContactsRepository,
 }
 
 impl Repositories {
@@ -106,6 +110,7 @@ impl Repositories {
             audit: AuditRepository::new(pool.clone()),
             login_attempts: LoginAttemptsRepository::new(pool.clone()),
             settings: SettingsRepository::new(pool.clone()),
+            contacts: ContactsRepository::new(pool.clone()),
             pool,
         }
     }

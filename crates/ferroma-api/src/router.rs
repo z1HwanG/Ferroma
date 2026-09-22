@@ -61,7 +61,13 @@ pub fn build(state: AppState) -> Router {
 /// was accepted, and it covers the whole of initialisation: the database form and the first-run
 /// wizard are the same address, one after the other.
 pub fn build_with_root(state: AppState, root: RootApp) -> Router {
-    let api = management_api().route("/storage/export", post(routes::admin::system::storage_export));
+    let api = management_api()
+        .route(
+            "/storage/destinations",
+            get(routes::admin::system::storage_destinations)
+                .put(routes::admin::system::save_storage_destinations),
+        )
+        .route("/storage/export", post(routes::admin::system::storage_export));
     let client = client_api(&state.config);
     let jmap = jmap_api();
     let discovery = discovery_routes();
@@ -203,6 +209,10 @@ pub fn management_api() -> Router<AppState> {
             "/users/{id}/mailboxes",
             get(routes::admin::users::list_user_mailboxes)
                 .post(routes::admin::users::create_user_mailbox),
+        )
+        .route(
+            "/users/{id}/mailboxes/{mailbox_id}",
+            patch(routes::admin::users::update_user_mailbox),
         );
 
     let domains = Router::new()
@@ -321,7 +331,16 @@ pub fn management_api() -> Router<AppState> {
                 .patch(routes::mail::drafts::update_draft)
                 .delete(routes::mail::drafts::delete_draft),
         )
-        .route("/drafts/{id}/send", post(routes::mail::drafts::send_draft));
+        .route("/drafts/{id}/send", post(routes::mail::drafts::send_draft))
+        .route(
+            "/contacts",
+            get(routes::mail::contacts::list_contacts).post(routes::mail::contacts::create_contact),
+        )
+        .route(
+            "/contacts/{id}",
+            patch(routes::mail::contacts::update_contact)
+                .delete(routes::mail::contacts::delete_contact),
+        );
 
     Router::new()
         .merge(auth)
@@ -809,6 +828,7 @@ pub fn route_table() -> Vec<(&'static str, &'static str)> {
         ("DELETE", "/api/v1/users/{id}"),
         ("GET", "/api/v1/users/{id}/mailboxes"),
         ("POST", "/api/v1/users/{id}/mailboxes"),
+        ("PATCH", "/api/v1/users/{id}/mailboxes/{mailbox_id}"),
         // §4.2 domains
         ("GET", "/api/v1/domains"),
         ("POST", "/api/v1/domains"),
@@ -833,6 +853,8 @@ pub fn route_table() -> Vec<(&'static str, &'static str)> {
         // §4.6 storage / audit / settings
         ("GET", "/api/v1/storage"),
         ("POST", "/api/v1/storage/gc"),
+        ("GET", "/api/v1/storage/destinations"),
+        ("PUT", "/api/v1/storage/destinations"),
         ("POST", "/api/v1/storage/export"),
         ("GET", "/api/v1/audit"),
         ("GET", "/api/v1/settings"),

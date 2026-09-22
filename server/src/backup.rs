@@ -220,6 +220,49 @@ fn collect_optional_file(path: &Path, archive_path: &str, planned: &mut Vec<Plan
 // PostgreSQL tooling
 // -----------------------------------------------------------------------------
 
+/// Locate `pg_dump` / `pg_restore` for the PostgreSQL major version it will talk to.
+///
+/// An explicit `FERROMA_PG_DUMP` / `FERROMA_PG_RESTORE` is used as given. Otherwise
+/// the client whose own major version equals the server's is chosen: a client older
+/// than the server aborts, which is what a PostgreSQL 16 client does against a
+/// PostgreSQL 18 server. The versioned directory is checked before `PATH`, because
+/// `PATH` holds whichever client the image installed and that one may not match.
+fn find_tool_for_server(name: &str, env_var: &str, server_major: u32) -> Result<PathBuf> {
+    if std::env::var(env_var).ok().is_some_and(|value| !value.trim().is_empty()) {
+        return find_tool(name, env_var);
+    }
+    let mut candidates = Vec::new();
+    let versioned = PathBuf::from(format!("/usr/lib/postgresql/{server_major}/bin/{name}"));
+    if versioned.is_file() {
+        candidates.push(versioned);
+    }
+    if let Ok(found) = find_tool(name, env_var) {
+        candidates.push(found);
+    }
+    for candidate in &candidates {
+        if tool_major_version(candidate, name).ok() == Some(server_major) {
+            return Ok(candidate.clone());
+        }
+    }
+    bail!(
+        "no {name} matches PostgreSQL {server_major}. The client has to be the same major \
+         version as the server; an older one aborts. Install postgresql-client-{server_major}, \
+         or point {env_var} at that version's binary"
+    )
+}
+
+/// The server's major version, read before a dump so the matching client is chosen.
+async fn server_major_of_url(db_url: &str) -> Result<u32> {
+    let mut config = ferroma_core::config::DatabaseConfig::default();
+    config.url = db_url.to_string();
+    config.run_migrations = false;
+    config.max_connections = 1;
+    let db = ferroma_storage::Database::connect(&config)
+        .await
+        .map_err(|error| anyhow!("{error}"))?;
+    server_major_version(&db).await
+}
+
 /// Locate `pg_dump` / `pg_restore`: the `FERROMA_PG_DUMP` / `FERROMA_PG_RESTORE`
 /// override first, then `PATH`.
 fn find_tool(name: &str, env_var: &str) -> Result<PathBuf> {
@@ -243,7 +286,7 @@ fn find_tool(name: &str, env_var: &str) -> Result<PathBuf> {
         }
     }
     bail!(
-        "{name} was not found on PATH. Install it (the runtime image ships postgresql-client-16), \
+        "{name} was not found on PATH. Install it (the runtime image ships postgresql-client-18), \
          or point {env_var} at the binary"
     )
 }
@@ -977,7 +1020,8 @@ pub async fn export(config: &Config, to: &str, live: bool) -> Result<ExportRepor
     }
 
     let db_url = effective_database_url(config)?;
-    let pg_dump = find_tool("pg_dump", "FERROMA_PG_DUMP")?;
+    let server_major = server_major_of_url(&db_url).await?;
+    let pg_dump = find_tool_for_server("pg_dump", "FERROMA_PG_DUMP", server_major)?;
     let pg_dump_major = tool_major_version(&pg_dump, "pg_dump")?;
 
     let work = tempfile::tempdir().context("creating a temporary directory")?;
@@ -1186,7 +1230,7 @@ pub async fn import(config: &Config, from: &str, replace: bool) -> Result<()> {
         DatabaseState::Empty => {}
     }
 
-    let pg_restore = find_tool("pg_restore", "FERROMA_PG_RESTORE")?;
+    let pg_restore = find_tool_for_server("pg_restore", "FERROMA_PG_RESTORE", manifest.pg_dump_major)?;
     run_pg_restore(&pg_restore, &db_url, &staging.join(DUMP_PATH)).await?;
     db.close().await;
     println!("database    restored");

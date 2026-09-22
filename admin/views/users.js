@@ -585,7 +585,7 @@ async function openAddressDialog(user, onDone) {
         list.length === 0
           ? el('p', { class: 'view-sub', text: t('This account has no address yet.') })
           : table({
-              columns: [{ label: t('Address') }, { label: t('Primary') }, { label: t('Storage') }],
+              columns: [{ label: t('Address') }, { label: t('Primary') }, { label: t('Storage') }, { label: '' }],
               rows: list.map((mailbox) => [
                 cell(mailbox.address, 'cell-mono'),
                 badge(mailbox.isPrimary ? 'yes' : 'no'),
@@ -594,6 +594,7 @@ async function openAddressDialog(user, onDone) {
                     ? t('{used} of {quota}', { used: formatBytes(mailbox.usedBytes), quota: formatBytes(mailbox.quotaBytes) })
                     : t('{used} used', { used: formatBytes(mailbox.usedBytes) }),
                 ),
+                addressActions(user, mailbox, loadAddresses),
               ]),
             }),
       );
@@ -621,6 +622,43 @@ async function openAddressDialog(user, onDone) {
 }
 
 /* -------------------------------------------------------------------- helpers */
+
+/**
+ * The two changes an existing address allows: which one is primary, and its quota.
+ * The local part is not one of them.
+ *
+ * @param {{id: number}} user
+ * @param {{id: number, address: string, isPrimary: boolean, quotaBytes: number}} mailbox
+ * @param {() => Promise<void>} reload
+ */
+function addressActions(user, mailbox, reload) {
+  const actions = el('div', { class: 'row-actions' });
+  if (!mailbox.isPrimary) {
+    actions.append(button(t('Make primary'), async () => {
+      await request(`${API_BASE}/users/${user.id}/mailboxes/${mailbox.id}`, {
+        method: 'PATCH',
+        body: { is_primary: true },
+        toast: false,
+      });
+      toastSuccess(t('{address} is now the primary address.', { address: mailbox.address }));
+      await reload();
+    }));
+  }
+  actions.append(button(t('Quota'), async () => {
+    const current = mailbox.quotaBytes > 0 ? String(Math.round(mailbox.quotaBytes / (1024 * 1024))) : '0';
+    const typed = window.prompt(t('Quota in MiB. 0 inherits the account quota.'), current);
+    if (typed === null) return;
+    const mib = Number.parseInt(typed.trim(), 10);
+    if (!Number.isFinite(mib) || mib < 0) return;
+    await request(`${API_BASE}/users/${user.id}/mailboxes/${mailbox.id}`, {
+      method: 'PATCH',
+      body: { quota_bytes: mib * 1024 * 1024 },
+      toast: false,
+    });
+    await reload();
+  }));
+  return actions;
+}
 
 function button(label, onClick, className = '', glyph = '') {
   const node = el('button', { type: 'button', class: `btn btn-small ${className}`.trim() }, [
