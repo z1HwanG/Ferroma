@@ -7,8 +7,8 @@
 # a pipeline". Either way the release silently does not happen.
 #
 # There is deliberately no publish logic here. The single source of truth is
-# `docker-publish.sh` — which is what CI and a Linux maintainer run, and what
-# `tools/check-deploy.mjs` cross-checks against the workflow and the compose files.
+# `docker-publish.sh` — the only release path, and what `tools/check-deploy.mjs`
+# cross-checks against the compose files.
 # This wrapper only finds a shell that can execute it and forwards every argument
 # verbatim.
 #

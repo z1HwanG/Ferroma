@@ -462,16 +462,13 @@ notes.push(`documented subcommands checked: ${[...documented].sort().join(' ')}`
 // -----------------------------------------------------------------------------
 // F. The publish path: one repository, one platform list, declared build args
 // -----------------------------------------------------------------------------
-// Releasing is three files cooperating — `scripts/docker-publish.sh` (a
-// maintainer's machine), `.github/workflows/docker-publish.yml` (a tag) and the
-// compose files (the operator). They only work if they agree, and nothing about
-// editing one of them reminds you to edit the others, so the agreement is checked
-// here instead of being rediscovered when a `docker pull` 404s.
+// Releasing is the local script and the compose file the operator pulls from.
+// There is no GitHub workflow: a tag push does not build or push an image, and
+// `scripts/docker-publish.sh` is the only path that does. The two still have to
+// name the same repository, or a `docker pull` 404s.
 const publishScript = 'scripts/docker-publish.sh';
-const workflowFile = '.github/workflows/docker-publish.yml';
 
 const scriptText = exists(publishScript) ? read(publishScript) : null;
-const workflowText = exists(workflowFile) ? read(workflowFile) : null;
 
 if (scriptText === null) {
   problems.push(`${publishScript} is missing — there is no local way to cut a release`);
@@ -487,14 +484,6 @@ if (scriptText === null) {
     for (const file of composeFiles) {
       for (const m of read(file).matchAll(/FERROMA_REPO:-([^}\s]+)/g)) {
         named.push({ file, repo: m[1] });
-      }
-    }
-    if (workflowText !== null) {
-      const m = workflowText.match(/DOCKERHUB_REPO \|\| '([^']+)'/);
-      if (!m) {
-        problems.push(`${workflowFile} does not default DOCKERHUB_REPO to the published repository`);
-      } else {
-        named.push({ file: workflowFile, repo: m[1] });
       }
     }
     for (const entry of named) {
@@ -513,20 +502,6 @@ if (scriptText === null) {
       problems.push(`${publishScript} does not skip the rolling tags for a pre-release version`);
     }
 
-    // The platform list is duplicated by necessity (shell vs. an action input), so
-    // at least the default may not drift.
-    const scriptPlatforms = scriptText.match(/^DEFAULT_PLATFORMS="([^"]+)"/m);
-    if (scriptPlatforms && workflowText !== null) {
-      const workflowPlatforms = workflowText.match(/default: (linux\/\S+)/);
-      if (!workflowPlatforms) {
-        problems.push(`${workflowFile} has no default platform list to compare with ${publishScript}`);
-      } else if (workflowPlatforms[1] !== scriptPlatforms[1]) {
-        problems.push(
-          `${workflowFile} defaults to ${workflowPlatforms[1]} but ${publishScript} builds ` +
-            `${scriptPlatforms[1]} — one release would be missing an architecture`,
-        );
-      }
-    }
   }
 }
 
@@ -538,9 +513,6 @@ const declaredArgs = new Set(
 const passedArgs = new Set();
 if (scriptText !== null) {
   for (const m of scriptText.matchAll(/--build-arg "([A-Z_][A-Z0-9_]*)=/g)) passedArgs.add(m[1]);
-}
-if (workflowText !== null) {
-  for (const m of workflowText.matchAll(/^\s+([A-Z_][A-Z0-9_]*)=\$\{\{/gm)) passedArgs.add(m[1]);
 }
 for (const name of passedArgs) {
   if (!declaredArgs.has(name)) {
@@ -555,8 +527,8 @@ if (passedArgs.size > 0) notes.push(`published build args: ${[...passedArgs].sor
 // The Windows entry point has to be a *wrapper*. Windows has no association for
 // `.sh`, so `./scripts/docker-publish.sh` from PowerShell is silently a no-op — the
 // wrapper is what makes the release runnable on a maintainer's machine at all. It
-// must delegate, though: a second implementation would drift from the one CI runs
-// and from the compose files this check compares it against.
+// must delegate, though: a second implementation would drift from the script this
+// check compares against the compose files.
 const wrapper = 'scripts/docker-publish.ps1';
 if (scriptText !== null && !exists(wrapper)) {
   problems.push(

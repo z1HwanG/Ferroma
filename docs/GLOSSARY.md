@@ -108,6 +108,5 @@ node tools/site-check.mjs              # no unrendered markdown, no link without
 node tools/check-deploy.mjs            # the deployment path the docs describe
 ```
 
-All of them run in CI before a release image is built
-(`.github/workflows/docker-publish.yml`), so a document that drifts fails the release
-rather than the reader.
+A maintainer runs these before `scripts/docker-publish.sh`. Nothing on GitHub
+builds the image, so a document that drifts is caught here or not at all.

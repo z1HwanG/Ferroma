@@ -1523,41 +1523,16 @@ the sending MTA, because SMTP is store-and-forward by design.
 ### 9.4 Publishing a release to Docker Hub
 
 The image is published to `wesukilaye/ferroma` for `linux/amd64` and `linux/arm64`,
-so an operator never has to spend 10–30 minutes compiling Rust on a mail server. Two
-paths produce the *same* build; both are tag-driven and both refuse to publish an
-image whose labels would lie about their source.
+so an operator never has to spend 10–30 minutes compiling Rust on a mail server.
+There is one path, and it runs on the maintainer's machine: pushing a tag to GitHub
+does not build or push an image. The script refuses a tree whose `Cargo.toml` does
+not say the version it was asked to publish.
 
-**By tag (the normal path).** Merging a version bump into `main` and tagging it is
-the whole release:
+A release publishes the exact tag and `latest`, and nothing else: there is
+deliberately no rolling minor tag (`0.2`, `0.3`, …), and no `buildcache` tag. A
+pre-release (`0.2.0-rc.1`) pushes only its exact tag and never moves `latest`.
 
-```bash
-# Cargo.toml [workspace.package] version = "0.2.0"
-git commit -am 'release 0.2.0'
-git tag v0.2.0
-git push origin main v0.2.0
-```
-
-`.github/workflows/docker-publish.yml` then checks that the tag and `Cargo.toml`
-agree — a `v0.2.0` tag on a tree that says `0.1.10` fails before anything is built —
-runs `node tools/check-deploy.mjs`, builds both architectures with a GitHub Actions
-layer cache, and pushes `0.2.0` and `latest`. A release publishes those two tags and
-nothing else: there is deliberately no rolling minor tag (`0.2`, `0.3`, …), and no
-`buildcache` tag. A pre-release (`0.2.0-rc.1`) pushes only its exact tag and never
-moves `latest`: a `latest` pointing at an rc is exactly the surprise that tag exists
-to avoid. The `0.1` and `buildcache` tags an earlier pipeline left on Docker Hub have
-been deleted, and nothing in this repository produces either of them again.
-
-It needs two repository secrets, set once:
-
-| Secret | Value |
-|---|---|
-| `DOCKERHUB_USERNAME` | the Docker Hub account that owns the repository |
-| `DOCKERHUB_TOKEN` | a Docker Hub **access token** with Read & Write scope — not the account password, so it can be revoked and is scoped to pushing |
-
-`DOCKERHUB_REPO` (a repository *variable*, not a secret) overrides the target
-repository for a fork.
-
-**Locally.** The same build without CI, for a maintainer who wants it now:
+**The release:**
 
 ```bash
 docker login

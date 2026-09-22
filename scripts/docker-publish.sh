@@ -21,11 +21,8 @@
 # means one specific release. Layer caching is local (`.cache/buildx`, which is
 # gitignored — or `$HOME/.cache/ferroma-buildx` when the checkout path is not plain
 # ASCII, see below), so repeated builds on this machine are cheap without publishing
-# anything; CI uses GitHub's own cache instead.
-#
-# The same build is what `.github/workflows/docker-publish.yml` runs on a `v*` tag;
-# this script exists so a maintainer can cut a release without waiting on CI, and
-# so the CI path is not the only one that has ever been exercised.
+# anything. There is no GitHub workflow that builds or pushes the image: this
+# script is the release.
 # =============================================================================
 set -eu
 

@@ -1391,36 +1391,14 @@ docker compose -f docker-compose.yml up -d ferroma
 ### 9.4 把版本发布到 Docker Hub
 
 镜像以 `wesukilaye/ferroma` 发布，覆盖 `linux/amd64` 与 `linux/arm64`，所以运维者不必在邮件
-服务器上花 10–30 分钟编译 Rust。两条路径产出**同一个**构建；两者都由标签驱动，也都拒绝
-发布一个「标签与源码不符」的镜像。
+服务器上花 10–30 分钟编译 Rust。只有一条路径，跑在维护者自己的机器上：把标签推到 GitHub
+不会构建，也不会推送镜像。脚本会拒绝一棵 `Cargo.toml` 写的不是它要发布的版本的源码树。
 
-**打标签发布（常规路径）。** 把版本号推进 `main` 并打标签，就是一次完整发布：
+一次发布推送精确标签和 `latest`，除此之外什么都没有：刻意没有滚动的次版本标签
+（`0.2`、`0.3`…），也没有 `buildcache` 标签。预发布版本（`0.2.0-rc.1`）只推它自己的精确标签，
+并且绝不移动 `latest`。
 
-```bash
-# Cargo.toml [workspace.package] version = "0.2.0"
-git commit -am 'release 0.2.0'
-git tag v0.2.0
-git push origin main v0.2.0
-```
-
-`.github/workflows/docker-publish.yml` 会先核对标签与 `Cargo.toml` 是否一致——在写着
-`0.1.10` 的树上打 `v0.2.0` 标签会在构建任何东西之前失败——再跑
-`node tools/check-deploy.mjs`，然后用 GitHub Actions 层缓存构建两个架构，推送 `0.2.0`
-与 `latest`。一次发布只推这两个标签：刻意没有滚动的次版本标签（`0.2`、`0.3`…），也没有
-`buildcache` 标签。预发布版本（`0.2.0-rc.1`）只推它自己的精确标签，并且绝不移动 `latest`：
-让 `latest` 指向一个 rc，正是这个标签本身要避免的意外。早先的流水线留在 Docker Hub 上的
-`0.1` 与 `buildcache` 标签已经删除，本仓库里也不再有会产出它们的东西。
-
-它需要两个仓库 secret，设置一次即可：
-
-| Secret | 值 |
-|---|---|
-| `DOCKERHUB_USERNAME` | 拥有该仓库的 Docker Hub 账号 |
-| `DOCKERHUB_TOKEN` | 具备 Read & Write 权限的 Docker Hub **访问令牌**——不是账号密码，这样可以单独吊销，且权限限于推送 |
-
-`DOCKERHUB_REPO`（是仓库**变量**，不是 secret）用于 fork 时改发布目标仓库。
-
-**本机发布。** 不想等 CI 时，用同一条构建：
+**发布：**
 
 ```bash
 docker login
