@@ -12,6 +12,39 @@ a section a release has nothing for is left out rather than written empty.
 
 The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
+## [Unreleased]
+
+### Fixed
+
+- **Outbound delivery survives worker crashes.** Claims a dead worker left in
+  `delivering` are requeued on startup and during polling; a stale worker's late
+  result can no longer overwrite a newer claim. Delivery report bounces became a
+  durable, separately claimed task with backoff and crash recovery instead of a
+  fire-and-forget send after `failed`.
+- **Inbound multi-recipient delivery is all-or-nothing.** Every local copy of one
+  SMTP transaction commits in a single database transaction; a full mailbox or a
+  second-recipient write failure refuses the whole `DATA` with `452`/`451` and
+  leaves no partial copies behind.
+- **Outbound mail cannot be deleted mid-flight.** Deleting or expunging a message
+  referenced by a pending, retrying or delivering queue entry is refused with a
+  conflict; a database guard covers folder and account cascades. Queueing is
+  batched per submission, and cancelling a claimed entry is honestly refused.
+- **IMAP and REST folder renames keep message bodies readable.** Both entries now
+  share one coordinator that stages the destination Maildir tree, then renames
+  folders, rewrites message paths and records the sync change in a single
+  transaction. Flag updates stage the renamed body before committing, so a crash
+  between the rename and the commit cannot strand the old path.
+- **FCP cursors follow commit order.** A trigger reallocates each user's
+  `change_log.seq` under a per-user lock, so a client can no longer permanently
+  skip a change committed after a higher-numbered one.
+- **SMTP delivery and copying enforce quotas transactionally.** Inbound batch,
+  single delivery, copy and submission paths check live usage under the owner's
+  row lock instead of an advisory pre-check.
+- **Webmail blocks remote content by default.** The reader frame carries a CSP
+  that forbids remote images until the reader opts in; reply/forward no longer
+  mounts sender HTML into the same-origin editor; list loads ignore stale
+  responses; sending waits for pending uploads.
+
 ## [0.1.12] — 2026-09-23
 
 ### Fixed
