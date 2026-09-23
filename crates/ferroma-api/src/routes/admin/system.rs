@@ -392,6 +392,179 @@ pub struct ArchiveDestinationsRequest {
 
 const DESTINATIONS_KEY: &str = "storage.destinations";
 
+// Never store these in the `settings` table. The generic settings API returns the
+// entire table and writes values to its audit log; an S3 secret would leak in both.
+const TRANSFER_SETTINGS_FILE: &str = "transfer_credentials.json";
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct StoredTransferSettings {
+    endpoint: String,
+    region: String,
+    access_key: String,
+    secret_key: String,
+}
+
+/// Non-secret transfer configuration returned to an administrator.
+#[derive(Debug, Serialize)]
+pub struct TransferSettingsResponse {
+    /// The S3-compatible endpoint; blank selects AWS S3.
+    pub endpoint: String,
+    /// The region used by Signature V4.
+    pub region: String,
+    /// Whether an access key is stored (the key itself is never returned).
+    pub access_key_set: bool,
+    /// Whether a secret key is stored (the key itself is never returned).
+    pub secret_key_set: bool,
+}
+
+impl From<&StoredTransferSettings> for TransferSettingsResponse {
+    fn from(settings: &StoredTransferSettings) -> Self {
+        Self {
+            endpoint: settings.endpoint.clone(),
+            region: if settings.region.is_empty() {
+                "us-east-1".into()
+            } else {
+                settings.region.clone()
+            },
+            access_key_set: !settings.access_key.is_empty(),
+            secret_key_set: !settings.secret_key.is_empty(),
+        }
+    }
+}
+
+/// `PUT /api/v1/storage/transfer-settings` body. Empty key fields keep existing keys.
+#[derive(Debug, Deserialize)]
+pub struct TransferSettingsRequest {
+    /// S3-compatible endpoint (HTTPS URL); blank selects AWS S3.
+    pub endpoint: String,
+    /// Region used in the Signature V4 scope.
+    pub region: String,
+    /// Replacement access key, or blank to keep the existing one.
+    #[serde(default)]
+    pub access_key: String,
+    /// Replacement secret key, or blank to keep the existing one.
+    #[serde(default)]
+    pub secret_key: String,
+    /// Explicitly remove both stored keys.
+    #[serde(default)]
+    pub clear_credentials: bool,
+}
+
+fn read_transfer_settings(state: &AppState) -> Result<StoredTransferSettings, ApiError> {
+    let path = state.config.server.data_dir.join(TRANSFER_SETTINGS_FILE);
+    match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| {
+            ApiError::new(FerromaError::Invalid(
+                "the stored transfer settings cannot be read".into(),
+            ))
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(StoredTransferSettings::default())
+        }
+        Err(error) => Err(ApiError::new(FerromaError::storage(error))),
+    }
+}
+
+fn validate_s3_endpoint(raw: &str) -> Result<(), ApiError> {
+    if raw.is_empty() {
+        return Ok(());
+    }
+    let url = url::Url::parse(raw).map_err(|_| {
+        ApiError::new(FerromaError::Invalid(
+            "enter an HTTPS S3 endpoint, e.g. https://s3.example.com".into(),
+        ))
+    })?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path() != "/"
+    {
+        return Err(ApiError::new(FerromaError::Invalid(
+            "the S3 endpoint must be an HTTPS origin without a path, credentials or query".into(),
+        )));
+    }
+    Ok(())
+}
+
+/// `GET /api/v1/storage/transfer-settings` — never returns keys.
+pub async fn get_transfer_settings(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+) -> Result<Json<TransferSettingsResponse>, ApiError> {
+    let settings = read_transfer_settings(&state)?;
+    Ok(Json(TransferSettingsResponse::from(&settings)))
+}
+
+/// `PUT /api/v1/storage/transfer-settings` — saves keys in a mode-0600 file.
+pub async fn put_transfer_settings(
+    State(state): State<AppState>,
+    admin: AdminUser,
+    Json(request): Json<TransferSettingsRequest>,
+) -> Result<Json<TransferSettingsResponse>, ApiError> {
+    let endpoint = request.endpoint.trim().trim_end_matches('/');
+    validate_s3_endpoint(endpoint)?;
+    let region = request.region.trim();
+    if region.is_empty()
+        || region.len() > 64
+        || !region
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+        || request.access_key.len() > 512
+        || request.secret_key.len() > 4096
+    {
+        return Err(ApiError::new(FerromaError::Invalid(
+            "invalid S3 region or key length".into(),
+        )));
+    }
+    let mut settings = read_transfer_settings(&state)?;
+    settings.endpoint = endpoint.to_string();
+    settings.region = region.to_string();
+    if request.clear_credentials {
+        settings.access_key.clear();
+        settings.secret_key.clear();
+    } else {
+        if !request.access_key.is_empty() {
+            settings.access_key = request.access_key;
+        }
+        if !request.secret_key.is_empty() {
+            settings.secret_key = request.secret_key;
+        }
+    }
+    let path = state.config.server.data_dir.join(TRANSFER_SETTINGS_FILE);
+    let mut temporary = tempfile::NamedTempFile::new_in(&state.config.server.data_dir)
+        .map_err(|error| ApiError::new(FerromaError::storage(error)))?;
+    use std::io::Write as _;
+    serde_json::to_writer(&mut temporary, &settings).map_err(|_| {
+        ApiError::new(FerromaError::Invalid(
+            "could not encode transfer settings".into(),
+        ))
+    })?;
+    temporary
+        .flush()
+        .map_err(|error| ApiError::new(FerromaError::storage(error)))?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|error| ApiError::new(FerromaError::storage(error)))?;
+    temporary
+        .persist(&path)
+        .map_err(|error| ApiError::new(FerromaError::storage(error.error)))?;
+    audit(
+        &state,
+        &admin,
+        "storage.transfer_settings",
+        Some("storage"),
+        None,
+        serde_json::json!({ "configured": !settings.secret_key.is_empty() }),
+    )
+    .await;
+    Ok(Json(TransferSettingsResponse::from(&settings)))
+}
+
 /// `GET /api/v1/storage/destinations`
 pub async fn storage_destinations(
     State(state): State<AppState>,
@@ -418,7 +591,11 @@ pub async fn save_storage_destinations(
         }
         let id = {
             let given = item.id.trim();
-            if given.is_empty() { format!("d{index}") } else { given.to_string() }
+            if given.is_empty() {
+                format!("d{index}")
+            } else {
+                given.to_string()
+            }
         };
         items.push(ArchiveDestination { id, to });
     }
@@ -458,12 +635,13 @@ pub async fn storage_export(
     }
     let writer = state.backup.clone().ok_or_else(|| {
         ApiError::new(FerromaError::Invalid(
-            "this process cannot write an archive; run `ferroma storage export --live` instead".into(),
+            "this process cannot write an archive; run `ferroma storage export --live` instead"
+                .into(),
         ))
     })?;
-    let report = writer(to.to_string()).await.map_err(|error| {
-        ApiError::new(FerromaError::Invalid(error.chars().take(500).collect()))
-    })?;
+    let report = writer(to.to_string())
+        .await
+        .map_err(|error| ApiError::new(FerromaError::Invalid(error.chars().take(500).collect())))?;
     let report = StorageExportResponse {
         destination: report.destination,
         bytes: report.bytes,
@@ -653,10 +831,7 @@ pub async fn put_setting(
 }
 
 /// `GET /api/v1/services`
-pub async fn services(
-    State(state): State<AppState>,
-    _admin: AdminUser,
-) -> Json<ServicesResponse> {
+pub async fn services(State(state): State<AppState>, _admin: AdminUser) -> Json<ServicesResponse> {
     let listeners = state.listeners.states();
     Json(ServicesResponse {
         smtp: listeners.smtp.into(),
@@ -688,7 +863,11 @@ pub async fn update_service(
     };
     let key = listener.setting_key();
     let previous = state.repos.settings.get(key).await?;
-    state.repos.settings.set(key, serde_json::json!(request.enabled)).await?;
+    state
+        .repos
+        .settings
+        .set(key, serde_json::json!(request.enabled))
+        .await?;
 
     let effective = match state.listeners.set_enabled(listener, request.enabled).await {
         Ok(state) => state,
@@ -1375,6 +1554,8 @@ mod tests {
             api_host: "0.0.0.0".to_string(),
             api_port: 8080,
             tls_enabled: false,
+            smtps_port: 465,
+            imaps_port: 993,
             tls_cert: None,
             tls_key: None,
         })
@@ -1387,7 +1568,9 @@ mod tests {
                 "public_url": "https://mail.example.com",
                 "api_host": "0.0.0.0",
                 "api_port": 8080,
-                "tls_enabled": false
+                "tls_enabled": false,
+                 "smtps_port": 465,
+                 "imaps_port": 993
             })
         );
     }
@@ -1454,6 +1637,8 @@ mod tests {
                 api_host: None,
                 api_port: Some(18080),
                 tls_enabled: Some(true),
+                smtps_port: None,
+                imaps_port: None,
                 tls_cert: None,
                 tls_key: None,
                 restart_required: true,
@@ -1508,17 +1693,27 @@ mod tests {
     #[test]
     fn the_services_shape_is_stable() {
         let json = serde_json::to_value(ServicesResponse {
-            smtp: ServiceListenerResponse { available: true, enabled: false },
-            imap: ServiceListenerResponse { available: false, enabled: false },
-            jmap: ServiceListenerResponse { available: true, enabled: true },
+            smtp: ServiceListenerResponse {
+                available: true,
+                enabled: false,
+            },
+            imap: ServiceListenerResponse {
+                available: false,
+                enabled: false,
+            },
+            jmap: ServiceListenerResponse {
+                available: true,
+                enabled: true,
+            },
         })
         .expect("must serialise");
         assert_eq!(json["smtp"]["available"], true);
         assert_eq!(json["smtp"]["enabled"], false);
         assert_eq!(json["imap"]["available"], false);
         assert_eq!(json["jmap"]["enabled"], true);
-        let update: ServiceUpdateRequest = serde_json::from_value(serde_json::json!({ "enabled": true }))
-            .expect("the documented request parses");
+        let update: ServiceUpdateRequest =
+            serde_json::from_value(serde_json::json!({ "enabled": true }))
+                .expect("the documented request parses");
         assert!(update.enabled);
     }
 

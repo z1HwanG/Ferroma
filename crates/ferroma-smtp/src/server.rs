@@ -1779,7 +1779,9 @@ async fn handle_data(
         }
     };
 
-    if let Some(policy) = context.policy.as_ref() {
+    // Authenticated submissions must not be evaluated by inbound SPF/DMARC: the
+    // submitting client is not the domain's published MX.
+    if let Some(policy) = context.policy.as_ref().filter(|_| !session.is_authenticated()) {
         let verdict = policy.evaluate(&message, &parsed).await;
         log_policy(connection_id, &session.remote_addr, &verdict);
         if verdict.is_reject() {
@@ -1798,7 +1800,12 @@ async fn handle_data(
         message.authentication_results = verdict.header_value().map(str::to_string);
     }
 
-    let reply = match context.config.delivery.deliver_parsed(&message, &parsed).await {
+    let reply = match context
+        .config
+        .delivery
+        .deliver_for(&message, &parsed, session.authenticated_user)
+        .await
+    {
         Ok(report) => {
             log_report(connection_id, context.hostname(), &report);
             report.reply()
@@ -2161,6 +2168,12 @@ fn log_report(connection_id: &str, hostname: &str, report: &crate::delivery::Del
                 mailbox_id = mailbox_id.get(),
                 result = "mailbox_full",
                 "recipient mailbox is over quota"
+            ),
+            RecipientOutcome::Queued { address, .. } => tracing::info!(
+                connection_id = %connection_id,
+                recipient = %address,
+                result = "queued",
+                "recipient accepted for the outbound queue"
             ),
             RecipientOutcome::Failed { address, reason } => tracing::warn!(
                 connection_id = %connection_id,

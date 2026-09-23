@@ -9,7 +9,7 @@
 收信、发信，并在浏览器中阅读与管理。邮件保存在运行 Ferroma 的主机上。
 
 [![Rust](https://img.shields.io/badge/Rust-stable-black?logo=rust)](https://www.rust-lang.org/)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/wesukilaye/ferroma)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-blue)](LICENSE)
 
@@ -27,7 +27,7 @@ cp .env.example .env          # 把 FERROMA_VERSION 设成要部署的版本
 docker compose up -d
 ```
 
-打开 `http://localhost:8080`。以 `FERROMA_VERSION=0.1.11` 锁定镜像；`latest` 会随新发布移动。`docker-compose.demo.yml` 是明文演示，不属于上述命令。
+打开 `http://localhost:8080`。以 `FERROMA_VERSION=0.1.12` 锁定镜像；`latest` 会随新发布移动。`docker-compose.demo.yml` 是明文演示，不属于上述命令。
 
 DNS、TLS、DKIM 和备份见[部署指南](docs/zh/deployment.md)。
 

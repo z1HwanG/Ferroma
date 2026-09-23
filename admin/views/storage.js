@@ -215,6 +215,12 @@ function backupCard(resultLine) {
   const add = el('button', { type: 'button', class: 'btn btn-small', text: t('Save destination') });
   const exportSelected = el('button', { type: 'button', class: 'btn btn-small btn-primary', text: t('Export selected') });
   const command = el('pre', { class: 'code-block', id: 'backup-command' });
+  const endpoint = el('input', { class: 'input', id: 's3-endpoint', type: 'url', placeholder: 'https://s3.example.com', autocomplete: 'off' });
+  const region = el('input', { class: 'input', id: 's3-region', type: 'text', value: 'us-east-1', autocomplete: 'off' });
+  const accessKey = el('input', { class: 'input', id: 's3-access-key', type: 'password', autocomplete: 'off' });
+  const secretKey = el('input', { class: 'input', id: 's3-secret-key', type: 'password', autocomplete: 'off' });
+  const credentialStatus = el('p', { class: 'view-sub', id: 's3-credential-status' });
+  const saveS3 = el('button', { type: 'button', class: 'btn btn-small', text: t('Save S3 settings') });
   let items = [];
 
   function selected() {
@@ -273,6 +279,39 @@ function backupCard(resultLine) {
 
   exportSelected.addEventListener('click', () => exportArchives(exportSelected, selected(), resultLine));
 
+  saveS3.addEventListener('click', async () => {
+    saveS3.disabled = true;
+    try {
+      const settings = await request(`${API_BASE}/storage/transfer-settings`, {
+        method: 'PUT',
+        body: {
+          endpoint: endpoint.value.trim(), region: region.value.trim(),
+          access_key: accessKey.value, secret_key: secretKey.value,
+        },
+        toast: false,
+      });
+      accessKey.value = '';
+      secretKey.value = '';
+      setText(credentialStatus, settings.access_key_set && settings.secret_key_set
+        ? t('S3 credentials saved on the server. Leave key fields blank to keep them.')
+        : t('S3 credentials have not been saved.'));
+      toastSuccess(t('S3 settings saved.'));
+    } catch (error) {
+      toastError(error instanceof ApiError ? error.message : t('S3 settings could not be saved.'));
+    } finally {
+      saveS3.disabled = false;
+    }
+  });
+  request(`${API_BASE}/storage/transfer-settings`, { toast: false })
+    .then((settings) => {
+      endpoint.value = String(settings.endpoint || '');
+      region.value = String(settings.region || 'us-east-1');
+      setText(credentialStatus, settings.access_key_set && settings.secret_key_set
+        ? t('S3 credentials saved on the server. Leave key fields blank to keep them.')
+        : t('S3 credentials have not been saved.'));
+    })
+    .catch((error) => setText(credentialStatus, error instanceof ApiError ? error.message : t('S3 settings could not be loaded.')));
+
   request(`${API_BASE}/storage/destinations`, { toast: false })
     .then((payload) => {
       items = Array.isArray(payload && payload.items) ? payload.items : [];
@@ -295,6 +334,18 @@ function backupCard(resultLine) {
       el('label', { class: 'field-label', for: 'backup-destination', text: t('Archive') }),
       el('div', { class: 'row' }, [draft, add]),
       el('div', { class: 'card-actions' }, [exportSelected]),
+      el('h3', { text: t('S3-compatible storage') }),
+      el('p', { class: 'view-sub', text: t('Enter the HTTPS endpoint of your S3 server. Leave it blank for AWS S3. The bucket name stays in the s3:// destination.') }),
+      el('div', { class: 'row' }, [
+        el('label', { class: 'field' }, [el('span', { class: 'field-label', text: t('S3 endpoint') }), endpoint]),
+        el('label', { class: 'field' }, [el('span', { class: 'field-label', text: t('S3 region') }), region]),
+      ]),
+      el('div', { class: 'row' }, [
+        el('label', { class: 'field' }, [el('span', { class: 'field-label', text: t('Access key') }), accessKey]),
+        el('label', { class: 'field' }, [el('span', { class: 'field-label', text: t('Secret key') }), secretKey]),
+      ]),
+      credentialStatus,
+      el('div', { class: 'card-actions' }, [saveS3]),
       el('p', {
         class: 'view-sub',
         text: t('Import refuses while a server is running. On the new host, with its server stopped, run:'),
@@ -302,7 +353,7 @@ function backupCard(resultLine) {
       command,
       el('p', {
         class: 'view-sub',
-        text: t('S3 reads AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY from the environment. WebDAV reads WEBDAV_USERNAME and WEBDAV_PASSWORD. Neither is stored here.'),
+        text: t('S3 keys are stored in a private server file, never in the archive or returned to the browser. WebDAV uses WEBDAV_USERNAME and WEBDAV_PASSWORD from the environment.'),
       }),
     ]),
   ]);

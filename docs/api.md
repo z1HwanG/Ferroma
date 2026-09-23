@@ -352,6 +352,8 @@ delegates sending is accepted, with a hint naming the condition, rather than war
 | `POST` | `/api/v1/storage/gc` | drops unreferenced attachment blobs and stale `tmp/` files |
 | `GET` | `/api/v1/storage/destinations` | the archive destinations the server remembers |
 | `PUT` | `/api/v1/storage/destinations` | `{items: [{id, to}]}` replaces the list |
+| `GET` | `/api/v1/storage/transfer-settings` | S3 endpoint, region and presence flags; never returns keys |
+| `PUT` | `/api/v1/storage/transfer-settings` | `{endpoint, region, access_key?, secret_key?}`; blank keys retain saved values, `clear_credentials: true` removes both |
 | `POST` | `/api/v1/storage/export` | `{to, live?}` writes one archive while the server stays up |
 | `GET` | `/api/v1/audit` | `?actor_user_id=&action=&since=&limit=&offset=` |
 | `GET` | `/api/v1/settings` | DB-backed settings |

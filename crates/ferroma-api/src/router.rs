@@ -67,7 +67,15 @@ pub fn build_with_root(state: AppState, root: RootApp) -> Router {
             get(routes::admin::system::storage_destinations)
                 .put(routes::admin::system::save_storage_destinations),
         )
-        .route("/storage/export", post(routes::admin::system::storage_export));
+        .route(
+            "/storage/transfer-settings",
+            get(routes::admin::system::get_transfer_settings)
+                .put(routes::admin::system::put_transfer_settings),
+        )
+        .route(
+            "/storage/export",
+            post(routes::admin::system::storage_export),
+        );
     let client = client_api(&state.config);
     let jmap = jmap_api();
     let discovery = discovery_routes();
@@ -261,7 +269,10 @@ pub fn management_api() -> Router<AppState> {
         .route("/settings", get(routes::admin::system::list_settings))
         .route("/settings/{key}", put(routes::admin::system::put_setting))
         .route("/services", get(routes::admin::system::services))
-        .route("/services/{service}", put(routes::admin::system::update_service))
+        .route(
+            "/services/{service}",
+            put(routes::admin::system::update_service),
+        )
         .route("/logs", get(routes::admin::logs::list_logs))
         .route("/tls", get(routes::admin::tls::tls_status))
         .route("/devices", get(routes::admin::logs::list_devices))
@@ -855,6 +866,8 @@ pub fn route_table() -> Vec<(&'static str, &'static str)> {
         ("POST", "/api/v1/storage/gc"),
         ("GET", "/api/v1/storage/destinations"),
         ("PUT", "/api/v1/storage/destinations"),
+        ("GET", "/api/v1/storage/transfer-settings"),
+        ("PUT", "/api/v1/storage/transfer-settings"),
         ("POST", "/api/v1/storage/export"),
         ("GET", "/api/v1/audit"),
         ("GET", "/api/v1/settings"),

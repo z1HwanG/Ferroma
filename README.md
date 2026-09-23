@@ -9,7 +9,7 @@
 It receives and sends mail, and reads and manages it in the browser. Mail is stored on the host that runs it.
 
 [![Rust](https://img.shields.io/badge/Rust-stable-black?logo=rust)](https://www.rust-lang.org/)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/wesukilaye/ferroma)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-blue)](LICENSE)
 
@@ -28,7 +28,7 @@ cp .env.example .env          # set FERROMA_VERSION to the release you want
 docker compose up -d
 ```
 
-Open `http://localhost:8080`. Pin the image with `FERROMA_VERSION=0.1.11`; `latest`
+Open `http://localhost:8080`. Pin the image with `FERROMA_VERSION=0.1.12`; `latest`
 follows the newest release. `docker-compose.demo.yml` is a plaintext demonstration
 and is not part of the command above.
 

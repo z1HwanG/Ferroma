@@ -342,6 +342,8 @@ UTC 下的 RFC 3339 / ISO 8601，例如`2026-09-16T12:00:00Z`。除
 | `POST` | `/api/v1/storage/gc` | 清除无人引用的附件二进制对象与陈旧的`tmp/`文件 |
 | `GET` | `/api/v1/storage/destinations` | 服务器记住的归档地址 |
 | `PUT` | `/api/v1/storage/destinations` | `{items: [{id, to}]}`，替换整份列表 |
+| `GET` | `/api/v1/storage/transfer-settings` | S3 地址、区域和密钥是否存在；绝不返回密钥 |
+| `PUT` | `/api/v1/storage/transfer-settings` | `{endpoint, region, access_key?, secret_key?}`；密钥留空则保留已有值，`clear_credentials: true` 清除两者 |
 | `POST` | `/api/v1/storage/export` | `{to, live?}`，服务器保持运行时写出一份归档 |
 | `GET` | `/api/v1/audit` | `?actor_user_id=&action=&since=&limit=&offset=` |
 | `GET` | `/api/v1/settings` | 由数据库支撑的设置 |

@@ -679,7 +679,12 @@ async fn session_state(state: &AppState, user_id: i64) -> String {
         .unwrap_or_else(|_| "0".to_string())
 }
 fn public_base(state: &AppState) -> String {
-    format!("https://{}", state.config.server.hostname)
+    let configured = state.config.api.public_url.trim_end_matches('/');
+    if configured.starts_with("http://") || configured.starts_with("https://") {
+        configured.to_string()
+    } else {
+        format!("https://{}", state.config.server.hostname)
+    }
 }
 async fn primary_address(state: &AppState, user_id: i64) -> Result<String, ApiError> {
     let rows = state

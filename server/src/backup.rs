@@ -13,8 +13,8 @@
 //!
 //! The destination (`--to` / `--from`) is a local path or an `s3://` / `webdav://`
 //! URL. S3 and WebDAV are destinations for **that same archive**, not a second
-//! backup system: credentials come from the environment, never from `ferroma.toml`
-//! or the archive, and the transfer uses the existing `reqwest` + rustls stack.
+//! backup system: credentials come from a private file under the data directory
+//! (or the environment), never from `ferroma.toml` or the archive. Transfers use rustls.
 //!
 //! Neither command revives the retired backup sidecar: scheduling and off-site
 //! retention stay the operator's job.
@@ -142,8 +142,8 @@ struct Planned {
 
 /// SHA-256 of a file, hex lower-case, without loading it into memory.
 fn sha256_file(path: &Path) -> Result<String> {
-    let mut file = std::fs::File::open(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 1 << 20];
     loop {
@@ -206,7 +206,11 @@ fn collect_dir(root: &Path, prefix: &str, planned: &mut Vec<Planned>) -> Result<
 }
 
 /// Add one file to the plan when it exists.
-fn collect_optional_file(path: &Path, archive_path: &str, planned: &mut Vec<Planned>) -> Result<()> {
+fn collect_optional_file(
+    path: &Path,
+    archive_path: &str,
+    planned: &mut Vec<Planned>,
+) -> Result<()> {
     if path.is_file() {
         planned.push(Planned {
             archive_path: archive_path.to_string(),
@@ -228,7 +232,10 @@ fn collect_optional_file(path: &Path, archive_path: &str, planned: &mut Vec<Plan
 /// PostgreSQL 18 server. The versioned directory is checked before `PATH`, because
 /// `PATH` holds whichever client the image installed and that one may not match.
 fn find_tool_for_server(name: &str, env_var: &str, server_major: u32) -> Result<PathBuf> {
-    if std::env::var(env_var).ok().is_some_and(|value| !value.trim().is_empty()) {
+    if std::env::var(env_var)
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
         return find_tool(name, env_var);
     }
     let mut candidates = Vec::new();
@@ -273,10 +280,17 @@ fn find_tool(name: &str, env_var: &str) -> Result<PathBuf> {
             if path.is_file() {
                 return Ok(path);
             }
-            bail!("{env_var} points at {}, which is not a file", path.display());
+            bail!(
+                "{env_var} points at {}, which is not a file",
+                path.display()
+            );
         }
     }
-    let executable = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
+    let executable = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    };
     if let Some(paths) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&paths) {
             let candidate = dir.join(&executable);
@@ -337,7 +351,10 @@ async fn run_pg_dump(pg_dump: &Path, db_url: &str, output: &Path) -> Result<()> 
             String::from_utf8_lossy(&status.stderr).trim()
         );
     }
-    tracing::info!(elapsed_ms = started.elapsed().as_millis(), "database dumped");
+    tracing::info!(
+        elapsed_ms = started.elapsed().as_millis(),
+        "database dumped"
+    );
     Ok(())
 }
 
@@ -361,7 +378,10 @@ async fn run_pg_restore(pg_restore: &Path, db_url: &str, dump: &Path) -> Result<
             String::from_utf8_lossy(&status.stderr).trim()
         );
     }
-    tracing::info!(elapsed_ms = started.elapsed().as_millis(), "database restored");
+    tracing::info!(
+        elapsed_ms = started.elapsed().as_millis(),
+        "database restored"
+    );
     Ok(())
 }
 
@@ -445,18 +465,64 @@ impl Destination {
     }
 }
 
-/// Transfer credentials, read from the environment at use time — never from
-/// `ferroma.toml` and never written into the archive.
+/// Transfer credentials read at use time from the environment and the private
+/// `<data_dir>/transfer_credentials.json` file. Never included in the archive.
 struct TransferCredentials {
     access_key: Option<String>,
     secret_key: Option<String>,
     session_token: Option<String>,
     region: String,
+    /// A self-hosted S3 endpoint, such as `https://s3.example.com`. Empty means AWS.
+    endpoint: Option<String>,
     webdav_username: Option<String>,
     webdav_password: Option<String>,
 }
 
 impl TransferCredentials {
+    /// Load optional server-side settings; an absent file falls back to the environment.
+    fn from_config(config: &Config) -> Result<Self> {
+        let path = config.server.data_dir.join("transfer_credentials.json");
+        let stored = match std::fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .with_context(|| format!("invalid transfer settings in {}", path.display()))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::Value::Null,
+            Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+        };
+        Ok(Self::from_sources(&stored))
+    }
+
+    /// Environment first, then a value the console stored.
+    fn from_sources(stored: &serde_json::Value) -> Self {
+        let mut creds = Self::from_env();
+        let text = |key: &str| {
+            stored
+                .get(key)
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        };
+        if let Some(value) = text("access_key") {
+            creds.access_key = Some(value);
+        }
+        if let Some(value) = text("secret_key") {
+            creds.secret_key = Some(value);
+        }
+        if let Some(value) = text("region") {
+            creds.region = value;
+        }
+        if let Some(value) = text("endpoint") {
+            creds.endpoint = Some(value.trim_end_matches('/').to_string());
+        }
+        if let Some(value) = text("webdav_username") {
+            creds.webdav_username = Some(value);
+        }
+        if let Some(value) = text("webdav_password") {
+            creds.webdav_password = Some(value);
+        }
+        creds
+    }
+
     fn from_env() -> Self {
         let region = std::env::var("AWS_REGION")
             .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
@@ -466,10 +532,30 @@ impl TransferCredentials {
             secret_key: std::env::var("AWS_SECRET_ACCESS_KEY").ok(),
             session_token: std::env::var("AWS_SESSION_TOKEN").ok(),
             region,
+            endpoint: std::env::var("AWS_S3_ENDPOINT")
+                .ok()
+                .map(|value| value.trim().trim_end_matches('/').to_string())
+                .filter(|value| !value.is_empty()),
             webdav_username: std::env::var("WEBDAV_USERNAME")
                 .or_else(|_| std::env::var("WEBDAV_USER"))
                 .ok(),
             webdav_password: std::env::var("WEBDAV_PASSWORD").ok(),
+        }
+    }
+
+    /// A copy aimed at another region.
+    ///
+    /// S3 answers a request to the wrong region with `301` and names the right host.
+    /// The signature covers the region, so the retry has to be signed again.
+    fn in_region(&self, region: &str) -> Self {
+        TransferCredentials {
+            access_key: self.access_key.clone(),
+            secret_key: self.secret_key.clone(),
+            session_token: self.session_token.clone(),
+            region: region.to_string(),
+            endpoint: self.endpoint.clone(),
+            webdav_username: self.webdav_username.clone(),
+            webdav_password: self.webdav_password.clone(),
         }
     }
 
@@ -481,9 +567,7 @@ impl TransferCredentials {
             );
         }
         if self.secret_key.as_deref().is_none_or(str::is_empty) {
-            bail!(
-                "AWS_SECRET_ACCESS_KEY is not set; {purpose} needs it"
-            );
+            bail!("AWS_SECRET_ACCESS_KEY is not set; {purpose} needs it");
         }
         Ok(())
     }
@@ -618,8 +702,35 @@ fn s3_signed_request(
     payload_sha256: &str,
     amz_date: &str,
 ) -> Result<SignedS3Request> {
-    let host = format!("{bucket}.s3.{}.amazonaws.com", creds.region);
-    let canonical_uri = format!("/{}", encode_s3_key(key));
+    // A self-hosted endpoint is addressed as `https://host/bucket/key`. AWS keeps
+    // the virtual-host form, because that is what its signature expects.
+    let (host, canonical_uri, url) = if let Some(endpoint) = creds.endpoint.as_deref() {
+        let endpoint = endpoint.trim_end_matches('/');
+        let parsed = url::Url::parse(endpoint).context("invalid S3 endpoint URL")?;
+        if parsed.scheme() != "https"
+            || parsed.host_str().is_none()
+            || parsed.path() != "/"
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+        {
+            bail!("S3 endpoint must be an HTTPS origin without path, credentials or query");
+        }
+        let host = parsed.host_str().unwrap_or_default();
+        let host = match parsed.port() {
+            Some(port) => format!("{host}:{port}"),
+            None => host.to_string(),
+        };
+        let canonical_uri = format!("/{bucket}/{}", encode_s3_key(key));
+        let url = format!("{endpoint}{canonical_uri}");
+        (host, canonical_uri, url)
+    } else {
+        let host = format!("{bucket}.s3.{}.amazonaws.com", creds.region);
+        let canonical_uri = format!("/{}", encode_s3_key(key));
+        let url = format!("https://{host}{canonical_uri}");
+        (host, canonical_uri, url)
+    };
     let mut headers: Vec<(&'static str, String)> = vec![
         ("host", host.clone()),
         ("x-amz-content-sha256", payload_sha256.to_string()),
@@ -647,7 +758,6 @@ fn s3_signed_request(
         &header_refs,
         payload_sha256,
     );
-    let url = format!("https://{host}/{key}");
     Ok((url, headers, authorization))
 }
 
@@ -671,38 +781,58 @@ async fn body_from_file(path: &Path) -> Result<(reqwest::Body, u64)> {
 fn reqwest_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .user_agent(format!("ferroma/{}", ferroma_core::version::VERSION))
+        // S3 signatures include the host. Never follow a redirect with a signature
+        // for the old host; the S3 branch reads the 301 and signs the new request.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .context("building the HTTP client")
 }
 
 /// Send the local archive at `file` to its destination.
-async fn upload_archive(destination: &Destination, file: &Path) -> Result<()> {
+async fn upload_archive(
+    destination: &Destination,
+    file: &Path,
+    creds: &TransferCredentials,
+) -> Result<()> {
     match destination {
         Destination::S3 { bucket, key } => {
-            let creds = TransferCredentials::from_env();
+            let creds = creds.in_region(&creds.region);
             creds.s3_required("an s3:// export")?;
-            let amz_date = amz_date_now();
             let payload_sha = sha256_file(file)?;
-            let (url, headers, authorization) =
-                s3_signed_request("PUT", bucket, key, &creds, &payload_sha, &amz_date)?;
-            let (body, size) = body_from_file(file).await?;
-            let mut request = reqwest_client()?
-                .put(&url)
-                .header(reqwest::header::CONTENT_LENGTH, size)
-                .header(reqwest::header::AUTHORIZATION, authorization)
-                .body(body);
-            for (name, value) in &headers {
-                if *name != "host" {
-                    request = request.header(*name, value);
+            let mut creds = creds;
+            for _attempt in 0..2 {
+                let amz_date = amz_date_now();
+                let (url, headers, authorization) =
+                    s3_signed_request("PUT", bucket, key, &creds, &payload_sha, &amz_date)?;
+                let (body, size) = body_from_file(file).await?;
+                let mut request = reqwest_client()?
+                    .put(&url)
+                    .header(reqwest::header::CONTENT_LENGTH, size)
+                    .header(reqwest::header::AUTHORIZATION, authorization)
+                    .body(body);
+                for (name, value) in &headers {
+                    if *name != "host" {
+                        request = request.header(*name, value);
+                    }
                 }
+                let response = request.send().await.context("uploading to S3")?;
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                if let Some(region) = s3_redirect_region(status, &body) {
+                    if region != creds.region {
+                        creds = creds.in_region(&region);
+                        continue;
+                    }
+                }
+                if !status.is_success() {
+                    bail!("PUT {url} failed: {status}: {}", body.trim());
+                }
+                return Ok(());
             }
-            let response = request.send().await.context("uploading to S3")?;
-            check_response("PUT", &url, response).await?;
-            Ok(())
+            bail!("S3 kept redirecting {bucket}; set AWS_REGION to the bucket's region")
         }
         Destination::WebDav(url) => {
-            let creds = TransferCredentials::from_env();
-            let (username, password) = webdav_credentials(url, &creds);
+            let (username, password) = webdav_credentials(url, creds);
             let (body, size) = body_from_file(file).await?;
             let mut request = reqwest_client()?
                 .put(url.clone())
@@ -726,10 +856,54 @@ fn webdav_credentials(
     if creds.webdav_username.is_some() || creds.webdav_password.is_some() {
         (creds.webdav_username.clone(), creds.webdav_password.clone())
     } else if !url.username().is_empty() || url.password().is_some() {
-        (Some(url.username().to_string()), url.password().map(str::to_string))
+        (
+            Some(url.username().to_string()),
+            url.password().map(str::to_string),
+        )
     } else {
         (None, None)
     }
+}
+
+/// The region named by an S3 permanent redirect.
+///
+/// `backup.s3-ap-northeast-1.amazonaws.com` and
+/// `backup.s3.ap-northeast-1.amazonaws.com` are the two forms S3 uses. A request
+/// signed for `us-east-1` against a bucket in another region gets exactly this.
+fn s3_redirect_region(status: reqwest::StatusCode, body: &str) -> Option<String> {
+    if status.as_u16() != 301 && status.as_u16() != 307 {
+        return None;
+    }
+    let host = body
+        .split_once("<Endpoint>")
+        .and_then(|(_, rest)| rest.split_once("</Endpoint>"))
+        .map(|(host, _)| host.trim())?;
+    let host = host.strip_prefix("https://").unwrap_or(host);
+    let rest = host.split_once(".s3")?;
+    let rest = rest.1.trim_start_matches(['.', '-']);
+    let region = rest.split(".amazonaws.com").next()?.trim();
+    if region.is_empty() {
+        None
+    } else {
+        Some(region.to_string())
+    }
+}
+
+/// Write a successful response body to `into`.
+async fn save_body(response: reqwest::Response, into: &Path) -> Result<()> {
+    let mut out = tokio::fs::File::create(into)
+        .await
+        .with_context(|| format!("creating {}", into.display()))?;
+    use futures_util::StreamExt;
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("reading the download")?;
+        out.write_all(&chunk)
+            .await
+            .context("writing the download")?;
+    }
+    out.flush().await.context("flushing the download")?;
+    Ok(())
 }
 
 async fn check_response(verb: &str, url: &str, response: reqwest::Response) -> Result<()> {
@@ -740,12 +914,20 @@ async fn check_response(verb: &str, url: &str, response: reqwest::Response) -> R
     let body = response.text().await.unwrap_or_default();
     bail!(
         "{verb} {url} failed: {status}{}",
-        if body.trim().is_empty() { String::new() } else { format!(": {}", body.trim()) }
+        if body.trim().is_empty() {
+            String::new()
+        } else {
+            format!(": {}", body.trim())
+        }
     );
 }
 
 /// Fetch an archive from its source into `into` (a file path).
-async fn download_archive(destination: &Destination, into: &Path) -> Result<()> {
+async fn download_archive(
+    destination: &Destination,
+    into: &Path,
+    creds: &TransferCredentials,
+) -> Result<()> {
     match destination {
         Destination::Local(source) => {
             if !source.is_file() {
@@ -757,31 +939,38 @@ async fn download_archive(destination: &Destination, into: &Path) -> Result<()> 
             Ok(())
         }
         Destination::S3 { bucket, key } => {
-            let creds = TransferCredentials::from_env();
             creds.s3_required("an s3:// import")?;
-            let amz_date = amz_date_now();
-            let (url, headers, authorization) = s3_signed_request(
-                "GET",
-                bucket,
-                key,
-                &creds,
-                &empty_sha256(),
-                &amz_date,
-            )?;
-            let mut request = reqwest_client()?
-                .get(&url)
-                .header(reqwest::header::AUTHORIZATION, authorization);
-            for (name, value) in &headers {
-                if *name != "host" {
-                    request = request.header(*name, value);
+            let mut creds = creds.in_region(&creds.region);
+            for _attempt in 0..2 {
+                let amz_date = amz_date_now();
+                let (url, headers, authorization) =
+                    s3_signed_request("GET", bucket, key, &creds, &empty_sha256(), &amz_date)?;
+                let mut request = reqwest_client()?
+                    .get(&url)
+                    .header(reqwest::header::AUTHORIZATION, authorization);
+                for (name, value) in &headers {
+                    if *name != "host" {
+                        request = request.header(*name, value);
+                    }
                 }
+                let response = request.send().await.context("downloading from S3")?;
+                let status = response.status();
+                if status.is_success() {
+                    return save_body(response, into).await;
+                }
+                let body = response.text().await.unwrap_or_default();
+                if let Some(region) = s3_redirect_region(status, &body) {
+                    if region != creds.region {
+                        creds = creds.in_region(&region);
+                        continue;
+                    }
+                }
+                bail!("GET {url} failed: {status}: {}", body.trim());
             }
-            let response = request.send().await.context("downloading from S3")?;
-            save_response("GET", &url, response, into).await
+            bail!("S3 kept redirecting {bucket}; set AWS_REGION to the bucket's region")
         }
         Destination::WebDav(url) => {
-            let creds = TransferCredentials::from_env();
-            let (username, password) = webdav_credentials(url, &creds);
+            let (username, password) = webdav_credentials(url, creds);
             let mut request = reqwest_client()?.get(url.clone());
             if let Some((user, pass)) = username.zip(password) {
                 request = request.basic_auth(user, Some(pass));
@@ -792,13 +981,22 @@ async fn download_archive(destination: &Destination, into: &Path) -> Result<()> 
     }
 }
 
-async fn save_response(verb: &str, url: &str, response: reqwest::Response, into: &Path) -> Result<()> {
+async fn save_response(
+    verb: &str,
+    url: &str,
+    response: reqwest::Response,
+    into: &Path,
+) -> Result<()> {
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
         bail!(
             "{verb} {url} failed: {status}{}",
-            if body.trim().is_empty() { String::new() } else { format!(": {}", body.trim()) }
+            if body.trim().is_empty() {
+                String::new()
+            } else {
+                format!(": {}", body.trim())
+            }
         );
     }
     let mut out = tokio::fs::File::create(into)
@@ -808,7 +1006,9 @@ async fn save_response(verb: &str, url: &str, response: reqwest::Response, into:
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.context("reading the download")?;
-        out.write_all(&chunk).await.context("writing the download")?;
+        out.write_all(&chunk)
+            .await
+            .context("writing the download")?;
     }
     out.flush().await.context("flushing the download")?;
     Ok(())
@@ -953,21 +1153,33 @@ async fn serve_is_up(config: &Config) -> Option<String> {
     let mut addresses: Vec<(&'static str, String)> = Vec::new();
     if config.smtp.enabled {
         addresses.push(("smtp", format!("{}:{}", config.smtp.host, config.smtp.port)));
-        addresses.push(("submission", format!("{}:{}", config.smtp.host, config.smtp.submission_port)));
+        addresses.push((
+            "submission",
+            format!("{}:{}", config.smtp.host, config.smtp.submission_port),
+        ));
         if config.smtp.smtps_port != 0 {
-            addresses.push(("smtps", format!("{}:{}", config.smtp.host, config.smtp.smtps_port)));
+            addresses.push((
+                "smtps",
+                format!("{}:{}", config.smtp.host, config.smtp.smtps_port),
+            ));
         }
     }
     if config.imap.enabled {
         addresses.push(("imap", format!("{}:{}", config.imap.host, config.imap.port)));
         if config.imap.imaps_port != 0 {
-            addresses.push(("imaps", format!("{}:{}", config.imap.host, config.imap.imaps_port)));
+            addresses.push((
+                "imaps",
+                format!("{}:{}", config.imap.host, config.imap.imaps_port),
+            ));
         }
     }
     if config.api.enabled {
         addresses.push(("http", format!("{}:{}", config.api.host, config.api.port)));
         if config.api.tls_port != 0 {
-            addresses.push(("https", format!("{}:{}", config.api.host, config.api.tls_port)));
+            addresses.push((
+                "https",
+                format!("{}:{}", config.api.host, config.api.tls_port),
+            ));
         }
     }
 
@@ -1080,7 +1292,10 @@ pub async fn export(config: &Config, to: &str, live: bool) -> Result<ExportRepor
     // system temp for uploads), then move or upload it.
     let archive_holder = match &destination {
         Destination::Local(path) => {
-            let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+            let parent = path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating {}", parent.display()))?;
             let holder = tempfile::Builder::new()
@@ -1102,9 +1317,7 @@ pub async fn export(config: &Config, to: &str, live: bool) -> Result<ExportRepor
         let mut file = std::io::BufWriter::new(file);
         build_archive(&mut file, &manifest, &planned)?;
         file.flush().context("flushing the archive")?;
-        file.get_ref()
-            .sync_all()
-            .context("syncing the archive")?;
+        file.get_ref().sync_all().context("syncing the archive")?;
     }
 
     let bytes = std::fs::metadata(&archive_path)?.len();
@@ -1122,7 +1335,14 @@ pub async fn export(config: &Config, to: &str, live: bool) -> Result<ExportRepor
                     .with_context(|| format!("writing {}", path.display()))?;
             }
         }
-        _ => upload_archive(&destination, &archive_path).await?,
+        _ => {
+            upload_archive(
+                &destination,
+                &archive_path,
+                &TransferCredentials::from_config(config)?,
+            )
+            .await?
+        }
     }
 
     Ok(ExportReport {
@@ -1160,7 +1380,12 @@ pub async fn import(config: &Config, from: &str, replace: bool) -> Result<()> {
     let work = tempfile::tempdir().context("creating a temporary directory")?;
     let archive_path = work.path().join("ferroma-archive.tar");
     println!("reading {}…", source.display());
-    download_archive(&source, &archive_path).await?;
+    download_archive(
+        &source,
+        &archive_path,
+        &TransferCredentials::from_config(config)?,
+    )
+    .await?;
 
     let manifest = read_manifest(&archive_path)?;
     println!(
@@ -1230,7 +1455,8 @@ pub async fn import(config: &Config, from: &str, replace: bool) -> Result<()> {
         DatabaseState::Empty => {}
     }
 
-    let pg_restore = find_tool_for_server("pg_restore", "FERROMA_PG_RESTORE", manifest.pg_dump_major)?;
+    let pg_restore =
+        find_tool_for_server("pg_restore", "FERROMA_PG_RESTORE", manifest.pg_dump_major)?;
     run_pg_restore(&pg_restore, &db_url, &staging.join(DUMP_PATH)).await?;
     db.close().await;
     println!("database    restored");
@@ -1293,8 +1519,12 @@ async fn create_database_if_missing(db_url: &str) -> Result<bool> {
 
 /// The target server's PostgreSQL major version.
 async fn server_major_version(db: &ferroma_storage::Database) -> Result<u32> {
-    let version = db.server_version().await.map_err(|error| anyhow!("{error}"))?;
-    parse_major_version(&version).ok_or_else(|| anyhow!("cannot read the server version: {version}"))
+    let version = db
+        .server_version()
+        .await
+        .map_err(|error| anyhow!("{error}"))?;
+    parse_major_version(&version)
+        .ok_or_else(|| anyhow!("cannot read the server version: {version}"))
 }
 
 /// What an import would be writing over.
@@ -1408,12 +1638,10 @@ fn clear_dir(dir: &Path) -> Result<()> {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
-            return Err(error)
-                .with_context(|| format!("clearing {}", dir.display()));
+            return Err(error).with_context(|| format!("clearing {}", dir.display()));
         }
     }
-    std::fs::create_dir_all(dir)
-        .with_context(|| format!("recreating {}", dir.display()))?;
+    std::fs::create_dir_all(dir).with_context(|| format!("recreating {}", dir.display()))?;
     Ok(())
 }
 
@@ -1454,10 +1682,9 @@ fn copy_tree(from: &Path, to: &Path) -> Result<()> {
         std::fs::create_dir_all(to).with_context(|| format!("creating {}", to.display()))?;
         for entry in walkdir::WalkDir::new(from).follow_links(false) {
             let entry = entry.with_context(|| format!("walking {}", from.display()))?;
-            let relative = entry
-                .path()
-                .strip_prefix(from)
-                .with_context(|| format!("path outside the walked root: {}", entry.path().display()))?;
+            let relative = entry.path().strip_prefix(from).with_context(|| {
+                format!("path outside the walked root: {}", entry.path().display())
+            })?;
             let destination = to.join(relative);
             if entry.file_type().is_dir() {
                 std::fs::create_dir_all(&destination)
@@ -1468,7 +1695,11 @@ fn copy_tree(from: &Path, to: &Path) -> Result<()> {
                         .with_context(|| format!("creating {}", parent.display()))?;
                 }
                 std::fs::copy(entry.path(), &destination).with_context(|| {
-                    format!("copying {} to {}", entry.path().display(), destination.display())
+                    format!(
+                        "copying {} to {}",
+                        entry.path().display(),
+                        destination.display()
+                    )
                 })?;
             }
         }
@@ -1546,7 +1777,9 @@ mod tests {
             _ => panic!("s3:// must be S3"),
         }
         match Destination::parse("webdav://dav.example.com/backups/ferroma.tar").unwrap() {
-            Destination::WebDav(url) => assert_eq!(url.as_str(), "https://dav.example.com/backups/ferroma.tar"),
+            Destination::WebDav(url) => {
+                assert_eq!(url.as_str(), "https://dav.example.com/backups/ferroma.tar")
+            }
             _ => panic!("webdav:// must be WebDAV"),
         }
         assert!(Destination::parse("ftp://host/file").is_err());
@@ -1580,6 +1813,40 @@ mod tests {
             sha256_file(&path).unwrap(),
             "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
         );
+    }
+
+    #[test]
+    fn an_s3_redirect_names_its_region() {
+        let body = "<Endpoint>backup.s3-ap-northeast-1.amazonaws.com</Endpoint>";
+        assert_eq!(
+            s3_redirect_region(reqwest::StatusCode::MOVED_PERMANENTLY, body).as_deref(),
+            Some("ap-northeast-1")
+        );
+        let dotted = "<Endpoint>backup.s3.eu-west-1.amazonaws.com</Endpoint>";
+        assert_eq!(
+            s3_redirect_region(reqwest::StatusCode::MOVED_PERMANENTLY, dotted).as_deref(),
+            Some("eu-west-1")
+        );
+        assert!(s3_redirect_region(reqwest::StatusCode::OK, body).is_none());
+    }
+
+    #[test]
+    fn self_hosted_s3_uses_path_style_and_signs_its_actual_host() {
+        let settings = serde_json::json!({
+            "endpoint": "https://s3.example.test:9443",
+            "region": "local",
+            "access_key": "example-key",
+            "secret_key": "example-secret"
+        });
+        let creds = TransferCredentials::from_sources(&settings);
+        let (url, headers, authorization) = s3_signed_request(
+            "PUT", "backup", "mail/my archive.tar", &creds,
+            &empty_sha256(), "20260923T120000Z",
+        ).expect("valid endpoint");
+        assert_eq!(url, "https://s3.example.test:9443/backup/mail/my%20archive.tar");
+        assert!(headers.iter().any(|(name, value)| *name == "host" && value == "s3.example.test:9443"));
+        assert!(authorization.contains("/local/s3/aws4_request"));
+        assert!(!authorization.contains("example-secret"));
     }
 
     #[test]
@@ -1663,7 +1930,8 @@ mod tests {
         // Extraction verifies checksums and reproduces the bytes.
         let staging = dir.path().join("stage");
         extract_and_verify(&archive, &manifest, &staging).unwrap();
-        let restored = std::fs::read(staging.join("mail/example.com/alice/Maildir/cur/message")).unwrap();
+        let restored =
+            std::fs::read(staging.join("mail/example.com/alice/Maildir/cur/message")).unwrap();
         assert_eq!(restored, b"From: a@example.com\r\n\r\nhello");
         assert_eq!(
             std::fs::read_to_string(staging.join("jwt_secret")).unwrap(),

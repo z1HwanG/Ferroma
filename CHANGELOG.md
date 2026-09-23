@@ -2,15 +2,32 @@
 
 All notable changes to Ferroma, newest first.
 
-Every released version is a `vX.Y.Z` tag whose value must equal `Cargo.toml`'s, because
-`.github/workflows/docker-publish.yml` refuses a tag that disagrees with the manifest —
-so a tag cannot label a tree it did not build. Until 1.0 a minor bump may change
+Every released version is a `vX.Y.Z` tag whose value must equal `Cargo.toml`'s.
+The maintainer builds and publishes the image separately with `scripts/docker-publish.sh`;
+pushing the GitHub tag does not publish to Docker Hub. Until 1.0 a minor bump may change
 anything and a patch bump fixes it.
 
 The headings follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) in spirit:
 a section a release has nothing for is left out rather than written empty.
 
 The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
+
+## [0.1.12] — 2026-09-23
+
+### Fixed
+
+- **Authenticated SMTP submission reaches the outbound queue.** A remote recipient now
+  produces one Sent copy per message and a queue row per recipient, attributed to the
+  authenticated user; the server returns `250` only after a queue row exists. Unknown
+  addresses in a local domain are not relayed. Inbound SPF/DMARC enforcement no longer
+  applies to authenticated submissions. IMAP protocol tests remain unchanged.
+- **JMAP URLs use `api.public_url`** instead of assuming the advertised SMTP hostname
+  is the HTTPS origin; this supports reverse-proxy hostnames and ports.
+- **S3-compatible archive transfers can use a private endpoint.** The Admin Storage
+  page accepts the HTTPS origin, SigV4 region and access/secret keys. Keys are saved
+  in a mode-0600 file under the data directory, never returned by the read API or
+  included in the export. The bucket remains in `s3://bucket/key`. AWS S3 region
+  redirects are retried with a newly signed request.
 
 ## [0.1.11] — 2026-09-23
 

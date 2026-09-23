@@ -180,6 +180,13 @@ pub enum RecipientOutcome {
         /// Why. Already sanitised for a log line.
         reason: String,
     },
+    /// Not a local mailbox. An authenticated submission accepted it for the queue.
+    Queued {
+        /// The address as the peer wrote it.
+        address: String,
+        /// The Sent copy backing the outbound queue entry.
+        message_id: MessageId,
+    },
 }
 
 impl RecipientOutcome {
@@ -189,7 +196,8 @@ impl RecipientOutcome {
             RecipientOutcome::Delivered { address, .. }
             | RecipientOutcome::Unknown { address }
             | RecipientOutcome::Full { address, .. }
-            | RecipientOutcome::Failed { address, .. } => address,
+            | RecipientOutcome::Failed { address, .. }
+            | RecipientOutcome::Queued { address, .. } => address,
         }
     }
 
@@ -201,7 +209,8 @@ impl RecipientOutcome {
     /// The stored message, when there is one.
     pub fn message_id(&self) -> Option<MessageId> {
         match self {
-            RecipientOutcome::Delivered { message_id, .. } => Some(*message_id),
+            RecipientOutcome::Delivered { message_id, .. }
+            | RecipientOutcome::Queued { message_id, .. } => Some(*message_id),
             _ => None,
         }
     }
@@ -209,11 +218,13 @@ impl RecipientOutcome {
     /// The error this outcome should be reported as, for the SMTP reply.
     pub fn error(&self) -> Option<FerromaError> {
         match self {
-            RecipientOutcome::Delivered { .. } => None,
-            RecipientOutcome::Unknown { address } => {
-                Some(FerromaError::NotFound(format!("no such mailbox: {address}")))
+            RecipientOutcome::Delivered { .. } | RecipientOutcome::Queued { .. } => None,
+            RecipientOutcome::Unknown { address } => Some(FerromaError::NotFound(format!(
+                "no such mailbox: {address}"
+            ))),
+            RecipientOutcome::Full { address, .. } => {
+                Some(FerromaError::MailboxFull(address.clone()))
             }
-            RecipientOutcome::Full { address, .. } => Some(FerromaError::MailboxFull(address.clone())),
             RecipientOutcome::Failed { reason, .. } => {
                 Some(FerromaError::storage(std::io::Error::other(reason.clone())))
             }
@@ -243,7 +254,9 @@ impl DeliveryReport {
     ///
     /// This is the decision SMTP needs: `250` when true, `5xx`/`452` when false.
     pub fn any_delivered(&self) -> bool {
-        self.outcomes.iter().any(RecipientOutcome::is_delivered)
+        self.outcomes.iter().any(|outcome| {
+            outcome.is_delivered() || matches!(outcome, RecipientOutcome::Queued { .. })
+        })
     }
 
     /// Whether the whole transaction failed.
@@ -263,14 +276,14 @@ impl DeliveryReport {
     pub fn reply(&self) -> crate::reply::Reply {
         use crate::reply::Reply;
 
-        if let Some(first) = self.delivered().first() {
-            let id = first
-                .message_id()
-                .map(|m| format!("{m}"))
-                .unwrap_or_else(|| "unknown".to_string());
-            return Reply::accepted(&id);
+        if let Some(id) = self.outcomes.iter().find_map(RecipientOutcome::message_id) {
+            return Reply::accepted(&id.to_string());
         }
-        if self.outcomes.iter().any(|o| matches!(o, RecipientOutcome::Full { .. })) {
+        if self
+            .outcomes
+            .iter()
+            .any(|o| matches!(o, RecipientOutcome::Full { .. }))
+        {
             return Reply::mailbox_full();
         }
         match self.outcomes.first().and_then(RecipientOutcome::error) {
@@ -490,23 +503,90 @@ impl DeliveryService {
         message: &ReceivedMessage,
         parsed: &ParsedMessage,
     ) -> Result<DeliveryReport> {
+        self.deliver_for(message, parsed, None).await
+    }
+
+    /// [`DeliveryService::deliver_parsed`], naming the authenticated submitter.
+    ///
+    /// A recipient that is not local is accepted only for that submitter, and the
+    /// report says `Queued` so the session can write the queue row. Without the
+    /// submitter those recipients stay unknown: that is what left a mail client's
+    /// message out of the queue while Webmail, which enqueues itself, appeared.
+    pub async fn deliver_for(
+        &self,
+        message: &ReceivedMessage,
+        parsed: &ParsedMessage,
+        submitter: Option<UserId>,
+    ) -> Result<DeliveryReport> {
         let stored_bytes = message.bytes_with_received(&self.hostname, self.add_received);
 
         // Resolve first, so a transaction that reaches nobody is refused before
         // anything touches the disk.
-        let mut resolved: Vec<(EmailAddress, ResolvedRecipient)> = Vec::new();
+        let mut resolved: Vec<(EmailAddress, ResolvedRecipient, bool)> = Vec::new();
         for recipient in &message.recipients {
+            let is_local = self.is_local_domain(recipient.domain()).await?;
             let resolution = self.resolve_recipient(recipient).await?;
-            resolved.push((recipient.clone(), resolution));
+            resolved.push((recipient.clone(), resolution, is_local));
         }
 
         let mut report = DeliveryReport::default();
         // One copy per mailbox per transaction: a message addressed to an address and
         // to an alias of the same mailbox is stored once.
         let mut per_mailbox: HashMap<MailboxId, MessageId> = HashMap::new();
+        // One Sent copy for the whole submission, however many remote recipients it has.
+        let mut submitted: Option<MessageId> = None;
 
-        for (address, resolution) in resolved {
+        for (address, resolution, is_local) in resolved {
             match resolution {
+                ResolvedRecipient::Unknown if submitter.is_some() && !is_local => {
+                    if let Some(user_id) = submitter {
+                        if submitted.is_none() {
+                            match self.keep_submission(user_id, message, parsed).await {
+                                Ok(stored) => submitted = Some(stored),
+                                Err(error) => {
+                                    report.outcomes.push(RecipientOutcome::Failed {
+                                        address: address.to_string(),
+                                        reason: error.to_string(),
+                                    });
+                                    continue;
+                                }
+                            }
+                        }
+                        if let Some(stored) = submitted {
+                            if let Err(error) = crate::queue::enqueue(
+                                &self.repos,
+                                stored,
+                                Some(user_id),
+                                &message
+                                    .sender
+                                    .as_ref()
+                                    .map(ToString::to_string)
+                                    .unwrap_or_default(),
+                                &address.to_string(),
+                                12,
+                            )
+                            .await
+                            {
+                                report.outcomes.push(RecipientOutcome::Failed {
+                                    address: address.to_string(),
+                                    reason: error.to_string(),
+                                });
+                                continue;
+                            }
+                            let _ = self
+                                .repos
+                                .contacts
+                                .remember(user_id, &address.to_string(), None)
+                                .await;
+                        }
+                    }
+                    if let Some(message_id) = submitted {
+                        report.outcomes.push(RecipientOutcome::Queued {
+                            address: address.to_string(),
+                            message_id,
+                        });
+                    }
+                }
                 ResolvedRecipient::Unknown => report.outcomes.push(RecipientOutcome::Unknown {
                     address: address.to_string(),
                 }),
@@ -530,9 +610,17 @@ impl DeliveryService {
                         Ok(message_id) => {
                             per_mailbox.insert(mailbox_id, message_id);
                             let owner = ferroma_core::UserId::new(mailbox.user_id);
-                            let _ = self.repos.contacts.remember(owner, &address.to_string(), None).await;
+                            let _ = self
+                                .repos
+                                .contacts
+                                .remember(owner, &address.to_string(), None)
+                                .await;
                             if let Some(sender) = message.sender.as_ref() {
-                                let _ = self.repos.contacts.remember(owner, &sender.to_string(), None).await;
+                                let _ = self
+                                    .repos
+                                    .contacts
+                                    .remember(owner, &sender.to_string(), None)
+                                    .await;
                             }
                             report.outcomes.push(RecipientOutcome::Delivered {
                                 address: address.to_string(),
@@ -559,6 +647,41 @@ impl DeliveryService {
         Ok(report)
     }
 
+    /// Keep a submitted message in the sender's Sent folder.
+    async fn keep_submission(
+        &self,
+        user_id: UserId,
+        message: &ReceivedMessage,
+        parsed: &ParsedMessage,
+    ) -> Result<MessageId> {
+        let sender = message
+            .sender
+            .as_ref()
+            .ok_or_else(|| FerromaError::Invalid("a submission needs a sender".into()))?;
+        let mailbox = self
+            .repos
+            .mailboxes
+            .find_by_address(sender.domain(), sender.local_part())
+            .await
+            .map_err(map_storage)?
+            .filter(|row| row.user_id == user_id.get() && row.enabled)
+            .ok_or_else(|| {
+                FerromaError::Forbidden(format!("{sender} is not an address of this account"))
+            })?;
+
+        let mut copy = message.clone();
+        copy.deliver_to = Some("Sent".to_string());
+        let stored = self
+            .deliver_one(&mailbox, sender, parsed, &message.body, &copy)
+            .await?;
+        let _ = self
+            .repos
+            .contacts
+            .remember(user_id, &sender.to_string(), None)
+            .await;
+        Ok(stored)
+    }
+
     /// Store one copy in one mailbox, in the folder `message.folder()` names.
     async fn deliver_one(
         &self,
@@ -577,7 +700,10 @@ impl DeliveryService {
             if self
                 .repos
                 .contacts
-                .is_blocked(ferroma_core::UserId::new(mailbox.user_id), &sender.to_string())
+                .is_blocked(
+                    ferroma_core::UserId::new(mailbox.user_id),
+                    &sender.to_string(),
+                )
                 .await
                 .unwrap_or(false)
             {
@@ -607,7 +733,9 @@ impl DeliveryService {
             // never loses the mail.
             .or_else(|| folders.iter().find(|f| f.name.eq_ignore_ascii_case(INBOX)))
             .cloned()
-            .ok_or_else(|| FerromaError::internal("mailbox has no folders after ensure_standard"))?;
+            .ok_or_else(|| {
+                FerromaError::internal("mailbox has no folders after ensure_standard")
+            })?;
         let folder_id = target.folder_id();
         let target_name = target.name.clone();
 
@@ -626,10 +754,7 @@ impl DeliveryService {
 
         // --- row ------------------------------------------------------
         let sender_address = message.sender.as_ref().map(EmailAddress::to_string);
-        let sender_name = parsed
-            .from()
-            .first()
-            .and_then(|m| m.name.clone());
+        let sender_name = parsed.from().first().and_then(|m| m.name.clone());
         let new_message = NewMessage {
             folder_id,
             mailbox_id,
@@ -678,7 +803,8 @@ impl DeliveryService {
         }
 
         // --- sync journal ---------------------------------------------
-        self.append_change_log(mailbox, &stored_message, folder_id).await;
+        self.append_change_log(mailbox, &stored_message, folder_id)
+            .await;
 
         // --- realtime -------------------------------------------------
         self.publish_received(&stored_message, mailbox, parsed, size);
@@ -736,7 +862,10 @@ impl DeliveryService {
                 size_bytes: blob.size as i64,
                 storage_path: blob.path.clone(),
                 content_id: part.content_id().map(str::to_string),
-                is_inline: part.disposition().map(|d| d.eq_ignore_ascii_case("inline")).unwrap_or(false),
+                is_inline: part
+                    .disposition()
+                    .map(|d| d.eq_ignore_ascii_case("inline"))
+                    .unwrap_or(false),
                 checksum_sha256: Some(blob.sha256.clone()),
             };
             if let Err(e) = self.repos.attachments.insert(message_id, new).await {
@@ -805,7 +934,9 @@ impl DeliveryService {
     ) -> Result<MessageId> {
         let parsed = ParsedMessage::parse(bytes)?;
         let ResolvedRecipient::Mailbox(mailbox) = self.resolve_recipient(recipient).await? else {
-            return Err(FerromaError::NotFound(format!("no such mailbox: {recipient}")));
+            return Err(FerromaError::NotFound(format!(
+                "no such mailbox: {recipient}"
+            )));
         };
         let mailbox_id = mailbox.mailbox_id();
         let size = bytes.len() as i64;
@@ -877,7 +1008,8 @@ impl DeliveryService {
         if let Err(e) = self.repos.users.add_usage(mailbox.owner(), size).await {
             tracing::warn!(error = %e, "could not add user usage");
         }
-        self.append_change_log(&mailbox, &stored_message, folder_id).await;
+        self.append_change_log(&mailbox, &stored_message, folder_id)
+            .await;
         self.publish_received(&stored_message, &mailbox, &parsed, size);
         Ok(message_id)
     }
@@ -912,7 +1044,8 @@ mod tests {
         ReceivedMessage {
             sender: Some(addr("alice@example.com")),
             recipients: vec![addr("bob@example.org")],
-            body: b"From: alice@example.com\r\nTo: bob@example.org\r\nSubject: Hi\r\n\r\nHello\r\n".to_vec(),
+            body: b"From: alice@example.com\r\nTo: bob@example.org\r\nSubject: Hi\r\n\r\nHello\r\n"
+                .to_vec(),
             helo: Some("mail.example.com".to_string()),
             remote_ip: Some("192.0.2.10".parse().expect("ip")),
             received_at: DateTime::parse_from_rfc3339("2025-09-16T04:00:00Z")
@@ -929,7 +1062,12 @@ mod tests {
         let message = received();
         let bytes = message.bytes_with_received("mx1.ferroma.local", true);
         let text = String::from_utf8(bytes).expect("utf-8");
-        assert!(text.starts_with("Received: from mail.example.com (192.0.2.10) by mx1.ferroma.local with ESMTP"), "{text}");
+        assert!(
+            text.starts_with(
+                "Received: from mail.example.com (192.0.2.10) by mx1.ferroma.local with ESMTP"
+            ),
+            "{text}"
+        );
         assert!(text.contains("for <bob@example.org>; Tue, 16 Sep 2025 04:00:00 +0000\r\n"));
         assert!(text.ends_with("Hello\r\n"));
     }
@@ -944,7 +1082,10 @@ mod tests {
     #[test]
     fn the_envelope_view_matches_the_smtp_transaction() {
         let envelope = received().envelope();
-        assert_eq!(envelope.from.as_ref().map(ToString::to_string), Some("alice@example.com".into()));
+        assert_eq!(
+            envelope.from.as_ref().map(ToString::to_string),
+            Some("alice@example.com".into())
+        );
         assert_eq!(envelope.recipient_count(), 1);
         assert_eq!(envelope.helo.as_deref(), Some("mail.example.com"));
         assert_eq!(envelope.remote_ip, Some("192.0.2.10".parse().expect("ip")));
@@ -1031,6 +1172,18 @@ mod tests {
     }
 
     #[test]
+    fn a_purely_remote_submission_is_acknowledged_after_queuing() {
+        let report = DeliveryReport {
+            outcomes: vec![RecipientOutcome::Queued {
+                address: "recipient@remote.example".into(),
+                message_id: MessageId::new(11),
+            }],
+        };
+        assert!(report.any_delivered());
+        assert_eq!(report.reply().render(), b"250 2.0.0 Ok: queued as 11\r\n");
+    }
+
+    #[test]
     fn the_reply_for_a_full_mailbox_is_452() {
         let report = DeliveryReport {
             outcomes: vec![RecipientOutcome::Full {
@@ -1038,7 +1191,10 @@ mod tests {
                 mailbox_id: MailboxId::new(1),
             }],
         };
-        assert_eq!(report.reply().render(), b"452 4.2.2 Mailbox full: over quota\r\n");
+        assert_eq!(
+            report.reply().render(),
+            b"452 4.2.2 Mailbox full: over quota\r\n"
+        );
         assert!(report.reply().is_transient_negative());
     }
 
