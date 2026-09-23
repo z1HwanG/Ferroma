@@ -6,7 +6,7 @@
 //!
 //! ```text
 //!   SMTP listener ──► DeliveryService ──► Maildir + PostgreSQL ──► EventBus
-//!   IMAP listener ◄── repositories + Maildir
+//!   IMAP listener ◄── repositories + Maildir + SyncService
 //!   Queue workers ──► SmtpClient ──► remote MX        ◄── EventBus (delivery.updated)
 //!   HTTP API      ◄── AppState ──► all of the above
 //! ```
@@ -666,6 +666,7 @@ async fn serve(config: &Config, args: &ServeArgs, log_sink: ferroma_api::LogSink
             maildir: maildir.clone(),
             tls: acceptor.clone(),
             events: Arc::clone(&events),
+            sync: Arc::clone(&sync),
         },
         smtp_enabled,
         imap_enabled,

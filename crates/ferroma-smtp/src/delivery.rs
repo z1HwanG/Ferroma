@@ -15,13 +15,13 @@
 //!                                                          recount + add_usage + change_log + EventBus
 //! ```
 //!
-//! # A full mailbox must not lose the whole message
+//! # A full mailbox must not be silently skipped
 //!
-//! Specification §39 and RFC 3463 `4.2.2`: a mailbox that is over quota is a
-//! **temporary** per-recipient failure. The other recipients still get their copy,
-//! and the sender is told `452` so it retries that one address later. Failing the
-//! whole transaction because one of five recipients is full would lose four
-//! deliverable messages.
+//! SMTP sends one DATA reply for every previously accepted RCPT. For inbound
+//! unauthenticated mail, all local copies are staged and committed together:
+//! a full mailbox refuses the whole transaction with `452`, leaving no partial
+//! copies; after space is freed the sender can retry every recipient safely.
+//! Returning `250` after only some recipients were stored would lose the rest.
 //!
 //! # Received header
 //!
@@ -36,9 +36,9 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use ferroma_core::{EmailAddress, FerromaError, MailboxId, MessageId, Result, UserId};
 use ferroma_events::{Event, EventBus, EventScope, MailReceived};
-use ferroma_mail::{Envelope, Flags, ParsedMessage};
+use ferroma_mail::{Envelope, ParsedMessage};
 use ferroma_storage::models::{Mailbox, Message};
-use ferroma_storage::repository::{NewAttachment, NewChange, NewMessage, Recipient};
+use ferroma_storage::repository::{BatchMessage, NewAttachment, NewMessage, Recipient};
 use ferroma_storage::{AttachmentStore, Maildir, Repositories, StorageError};
 
 /// How many characters of the body go into the list-view snippet.
@@ -267,10 +267,10 @@ impl DeliveryReport {
     /// The reply the session must send back.
     ///
     /// * every recipient delivered → `250 2.0.0 Ok: queued as <id>`
-    /// * some delivered, some full → `250` too: the accepted ones are stored, and the
-    ///   peer will find out about the others from its per-recipient log. RFC 5321 has
-    ///   no way to report a partial failure after `DATA`, which is exactly why the
-    ///   per-recipient failures are also published as events.
+    /// * inbound local mail cannot be partially committed: all previously
+    ///   accepted RCPTs share one database transaction, so a full recipient
+    ///   produces `452` with no delivered siblings. Authenticated outbound
+    ///   submission still uses per-recipient enqueue and is handled separately.
     /// * nothing delivered and something was full → `452 4.2.2` (retry)
     /// * nothing delivered otherwise → the first failure's reply
     pub fn reply(&self) -> crate::reply::Reply {
@@ -529,7 +529,12 @@ impl DeliveryService {
             resolved.push((recipient.clone(), resolution, is_local));
         }
 
+        if submitter.is_none() {
+            return self.deliver_inbound_batch(message, parsed, &stored_bytes, &resolved).await;
+        }
+
         let mut report = DeliveryReport::default();
+        let mut remote_recipients = Vec::new();
         // One copy per mailbox per transaction: a message addressed to an address and
         // to an alias of the same mailbox is stored once.
         let mut per_mailbox: HashMap<MailboxId, MessageId> = HashMap::new();
@@ -552,32 +557,8 @@ impl DeliveryService {
                                 }
                             }
                         }
-                        if let Some(stored) = submitted {
-                            if let Err(error) = crate::queue::enqueue(
-                                &self.repos,
-                                stored,
-                                Some(user_id),
-                                &message
-                                    .sender
-                                    .as_ref()
-                                    .map(ToString::to_string)
-                                    .unwrap_or_default(),
-                                &address.to_string(),
-                                12,
-                            )
-                            .await
-                            {
-                                report.outcomes.push(RecipientOutcome::Failed {
-                                    address: address.to_string(),
-                                    reason: error.to_string(),
-                                });
-                                continue;
-                            }
-                            let _ = self
-                                .repos
-                                .contacts
-                                .remember(user_id, &address.to_string(), None)
-                                .await;
+                        if submitted.is_some() {
+                            remote_recipients.push(address.to_string());
                         }
                     }
                     if let Some(message_id) = submitted {
@@ -644,6 +625,20 @@ impl DeliveryService {
             }
         }
 
+        if let (Some(user_id), Some(stored)) = (submitter, submitted) {
+            let sender = message.sender.as_ref().map(ToString::to_string).unwrap_or_default();
+            let entries: Vec<ferroma_storage::repository::NewQueueEntry> = remote_recipients.iter()
+                .map(|recipient| ferroma_storage::repository::NewQueueEntry {
+                    message_id: stored, user_id: Some(user_id), sender: sender.clone(),
+                    recipient: recipient.clone(), max_attempts: 12,
+                }).collect();
+            if let Err(error) = self.repos.queue.enqueue_batch(&entries).await {
+                return Err(map_storage(error));
+            }
+            for recipient in &remote_recipients {
+                let _ = self.repos.contacts.remember(user_id, recipient, None).await;
+            }
+        }
         Ok(report)
     }
 
@@ -680,6 +675,118 @@ impl DeliveryService {
             .remember(user_id, &sender.to_string(), None)
             .await;
         Ok(stored)
+    }
+
+    /// Accept all unauthenticated local RCPTs as a single durable SMTP decision.
+    ///
+    /// Files are staged first; the repository inserts every row, recipient,
+    /// counter, quota usage and cursor in one SQL transaction. A failed recipient
+    /// therefore leaves no accepted sibling that a retry could duplicate.
+    async fn deliver_inbound_batch(
+        &self,
+        message: &ReceivedMessage,
+        parsed: &ParsedMessage,
+        bytes: &[u8],
+        resolved: &[(EmailAddress, ResolvedRecipient, bool)],
+    ) -> Result<DeliveryReport> {
+        type PreparedInbound = (Vec<BatchMessage>, Vec<(Mailbox, EmailAddress)>);
+        let mut staged: Vec<String> = Vec::new();
+        let result: Result<PreparedInbound> = async {
+            let mut batch = Vec::new();
+            let mut owners = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for (address, resolution, _) in resolved {
+                let ResolvedRecipient::Mailbox(mailbox) = resolution else {
+                    // RCPT validation raced a deleted/disabled address. Do not
+                    // acknowledge only the other accepted recipients.
+                    return Err(FerromaError::storage(std::io::Error::other(
+                        "recipient changed while accepting mail; retry the transaction",
+                    )));
+                };
+                if !seen.insert(mailbox.id) { continue; }
+                let mailbox_id = mailbox.mailbox_id();
+                let user = UserId::new(mailbox.user_id);
+                let mut folder_name = message.folder().to_string();
+                if let Some(sender) = message.sender.as_ref() {
+                    if self.repos.contacts.is_blocked(user, &sender.to_string()).await.unwrap_or(false) {
+                        folder_name = JUNK.to_string();
+                    }
+                }
+                let folders = self.repos.folders.ensure_standard(mailbox_id).await.map_err(map_storage)?;
+                let target = folders.iter()
+                    .find(|folder| folder.name.eq_ignore_ascii_case(&folder_name))
+                    .or_else(|| folders.iter().find(|folder| folder.name.eq_ignore_ascii_case(INBOX)))
+                    .ok_or_else(|| FerromaError::internal("mailbox has no folders"))?;
+                let stored = self.maildir.store(address.domain(), address.local_part(),
+                    &target.name, bytes, "").map_err(map_storage)?;
+                staged.push(stored.path.clone());
+                let recipients = parsed_recipients(parsed);
+                batch.push(BatchMessage {
+                    user_id: user,
+                    message: NewMessage {
+                        folder_id: target.folder_id(), mailbox_id,
+                        rfc_message_id: parsed.message_id().map(|id| id.as_str().to_string()),
+                        thread_id: parsed.header("References")
+                            .or_else(|| parsed.header("In-Reply-To"))
+                            .map(|raw| raw.split_whitespace().next().unwrap_or(raw).to_string()),
+                        subject: parsed.subject(),
+                        sender: message.sender.as_ref().map(EmailAddress::to_string),
+                        sender_name: parsed.from().first().and_then(|from| from.name.clone()),
+                        snippet: Some(parsed.snippet(SNIPPET_CHARS)),
+                        size_bytes: bytes.len() as i64,
+                        storage_path: stored.path,
+                        checksum_sha256: Some(stored.sha256),
+                        flags: String::new(), internal_date: Some(message.received_at),
+                        sent_at: parsed.date(), has_attachments: parsed.has_attachments(),
+                        attachment_count: parsed.attachments().len() as i32, is_draft: false,
+                    },
+                    recipients,
+                });
+                owners.push((mailbox.clone(), address.clone()));
+            }
+            Ok((batch, owners))
+        }.await;
+        let result = match result {
+            Ok((batch, owners)) => self.repos.messages.insert_batch_logged(&batch)
+                .await.map_err(map_storage).map(|rows| (rows, owners)),
+            Err(error) => Err(error),
+        };
+        let (rows, owners) = match result {
+            Ok(result) => result,
+            Err(error) => {
+                for path in &staged {
+                    if let Err(cleanup) = self.maildir.delete(path) {
+                        tracing::warn!(%cleanup, path, "could not remove failed inbound body");
+                    }
+                }
+                return Err(error);
+            }
+        };
+        let mut by_mailbox = HashMap::new();
+        for ((mailbox, _), row) in owners.iter().zip(&rows) {
+            by_mailbox.insert(mailbox.mailbox_id(), row.message_id());
+            // Attachments are derived from the durable message body; a blob
+            // metadata failure remains best-effort as in the existing path.
+            self.store_attachments(row.message_id(), parsed).await?;
+            let owner = UserId::new(mailbox.user_id);
+            if let Some(sender) = message.sender.as_ref() {
+                let _ = self.repos.contacts.remember(owner, &sender.to_string(), None).await;
+            }
+            self.publish_received(row, mailbox, parsed, bytes.len() as i64);
+        }
+        let mut report = DeliveryReport::default();
+        for (address, resolution, _) in resolved {
+            if let ResolvedRecipient::Mailbox(mailbox) = resolution {
+                let message_id = *by_mailbox.get(&mailbox.mailbox_id())
+                    .ok_or_else(|| FerromaError::internal("batch missing an accepted mailbox"))?;
+                report.outcomes.push(RecipientOutcome::Delivered {
+                    address: address.to_string(),
+                    resolved_to: mailbox.address(address.domain()),
+                    mailbox_id: mailbox.mailbox_id(), message_id,
+                });
+            }
+        }
+        Ok(report)
     }
 
     /// Store one copy in one mailbox, in the folder `message.folder()` names.
@@ -778,7 +885,7 @@ impl DeliveryService {
             is_draft: false,
         };
 
-        let stored_message = match self.repos.messages.insert(new_message).await {
+        let stored_message = match self.repos.messages.insert_logged(new_message, Some(mailbox.owner())).await {
             Ok(row) => row,
             Err(e) => {
                 // The row is the promise that the bytes exist. Without it the file is
@@ -793,18 +900,8 @@ impl DeliveryService {
         self.insert_recipients(message_id, parsed).await?;
         self.store_attachments(message_id, parsed).await?;
 
-        // --- counters -------------------------------------------------
+        // UID, quota usage and message_created cursor committed with the row.
         let _ = self.repos.folders.recount(folder_id).await;
-        if let Err(e) = self.repos.mailboxes.add_usage(mailbox_id, size).await {
-            tracing::warn!(error = %e, mailbox_id = mailbox_id.get(), "could not add mailbox usage");
-        }
-        if let Err(e) = self.repos.users.add_usage(mailbox.owner(), size).await {
-            tracing::warn!(error = %e, user_id = mailbox.user_id, "could not add user usage");
-        }
-
-        // --- sync journal ---------------------------------------------
-        self.append_change_log(mailbox, &stored_message, folder_id)
-            .await;
 
         // --- realtime -------------------------------------------------
         self.publish_received(&stored_message, mailbox, parsed, size);
@@ -875,29 +972,6 @@ impl DeliveryService {
         Ok(())
     }
 
-    /// Append the `message_created` entry the sync journal needs.
-    async fn append_change_log(&self, mailbox: &Mailbox, message: &Message, folder_id: MailboxId) {
-        let payload = serde_json::json!({
-            "uid": message.uid,
-            "subject": message.subject,
-            "from": message.sender,
-            "size_bytes": message.size_bytes,
-            "internal_date": message.internal_date,
-            "flags": Flags::from_db_string(&message.flags).to_db_string(),
-        });
-        let change = NewChange {
-            user_id: UserId::new(mailbox.user_id),
-            mailbox_id: Some(mailbox.mailbox_id()),
-            folder_id: Some(folder_id),
-            message_id: Some(message.message_id()),
-            kind: "message_created".to_string(),
-            payload,
-        };
-        if let Err(e) = self.repos.change_log.append(change).await {
-            tracing::warn!(error = %e, "could not append to the change log");
-        }
-    }
-
     /// Publish `mail.received` for one stored copy.
     fn publish_received(
         &self,
@@ -954,7 +1028,7 @@ impl DeliveryService {
             .map_err(map_storage)?;
         let target = folders
             .iter()
-            .find(|f| f.name.eq_ignore_ascii_case(&folder))
+            .find(|f| f.name.eq_ignore_ascii_case(folder))
             .or_else(|| folders.iter().find(|f| f.name.eq_ignore_ascii_case(INBOX)))
             .cloned()
             .ok_or_else(|| FerromaError::internal("mailbox has no folders"))?;
@@ -991,7 +1065,7 @@ impl DeliveryService {
             is_draft: false,
         };
 
-        let stored_message = match self.repos.messages.insert(new_message).await {
+        let stored_message = match self.repos.messages.insert_logged(new_message, Some(mailbox.owner())).await {
             Ok(row) => row,
             Err(e) => {
                 let _ = self.maildir.delete(&stored.path);
@@ -1002,17 +1076,27 @@ impl DeliveryService {
         self.insert_recipients(message_id, &parsed).await?;
         self.store_attachments(message_id, &parsed).await?;
         let _ = self.repos.folders.recount(folder_id).await;
-        if let Err(e) = self.repos.mailboxes.add_usage(mailbox_id, size).await {
-            tracing::warn!(error = %e, "could not add mailbox usage");
-        }
-        if let Err(e) = self.repos.users.add_usage(mailbox.owner(), size).await {
-            tracing::warn!(error = %e, "could not add user usage");
-        }
-        self.append_change_log(&mailbox, &stored_message, folder_id)
-            .await;
+        // insert_logged committed the user quota and creation cursor together.
         self.publish_received(&stored_message, &mailbox, &parsed, size);
         Ok(message_id)
     }
+}
+
+/// Envelope address rows shared by every local copy of an inbound message.
+fn parsed_recipients(parsed: &ParsedMessage) -> Vec<Recipient> {
+    let mut recipients = Vec::new();
+    for (kind, list) in [
+        ("to", parsed.to()), ("cc", parsed.cc()),
+        ("reply-to", parsed.reply_to()), ("sender", parsed.from()),
+    ] {
+        for (ordinal, mailbox) in list.into_iter().enumerate() {
+            recipients.push(Recipient {
+                kind: kind.to_string(), address: mailbox.address.to_string(),
+                display_name: mailbox.name, ordinal: ordinal as i32,
+            });
+        }
+    }
+    recipients
 }
 
 /// Map a storage error into the platform error, preserving the cause chain.

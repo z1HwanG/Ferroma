@@ -48,7 +48,36 @@ exactly.
 The cost of running both is real: every mutation has to be visible through both
 surfaces, which is why the layering rule in [architecture.md](architecture.md) §3
 exists. A flag change made over IMAP must produce the same `change_log` row as one
-made over FCP, or the two views diverge.
+made over FCP, or the two views diverge. The IMAP listener records message
+creation (APPEND/COPY), updates (STORE and implicit `\\Seen` on FETCH), moves,
+and expunge tombstones through the same `SyncService` as the HTTP entry points.
+Folder CREATE/DELETE/RENAME/SUBSCRIBE changes are recorded as well. The event
+bus is an in-memory push channel, **not** the durable cursor journal.
+
+IMAP and HTTP COPY/MOVE now share `ferroma-storage::relocate_message`: it
+stages the destination Maildir body before changing the row, updates folder/UID
+and path in one SQL transaction, and removes the old file only after a successful
+MOVE. That transaction also inserts the FCP change entry; COPY checks quota and
+repairs cached usage within it, including under concurrent requests. A failed
+body write, database update or change-log insert keeps the source intact;
+failure-injection tests guard those cases. IMAP and REST folder renames now share a
+folder-tree coordinator: it stages destination directories while old bodies
+remain readable, then updates folder names, descendants, message paths and
+folder cursor entries in one SQL transaction. A failed SQL commit removes the
+staged directories. Concurrent mailbox writers and renames still require
+serialization; without it a file inserted after the staging snapshot can be
+missed.
+
+Maildir and PostgreSQL cannot share a crash-atomic transaction. A crash after
+staging but before SQL commit can leave an orphan file; run `ferroma storage
+verify` after an interrupted write. IMAP STORE/FETCH `\\Seen` and HTTP flag
+updates commit their row, path and cursor entry together; IMAP EXPUNGE/CLOSE
+commits each row deletion with its cursor tombstone. IMAP APPEND and IMAP
+CREATE/DELETE/RENAME/SUBSCRIBE also commit their row, usage where applicable,
+and cursor entry together. Other protocol paths may still record changes after
+their database writes; a crash there can leave a missing cursor entry. Those
+paths need the same treatment before all cross-protocol mutations can claim
+crash atomicity.
 
 ---
 
@@ -121,7 +150,7 @@ to the client.
 
 | Property | How `seq` satisfies it |
 |---|---|
-| Monotonic | `BIGSERIAL` — assigned by PostgreSQL, never reused within a sequence |
+| Monotonic | `BIGSERIAL`, reallocated after a per-user transaction lock in migration 0007 so one user's visible cursors follow commit order; gaps remain possible |
 | Comparable | `seq > $2` is the entire query |
 | Cheap | one `BIGINT` per (device, mailbox, folder) in `client_sync_states` |
 | Opaque | the client treats it as a string and never parses it ([fcp.md](fcp.md) §3) |

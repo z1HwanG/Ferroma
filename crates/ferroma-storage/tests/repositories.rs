@@ -10,9 +10,9 @@ use chrono::{DateTime, TimeZone, Utc};
 use ferroma_core::{DomainId, MailboxId, MessageId, UserId};
 use ferroma_storage::models::Message;
 use ferroma_storage::repository::{
-    MessageSearch, NewAttachment, NewMailbox, NewMessage, NewUser, Recipient,
+    BatchMessage, MessageSearch, NewAttachment, NewMailbox, NewMessage, NewQueueEntry, NewUser, Recipient,
 };
-use ferroma_storage::StorageError;
+use ferroma_storage::{store_submission, StorageError, Submission};
 
 use common::{fresh_database, TestDatabase};
 
@@ -166,6 +166,239 @@ async fn seed_message(t: &TestDatabase, f: &Fixture, subject: &str, offset_secs:
         .insert(message_in(f, f.inbox_id, subject, offset_secs))
         .await
         .expect("insert message")
+}
+
+/// Add a second owner and destination address to the test domain.
+async fn second_fixture(t: &TestDatabase, first: &Fixture) -> Fixture {
+    let repos = t.repos();
+    let user = repos.users.create(NewUser {
+        email: "carol@example.com".into(), password_hash: "hash".into(),
+        display_name: None, is_admin: false, enabled: true, quota_bytes: Some(4096),
+    }).await.unwrap();
+    let mailbox = repos.mailboxes.create(NewMailbox {
+        user_id: user.user_id(), domain_id: first.domain_id,
+        local_part: "carol".into(), display_name: None,
+        is_primary: true, quota_bytes: None,
+    }).await.unwrap();
+    let inbox = repos.folders.ensure_standard(mailbox.mailbox_id()).await.unwrap()
+        .into_iter().find(|f| f.is_inbox()).unwrap();
+    Fixture { user_id: user.user_id(), domain_id: first.domain_id,
+        mailbox_id: mailbox.mailbox_id(), inbox_id: inbox.folder_id() }
+}
+
+fn batch_item(f: &Fixture, subject: &str) -> BatchMessage {
+    BatchMessage {
+        user_id: f.user_id,
+        message: message_in(f, f.inbox_id, subject, 0),
+        recipients: vec![Recipient {
+            kind: "to".into(), address: "carol@example.com".into(),
+            display_name: None, ordinal: 0,
+        }],
+    }
+}
+
+async fn batch_log_count(t: &TestDatabase) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM change_log WHERE kind = 'message_created'")
+        .fetch_one(t.repos().pool()).await.unwrap()
+}
+
+#[tokio::test]
+async fn batch_quota_failure_rolls_back_every_destination() {
+    let t = setup!();
+    let alice = fixture(&t).await;
+    let carol = second_fixture(&t, &alice).await;
+    let repos = t.repos();
+    // First recipient fits, second cannot; the cached usage deliberately lies.
+    sqlx::query("UPDATE users SET quota_bytes = 100, used_bytes = 0 WHERE id = $1")
+        .bind(carol.user_id.get()).execute(repos.pool()).await.unwrap();
+    let before_a = folder(&repos, alice.inbox_id).await;
+    let before_c = folder(&repos, carol.inbox_id).await;
+    let result = repos.messages.insert_batch_logged(&[
+        batch_item(&alice, "fits"), batch_item(&carol, "full"),
+    ]).await;
+    assert!(matches!(result, Err(StorageError::QuotaExceeded { .. })), "{result:?}");
+    assert_eq!(repos.messages.count_by_folder(alice.inbox_id).await.unwrap(), 0);
+    assert_eq!(repos.messages.count_by_folder(carol.inbox_id).await.unwrap(), 0);
+    assert_eq!(batch_log_count(&t).await, 0);
+    for (f, before) in [(&alice, before_a), (&carol, before_c)] {
+        let after = folder(&repos, f.inbox_id).await;
+        assert_eq!(counters(&after), counters(&before));
+        assert_eq!(after.uid_next, before.uid_next);
+        assert_eq!(repos.users.require_by_id(f.user_id).await.unwrap().used_bytes, 0);
+    }
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn batch_success_tracks_uid_counters_usage_recipients_and_changes() {
+    let t = setup!();
+    let alice = fixture(&t).await;
+    let carol = second_fixture(&t, &alice).await;
+    let repos = t.repos();
+    let mut seen = batch_item(&alice, "seen");
+    seen.message.flags = "seen".into();
+    let rows = repos.messages.insert_batch_logged(&[
+        batch_item(&alice, "first"), seen, batch_item(&carol, "third"),
+    ]).await.unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!((rows[0].uid, rows[1].uid, rows[2].uid), (1, 2, 1));
+    assert_eq!(counters(&folder(&repos, alice.inbox_id).await), (2, 1, 1024));
+    assert_eq!(counters(&folder(&repos, carol.inbox_id).await), (1, 1, 512));
+    assert_eq!(repos.users.require_by_id(alice.user_id).await.unwrap().used_bytes, 1024);
+    assert_eq!(repos.users.require_by_id(carol.user_id).await.unwrap().used_bytes, 512);
+    assert_eq!(batch_log_count(&t).await, 3);
+    for row in &rows {
+        assert_eq!(repos.messages.recipients(row.message_id()).await.unwrap().len(), 1);
+        let logged: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM change_log WHERE kind = 'message_created' AND message_id = $1",
+        ).bind(row.id).fetch_one(repos.pool()).await.unwrap();
+        assert_eq!(logged, 1);
+    }
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn batch_uses_live_totals_and_cumulative_address_quota() {
+    let t = setup!();
+    let alice = fixture(&t).await;
+    let repos = t.repos();
+    // One real row consumes 512; cached usage intentionally understates it.
+    let original = seed_message(&t, &alice, "existing", 0).await;
+    sqlx::query("UPDATE users SET quota_bytes = 4096, used_bytes = 0 WHERE id = $1")
+        .bind(alice.user_id.get()).execute(repos.pool()).await.unwrap();
+    sqlx::query("UPDATE mailboxes SET quota_bytes = 1200 WHERE id = $1")
+        .bind(alice.mailbox_id.get()).execute(repos.pool()).await.unwrap();
+    let before = folder(&repos, alice.inbox_id).await;
+    // Individually each 512 fits the address's remaining 688; together they do not.
+    let err = repos.messages.insert_batch_logged(&[
+        batch_item(&alice, "first"), batch_item(&alice, "second"),
+    ]).await.unwrap_err();
+    assert!(matches!(err, StorageError::QuotaExceeded { limit: 1200, .. }), "{err:?}");
+    assert_eq!(repos.messages.count_by_folder(alice.inbox_id).await.unwrap(), 1);
+    assert_eq!(repos.messages.find_by_id(original.message_id()).await.unwrap().unwrap().id, original.id);
+    let after = folder(&repos, alice.inbox_id).await;
+    assert_eq!(counters(&after), counters(&before));
+    assert_eq!(after.uid_next, before.uid_next);
+    assert_eq!(batch_log_count(&t).await, 0);
+    assert_eq!(repos.users.require_by_id(alice.user_id).await.unwrap().used_bytes, 0);
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn batch_second_item_recipient_failure_rolls_back_first_item() {
+    let t = setup!();
+    let alice = fixture(&t).await;
+    let carol = second_fixture(&t, &alice).await;
+    let repos = t.repos();
+    let mut invalid = batch_item(&carol, "invalid");
+    // The SQL CHECK fires after two message inserts and the first change-log entry.
+    invalid.recipients[0].kind = "not-a-recipient-kind".into();
+    assert!(repos.messages.insert_batch_logged(&[
+        batch_item(&alice, "valid"), invalid,
+    ]).await.is_err());
+    for f in [&alice, &carol] {
+        assert_eq!(repos.messages.count_by_folder(f.inbox_id).await.unwrap(), 0);
+        let state = folder(&repos, f.inbox_id).await;
+        assert_eq!(counters(&state), (0, 0, 0));
+        assert_eq!(state.uid_next, 1);
+        assert_eq!(repos.users.require_by_id(f.user_id).await.unwrap().used_bytes, 0);
+    }
+    assert_eq!(batch_log_count(&t).await, 0);
+    t.cleanup().await;
+}
+
+fn submission(f: &Fixture, sent: MailboxId) -> Submission {
+    Submission {
+        user_id: f.user_id,
+        message: message_in(f, sent, "outbound", 0),
+        recipients: vec![Recipient {
+            kind: "to".into(), address: "first@remote.test".into(),
+            display_name: None, ordinal: 0,
+        }],
+        sender: "alice@example.com".into(),
+        remote_recipients: vec!["first@remote.test".into(), "second@remote.test".into()],
+        max_attempts: 5,
+    }
+}
+
+#[tokio::test]
+async fn submission_second_queue_insert_failure_rolls_back_sent_log_and_usage() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+    let sent = repos.folders.require_by_name(f.mailbox_id, "Sent").await.unwrap();
+    sqlx::query("CREATE FUNCTION reject_second_submission_queue() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF NEW.recipient = 'second@remote.test' THEN
+            RAISE EXCEPTION 'injected second queue insert failure';
+        END IF; RETURN NEW; END $$")
+        .execute(repos.pool()).await.unwrap();
+    sqlx::query("CREATE TRIGGER reject_second_submission_queue BEFORE INSERT ON mail_queue
+        FOR EACH ROW EXECUTE FUNCTION reject_second_submission_queue()")
+        .execute(repos.pool()).await.unwrap();
+    assert!(store_submission(&repos, &submission(&f, sent.folder_id())).await.is_err());
+    assert_eq!(repos.messages.count_by_folder(sent.folder_id()).await.unwrap(), 0);
+    assert_eq!(batch_log_count(&t).await, 0);
+    let queue_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mail_queue")
+        .fetch_one(repos.pool()).await.unwrap();
+    let header_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM message_recipients")
+        .fetch_one(repos.pool()).await.unwrap();
+    assert_eq!((queue_count, header_count), (0, 0));
+    let after = folder(&repos, sent.folder_id()).await;
+    assert_eq!(counters(&after), (0, 0, 0));
+    assert_eq!(after.uid_next, 1);
+    assert_eq!(repos.users.require_by_id(f.user_id).await.unwrap().used_bytes, 0);
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn submission_checks_live_quota_and_folder_ownership() {
+    let t = setup!();
+    let alice = fixture(&t).await;
+    let carol = second_fixture(&t, &alice).await;
+    let repos = t.repos();
+    let sent = repos.folders.require_by_name(alice.mailbox_id, "Sent").await.unwrap();
+    let mut proposed = submission(&alice, sent.folder_id());
+    proposed.message.folder_id = carol.inbox_id;
+    assert!(matches!(store_submission(&repos, &proposed).await, Err(StorageError::NotFound(_))));
+    proposed.message.folder_id = sent.folder_id();
+    seed_message(&t, &alice, "existing", 0).await;
+    sqlx::query("UPDATE users SET quota_bytes = 900, used_bytes = 0 WHERE id = $1")
+        .bind(alice.user_id.get()).execute(repos.pool()).await.unwrap();
+    assert!(matches!(store_submission(&repos, &proposed).await,
+        Err(StorageError::QuotaExceeded { used: 512, needed: 512, limit: 900, .. })));
+    assert_eq!(repos.messages.count_by_folder(sent.folder_id()).await.unwrap(), 0);
+    assert_eq!(repos.users.require_by_id(alice.user_id).await.unwrap().used_bytes, 0);
+    assert_eq!(batch_log_count(&t).await, 0);
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn submission_success_queues_only_the_single_committed_sent_copy() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+    let sent = repos.folders.require_by_name(f.mailbox_id, "Sent").await.unwrap();
+    let message = store_submission(&repos, &submission(&f, sent.folder_id())).await.unwrap();
+    assert_eq!(message.folder_id, sent.id);
+    assert_eq!(repos.messages.count_by_folder(sent.folder_id()).await.unwrap(), 1);
+    assert_eq!(counters(&folder(&repos, sent.folder_id()).await), (1, 1, 512));
+    assert_eq!(repos.users.require_by_id(f.user_id).await.unwrap().used_bytes, 512);
+    assert_eq!(repos.messages.recipients(message.message_id()).await.unwrap().len(), 1);
+    let logged: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM change_log WHERE kind = 'message_created' AND message_id = $1",
+    ).bind(message.id).fetch_one(repos.pool()).await.unwrap();
+    assert_eq!(logged, 1);
+    let queue = repos.queue.list_by_message(message.message_id()).await.unwrap();
+    assert_eq!(queue.len(), 2);
+    for (entry, recipient) in queue.iter().zip(["first@remote.test", "second@remote.test"]) {
+        assert_eq!(entry.message_id, message.id);
+        assert_eq!(entry.user_id, Some(f.user_id.get()));
+        assert_eq!(entry.sender, "alice@example.com");
+        assert_eq!(entry.recipient, recipient);
+        assert_eq!(entry.max_attempts, 5);
+        assert_eq!(entry.status, "pending");
+    }
+    t.cleanup().await;
 }
 
 // ===========================================================================
@@ -1287,6 +1520,79 @@ async fn folder_rename_and_special_use() {
 }
 
 #[tokio::test]
+async fn coordinated_folder_rename_repaths_parent_and_child_bodies() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+    let temp = tempfile::tempdir().unwrap();
+    let maildir = ferroma_storage::Maildir::new(temp.path(), false,
+        ferroma_core::config::MailboxLayout::Maildir);
+    let parent = repos.folders.create(f.mailbox_id, "Foo", None).await.unwrap();
+    let child = repos.folders.create_in(f.mailbox_id, "Foo/Child", Some(parent.folder_id()), None).await.unwrap();
+    let mut old_paths = Vec::new();
+    for (folder, body) in [(&parent, b"parent".as_slice()), (&child, b"child".as_slice())] {
+        let stored = maildir.store("example.com", "alice", &folder.name, body, "").unwrap();
+        let row = repos.messages.insert(message_in(&f, folder.folder_id(), &folder.name, 0)).await.unwrap();
+        repos.messages.set_storage_path(row.message_id(), &stored.path).await.unwrap();
+        old_paths.push((row.id, stored.path, body.to_vec()));
+    }
+    let renamed = ferroma_storage::rename_folder_tree(&repos, &maildir, parent.folder_id(),
+        "Bar", None, Some(f.user_id)).await.unwrap();
+    assert_eq!(renamed.name, "Bar");
+    assert_eq!(repos.folders.require_by_name(f.mailbox_id, "Bar/Child").await.unwrap().parent_id,
+        Some(parent.id));
+    for (id, old, body) in old_paths {
+        let row = repos.messages.require_by_id(MessageId::new(id)).await.unwrap();
+        assert_ne!(row.storage_path, old);
+        assert_eq!(maildir.read(&row.storage_path).unwrap(), body);
+        assert!(!maildir.root().join(old).exists());
+    }
+    let changes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM change_log WHERE user_id = $1 AND kind = 'folder_updated'")
+        .bind(f.user_id.get()).fetch_one(repos.pool()).await.unwrap();
+    assert_eq!(changes, 2);
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn coordinated_folder_rename_conflict_and_db_failure_keep_old_bodies() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+    let temp = tempfile::tempdir().unwrap();
+    let maildir = ferroma_storage::Maildir::new(temp.path(), false,
+        ferroma_core::config::MailboxLayout::Maildir);
+    let folder = repos.folders.create(f.mailbox_id, "Foo", None).await.unwrap();
+    let body = b"still readable";
+    let stored = maildir.store("example.com", "alice", "Foo", body, "").unwrap();
+    let row = repos.messages.insert(message_in(&f, folder.folder_id(), "source", 0)).await.unwrap();
+    repos.messages.set_storage_path(row.message_id(), &stored.path).await.unwrap();
+    repos.folders.create(f.mailbox_id, "Occupied", None).await.unwrap();
+    let error = ferroma_storage::rename_folder_tree(&repos, &maildir, folder.folder_id(),
+        "Occupied", None, Some(f.user_id)).await.unwrap_err();
+    assert!(matches!(error, StorageError::Conflict(_)), "{error:?}");
+    assert!(!maildir.folder_dir("example.com", "alice", "Occupied").unwrap().exists());
+    maildir.create_folder("example.com", "alice", "DiskTaken").unwrap();
+    let error = ferroma_storage::rename_folder_tree(&repos, &maildir, folder.folder_id(),
+        "DiskTaken", None, Some(f.user_id)).await.unwrap_err();
+    assert!(matches!(error, StorageError::Conflict(_)), "{error:?}");
+    assert_eq!(maildir.read(&stored.path).unwrap(), body);
+    assert_eq!(repos.folders.find_by_id(folder.folder_id()).await.unwrap().unwrap().name, "Foo");
+    sqlx::query("CREATE FUNCTION reject_folder_rename_log() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'injected folder change failure'; END $$")
+        .execute(repos.pool()).await.unwrap();
+    sqlx::query("CREATE TRIGGER reject_folder_rename_log BEFORE INSERT ON change_log
+        FOR EACH ROW EXECUTE FUNCTION reject_folder_rename_log()")
+        .execute(repos.pool()).await.unwrap();
+    assert!(ferroma_storage::rename_folder_tree(&repos, &maildir, folder.folder_id(),
+        "Bar", None, Some(f.user_id)).await.is_err());
+    assert_eq!(repos.folders.find_by_id(folder.folder_id()).await.unwrap().unwrap().name, "Foo");
+    assert_eq!(repos.messages.require_by_id(row.message_id()).await.unwrap().storage_path, stored.path);
+    assert_eq!(maildir.read(&stored.path).unwrap(), body);
+    assert!(!maildir.folder_dir("example.com", "alice", "Bar").unwrap().exists());
+    t.cleanup().await;
+}
+
+#[tokio::test]
 async fn folder_subscription_round_trip() {
     let t = setup!();
     let f = fixture(&t).await;
@@ -1627,6 +1933,220 @@ async fn message_find_by_rfc_message_id_spans_folders() {
 }
 
 #[tokio::test]
+async fn simultaneous_copies_cannot_both_spend_the_last_quota_slot() {
+    let t = setup_wide!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+    let source = seed_message(&t, &f, "quota-race", 0).await;
+    let sent = repos.folders.require_by_name(f.mailbox_id, "Sent").await.unwrap();
+    repos.users.set_quota(f.user_id, source.size_bytes * 2).await.unwrap();
+
+    let first = repos.messages.clone();
+    let second = repos.messages.clone();
+    let (a, b) = tokio::join!(
+        first.copy_to_folder_with_path(source.message_id(), sent.folder_id(), f.mailbox_id,
+            Some("example.com/alice/Maildir/.Sent/cur/copy-a:2,")),
+        second.copy_to_folder_with_path(source.message_id(), sent.folder_id(), f.mailbox_id,
+            Some("example.com/alice/Maildir/.Sent/cur/copy-b:2,")),
+    );
+    assert_eq!(a.is_ok() as u8 + b.is_ok() as u8, 1, "one quota slot: {a:?}, {b:?}");
+    assert!(matches!(a.as_ref().err().or(b.as_ref().err()), Some(StorageError::QuotaExceeded { .. })));
+    assert_eq!(repos.messages.count_by_folder(sent.folder_id()).await.unwrap(), 1);
+    assert_eq!(repos.mailboxes.used_bytes(f.mailbox_id).await.unwrap(), source.size_bytes * 2);
+    let user = repos.users.find_by_id(f.user_id).await.unwrap().unwrap();
+    assert_eq!(user.used_bytes, source.size_bytes * 2);
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn failed_relocation_cleans_staged_body_without_touching_source() {
+    use ferroma_storage::relocate::{relocate_message, Destination, Relocation};
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+    let root = tempfile::tempdir().unwrap();
+    let maildir = ferroma_storage::Maildir::new(root.path().to_path_buf(), false,
+        ferroma_core::config::MailboxLayout::Maildir);
+    let bytes = b"Subject: preserve me\r\n\r\nbody";
+    let stored = maildir.store("example.com", "alice", "INBOX", bytes, "").unwrap();
+    let mut source = seed_message(&t, &f, "staged", 0).await;
+    repos.messages.set_storage_path(source.message_id(), &stored.path).await.unwrap();
+    source.storage_path = stored.path.clone();
+    // Simulate a row deleted after the caller fetched its metadata. The staged
+    // destination is created, then the SQL update fails and must be removed.
+    repos.messages.hard_delete(source.message_id()).await.unwrap();
+    let sent = repos.folders.require_by_name(f.mailbox_id, "Sent").await.unwrap();
+    assert!(relocate_message(&repos, &maildir, &source,
+        Destination { folder_id: sent.folder_id(), folder_name: "Sent",
+            domain: "example.com", local_part: "alice" },
+        Relocation::Move, None).await.is_err());
+    assert_eq!(maildir.read(&stored.path).unwrap(), bytes);
+    assert!(maildir.iter_messages("example.com", "alice", "Sent").unwrap().is_empty());
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn failed_destination_write_does_not_relocate_the_source() {
+    use ferroma_storage::relocate::{relocate_message, Destination, Relocation};
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+    let root = tempfile::tempdir().unwrap();
+    let maildir = ferroma_storage::Maildir::new(root.path().to_path_buf(), false,
+        ferroma_core::config::MailboxLayout::Maildir);
+    let bytes = b"Subject: keep source\r\n\r\nbody";
+    let stored = maildir.store("example.com", "alice", "INBOX", bytes, "").unwrap();
+    let mut source = seed_message(&t, &f, "blocked-target", 0).await;
+    repos.messages.set_storage_path(source.message_id(), &stored.path).await.unwrap();
+    source.storage_path = stored.path.clone();
+    let sent = repos.folders.require_by_name(f.mailbox_id, "Sent").await.unwrap();
+    let target = maildir.folder_dir("example.com", "alice", "Sent").unwrap();
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::fs::write(&target, b"not a directory").unwrap();
+    let result = relocate_message(&repos, &maildir, &source,
+        Destination { folder_id: sent.folder_id(), folder_name: "Sent",
+            domain: "example.com", local_part: "alice" }, Relocation::Move, None).await;
+    assert!(result.is_err(), "destination write must fail");
+    let row = repos.messages.require_by_id(source.message_id()).await.unwrap();
+    assert_eq!(row.folder_id, f.inbox_id.get());
+    assert_eq!(row.storage_path, stored.path);
+    assert_eq!(maildir.read(&row.storage_path).unwrap(), bytes);
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn rejected_change_log_insert_rolls_back_copy_and_staged_body() {
+    use ferroma_storage::relocate::{relocate_message, Destination, Relocation};
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+    let root = tempfile::tempdir().unwrap();
+    let maildir = ferroma_storage::Maildir::new(root.path().to_path_buf(), false,
+        ferroma_core::config::MailboxLayout::Maildir);
+    let bytes = b"Subject: durable cursor\r\n\r\nbody";
+    let stored = maildir.store("example.com", "alice", "INBOX", bytes, "").unwrap();
+    let mut source = seed_message(&t, &f, "logfail", 0).await;
+    repos.messages.set_storage_path(source.message_id(), &stored.path).await.unwrap();
+    source.storage_path = stored.path.clone();
+    let sent = repos.folders.require_by_name(f.mailbox_id, "Sent").await.unwrap();
+    sqlx::query("CREATE FUNCTION reject_relocation_log() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'injected log failure'; END $$")
+        .execute(t.pool()).await.unwrap();
+    sqlx::query("CREATE TRIGGER reject_relocation_log BEFORE INSERT ON change_log
+        FOR EACH ROW EXECUTE FUNCTION reject_relocation_log()")
+        .execute(t.pool()).await.unwrap();
+    let failure = relocate_message(&repos, &maildir, &source,
+        Destination { folder_id: sent.folder_id(), folder_name: "Sent",
+            domain: "example.com", local_part: "alice" }, Relocation::Copy, Some(f.user_id)).await;
+    assert!(failure.is_err(), "journal failure must abort the copy");
+    assert_eq!(repos.messages.count_by_folder(sent.folder_id()).await.unwrap(), 0);
+    assert_eq!(maildir.iter_messages("example.com", "alice", "Sent").unwrap().len(), 0);
+    assert_eq!(maildir.read(&source.storage_path).unwrap(), bytes);
+    assert_eq!(repos.mailboxes.used_bytes(f.mailbox_id).await.unwrap(), source.size_bytes);
+    assert_eq!(repos.change_log.max_seq(f.user_id).await.unwrap(), 0);
+    let failed_move = relocate_message(&repos, &maildir, &source,
+        Destination { folder_id: sent.folder_id(), folder_name: "Sent",
+            domain: "example.com", local_part: "alice" }, Relocation::Move, Some(f.user_id)).await;
+    assert!(failed_move.is_err(), "journal failure must abort the move");
+    let unchanged = repos.messages.require_by_id(source.message_id()).await.unwrap();
+    assert_eq!(unchanged.folder_id, f.inbox_id.get());
+    assert_eq!(unchanged.storage_path, source.storage_path);
+    assert_eq!(maildir.iter_messages("example.com", "alice", "Sent").unwrap().len(), 0);
+    assert_eq!(maildir.read(&source.storage_path).unwrap(), bytes);
+    assert_eq!(repos.change_log.max_seq(f.user_id).await.unwrap(), 0);
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn rejected_flag_change_log_rolls_back_flags_and_path() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+    let source = seed_message(&t, &f, "flag-logfail", 0).await;
+    sqlx::query("CREATE FUNCTION reject_flag_log() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'injected flag log failure'; END $$")
+        .execute(t.pool()).await.unwrap();
+    sqlx::query("CREATE TRIGGER reject_flag_log BEFORE INSERT ON change_log
+        FOR EACH ROW EXECUTE FUNCTION reject_flag_log()")
+        .execute(t.pool()).await.unwrap();
+    let result = repos.messages.set_flags_with_path_logged(source.message_id(), f.user_id,
+        &source.storage_path, "example.com/alice/Maildir/cur/flagged:2,S", "seen").await;
+    assert!(result.is_err(), "journal failure must abort flag change");
+    let unchanged = repos.messages.require_by_id(source.message_id()).await.unwrap();
+    assert_eq!(unchanged.flags, source.flags);
+    assert_eq!(unchanged.storage_path, source.storage_path);
+    assert_eq!(repos.change_log.max_seq(f.user_id).await.unwrap(), 0);
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn rejected_folder_log_rolls_back_folder_mutations() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+    let folder = repos.folders.create(f.mailbox_id, "CursorFolder", None).await.unwrap();
+    sqlx::query("CREATE FUNCTION reject_folder_log() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'injected folder log failure'; END $$")
+        .execute(t.pool()).await.unwrap();
+    sqlx::query("CREATE TRIGGER reject_folder_log BEFORE INSERT ON change_log
+        FOR EACH ROW EXECUTE FUNCTION reject_folder_log()")
+        .execute(t.pool()).await.unwrap();
+    assert!(repos.folders.create_in_logged(f.mailbox_id, "NewFolder", None, None, f.user_id).await.is_err());
+    assert!(repos.folders.find_by_name(f.mailbox_id, "NewFolder").await.unwrap().is_none());
+    assert!(repos.folders.rename_logged(folder.folder_id(), "Renamed", f.user_id).await.is_err());
+    assert_eq!(repos.folders.find_by_id(folder.folder_id()).await.unwrap().unwrap().name, "CursorFolder");
+    assert!(repos.folders.set_subscribed_logged(folder.folder_id(), false, f.user_id).await.is_err());
+    assert!(repos.folders.find_by_id(folder.folder_id()).await.unwrap().unwrap().subscribed);
+    assert!(repos.folders.delete_logged(folder.folder_id(), f.user_id).await.is_err());
+    assert!(repos.folders.find_by_id(folder.folder_id()).await.unwrap().is_some());
+    assert_eq!(repos.change_log.max_seq(f.user_id).await.unwrap(), 0);
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn rejected_append_log_rolls_back_uid_counters_and_usage() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+    let before = repos.folders.find_by_id(f.inbox_id).await.unwrap().unwrap();
+    sqlx::query("CREATE FUNCTION reject_append_log() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'injected append log failure'; END $$")
+        .execute(t.pool()).await.unwrap();
+    sqlx::query("CREATE TRIGGER reject_append_log BEFORE INSERT ON change_log
+        FOR EACH ROW EXECUTE FUNCTION reject_append_log()")
+        .execute(t.pool()).await.unwrap();
+    let failure = repos.messages.insert_logged(message_in(&f, f.inbox_id, "append-fails", 0),
+        Some(f.user_id)).await;
+    assert!(failure.is_err());
+    assert_eq!(repos.messages.count_by_folder(f.inbox_id).await.unwrap(), 0);
+    let after = repos.folders.find_by_id(f.inbox_id).await.unwrap().unwrap();
+    assert_eq!(after.uid_next, before.uid_next);
+    assert_eq!(after.message_count, before.message_count);
+    let user = repos.users.find_by_id(f.user_id).await.unwrap().unwrap();
+    assert_eq!(user.used_bytes, 0);
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn rejected_expunge_log_preserves_the_message_row() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+    let original = seed_message(&t, &f, "expunge-logfail", 0).await;
+    sqlx::query("CREATE FUNCTION reject_expunge_log() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'injected expunge failure'; END $$")
+        .execute(t.pool()).await.unwrap();
+    sqlx::query("CREATE TRIGGER reject_expunge_log BEFORE INSERT ON change_log
+        FOR EACH ROW EXECUTE FUNCTION reject_expunge_log()")
+        .execute(t.pool()).await.unwrap();
+    assert!(repos.messages.hard_delete_logged(original.message_id(), f.user_id).await.is_err());
+    let restored = repos.messages.require_by_id(original.message_id()).await.unwrap();
+    assert_eq!(restored.folder_id, f.inbox_id.get());
+    assert_eq!(repos.change_log.max_seq(f.user_id).await.unwrap(), 0);
+    t.cleanup().await;
+}
+
+#[tokio::test]
 async fn message_add_flags_is_a_union_and_idempotent() {
     let t = setup!();
     let f = fixture(&t).await;
@@ -1804,6 +2324,90 @@ async fn message_hard_delete_returns_the_row_once() {
     assert!(repos.messages.hard_delete(message.message_id()).await.unwrap().is_none());
     assert_eq!(t.count("messages").await, 0);
 
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn active_queue_blocks_hard_delete_and_expunge_without_partial_changes() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+    let protected = seed_message(&t, &f, "queued", 0).await;
+    let other = seed_message(&t, &f, "also-deleted", 1).await;
+    let queue = repos.queue.enqueue(NewQueueEntry {
+        message_id: protected.message_id(), user_id: Some(f.user_id),
+        sender: "alice@example.com".into(), recipient: "bob@example.net".into(),
+        max_attempts: 3,
+    }).await.unwrap();
+    for status in ["pending", "retry", "delivering"] {
+        sqlx::query("UPDATE mail_queue SET status = $2 WHERE id = $1")
+            .bind(queue.id).bind(status).execute(t.pool()).await.unwrap();
+        for result in [
+            repos.messages.hard_delete(protected.message_id()).await,
+            repos.messages.hard_delete_logged(protected.message_id(), f.user_id).await,
+        ] {
+            assert!(matches!(result, Err(StorageError::Conflict(_))), "{status}: {result:?}");
+        }
+    }
+    repos.messages.mark_deleted(protected.message_id()).await.unwrap();
+    repos.messages.mark_deleted(other.message_id()).await.unwrap();
+    let result = repos.messages.expunge(f.inbox_id).await;
+    assert!(matches!(result, Err(StorageError::Conflict(_))), "{result:?}");
+    assert!(repos.messages.require_by_id(protected.message_id()).await.unwrap().expunged_at.is_none());
+    assert!(repos.messages.require_by_id(other.message_id()).await.unwrap().expunged_at.is_none());
+    assert!(!repos.queue.cancel(queue.queue_id()).await.unwrap(),
+        "an in-flight delivery cannot be cancelled");
+    repos.queue.mark_retry(queue.queue_id(), chrono::Utc::now(), "retry", None, None, None)
+        .await.unwrap();
+    assert!(repos.queue.cancel(queue.queue_id()).await.unwrap());
+    assert_eq!(repos.messages.expunge(f.inbox_id).await.unwrap().len(), 2);
+    assert!(repos.messages.hard_delete(protected.message_id()).await.unwrap().is_some());
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn active_queue_blocks_cascade_and_terminal_queue_allows_it() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+    let protected = seed_message(&t, &f, "queued-cascade", 0).await;
+    let queue = repos.queue.enqueue(NewQueueEntry {
+        message_id: protected.message_id(), user_id: Some(f.user_id),
+        sender: "alice@example.com".into(), recipient: "bob@example.net".into(),
+        max_attempts: 3,
+    }).await.unwrap();
+    let err = repos.folders.delete(f.inbox_id).await.unwrap_err();
+    assert!(matches!(err, StorageError::Conflict(_)), "{err:?}");
+    assert!(repos.messages.find_by_id(protected.message_id()).await.unwrap().is_some());
+    let err = repos.mailboxes.delete(f.mailbox_id).await.unwrap_err();
+    assert!(matches!(err, StorageError::Conflict(_)), "{err:?}");
+    let err = repos.users.delete(f.user_id).await.unwrap_err();
+    assert!(matches!(err, StorageError::Conflict(_)), "{err:?}");
+    repos.queue.mark_delivered(queue.queue_id(), None, None, None).await.unwrap();
+    assert!(repos.folders.delete(f.inbox_id).await.unwrap());
+    assert!(repos.messages.find_by_id(protected.message_id()).await.unwrap().is_none());
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn failed_and_delivered_queue_messages_can_be_deleted() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+    for (idx, status) in ["delivered", "failed", "cancelled"].iter().enumerate() {
+        let message = seed_message(&t, &f, status, idx as i64).await;
+        let queue = repos.queue.enqueue(NewQueueEntry {
+            message_id: message.message_id(), user_id: Some(f.user_id),
+            sender: "alice@example.com".into(), recipient: "bob@example.net".into(),
+            max_attempts: 3,
+        }).await.unwrap();
+        match *status {
+            "delivered" => repos.queue.mark_delivered(queue.queue_id(), None, None, None).await.unwrap(),
+            "failed" => repos.queue.mark_failed(queue.queue_id(), "failed", None, None, None).await.unwrap(),
+            _ => { assert!(repos.queue.cancel(queue.queue_id()).await.unwrap()); }
+        }
+        assert!(repos.messages.hard_delete(message.message_id()).await.unwrap().is_some());
+    }
     t.cleanup().await;
 }
 

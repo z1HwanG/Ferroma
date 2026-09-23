@@ -913,13 +913,12 @@ async fn a_permanent_refusal_from_our_own_listener_is_reported_as_permanent() {
 // Per-recipient quota
 // ---------------------------------------------------------------------------
 
-/// A multi-recipient message must not fail wholesale because one mailbox is full.
+/// An accepted multi-recipient DATA is all-or-nothing even when one mailbox is full.
 ///
-/// RFC 3463 classifies a full mailbox as `4.2.2` **temporary**: the owner can free
-/// space, so the sender should retry that one address. The other recipients still get
-/// their copy — and because RFC 5321 has no way to report a partial failure after
-/// `DATA`, the transaction is acknowledged with `250` while the per-recipient outcome
-/// is recorded against that recipient alone.
+/// SMTP has one DATA reply for every RCPT previously accepted. A partial `250`
+/// loses the full recipient; a partial `452` duplicates the successful one on
+/// retry. Neither result is acceptable, so no recipient is committed until all
+/// can be accepted.
 #[tokio::test]
 async fn a_full_mailbox_rejects_only_that_recipient() {
     require_database!();
@@ -949,15 +948,53 @@ async fn a_full_mailbox_rejects_only_that_recipient() {
             .await,
     );
 
-    // Bob's copy was accepted, so the transaction is acknowledged.
-    assert!(reply.starts_with("250 2.0.0 Ok: queued as "), "{reply}");
-    assert_eq!(harness.inbox_count_of(bob).await, 1, "the deliverable copy must land");
+    assert!(reply.starts_with("452 4.2.2"), "{reply}");
+    assert_eq!(harness.inbox_count_of(bob).await, 0, "no partial copy may survive");
     assert_eq!(harness.inbox_count().await, 0, "the full mailbox must stay empty");
+
+    harness.repos.mailboxes.set_quota(harness.mailbox_id, None).await.unwrap();
+    let _ = client.command("MAIL FROM:<sender@example.net>").await;
+    assert_eq!(first_line(&client.command("RCPT TO:<alice@mx.test>").await), "250 2.1.0 Ok");
+    assert_eq!(first_line(&client.command("RCPT TO:<bob@mx.test>").await), "250 2.1.0 Ok");
+    assert_eq!(first_line(&client.command("DATA").await), "354 End data with <CR><LF>.<CR><LF>");
+    let retry = first_line(&client.command("Subject: quota\r\n\r\nbody that will now fit\r\n.").await);
+    assert!(retry.starts_with("250 2.0.0 Ok: queued as "), "{retry}");
+    assert_eq!(harness.inbox_count().await, 1);
+    assert_eq!(harness.inbox_count_of(bob).await, 1);
 
     harness.finish().await;
 }
 
-/// When the *only* recipient is full, the transaction is refused with `452 4.2.2`.
+/// An injected failure in the second local copy rolls back every accepted RCPT.
+#[tokio::test]
+async fn a_second_recipient_database_failure_rolls_back_the_whole_data_transaction() {
+    require_database!();
+    let harness = Harness::start(|_| {}).await;
+    let bob = harness.add_mailbox("mx.test", "bob").await;
+    sqlx::query(&format!(
+        "CREATE FUNCTION refuse_bob() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN IF NEW.mailbox_id = {} THEN RAISE EXCEPTION 'injected second recipient failure';
+         END IF; RETURN NEW; END $$", bob.get(),
+    )).execute(harness.db.db().pool()).await.unwrap();
+    sqlx::query("CREATE TRIGGER refuse_bob BEFORE INSERT ON messages
+        FOR EACH ROW EXECUTE FUNCTION refuse_bob()")
+        .execute(harness.db.db().pool()).await.unwrap();
+
+    let (mut client, _) = TestClient::connect(harness.address).await;
+    let _ = client.command("EHLO client.example.net").await;
+    let _ = client.command("MAIL FROM:<sender@example.net>").await;
+    assert_eq!(first_line(&client.command("RCPT TO:<alice@mx.test>").await), "250 2.1.0 Ok");
+    assert_eq!(first_line(&client.command("RCPT TO:<bob@mx.test>").await), "250 2.1.0 Ok");
+    assert_eq!(first_line(&client.command("DATA").await), "354 End data with <CR><LF>.<CR><LF>");
+    let reply = first_line(&client.command("Subject: rollback\r\n\r\nbody\r\n.").await);
+    assert!(reply.starts_with("451 ") || reply.starts_with("452 "), "{reply}");
+    assert_eq!(harness.inbox_count().await, 0);
+    assert_eq!(harness.inbox_count_of(bob).await, 0);
+    assert!(harness.stores.maildir.iter_messages("mx.test", "alice", "INBOX").unwrap().is_empty());
+    assert!(harness.stores.maildir.iter_messages("mx.test", "bob", "INBOX").unwrap().is_empty());
+    harness.finish().await;
+}
+
 #[tokio::test]
 async fn a_transaction_to_a_full_mailbox_only_is_refused_with_452() {
     require_database!();

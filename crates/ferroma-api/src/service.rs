@@ -25,6 +25,7 @@ use ferroma_core::{FerromaError, MailboxId, MessageId, UserId};
 use ferroma_events::{Event, EventBus, EventScope};
 use ferroma_storage::models::{Mailbox, Message};
 use ferroma_storage::repository::{NewAttachment, NewMessage, Recipient};
+use ferroma_storage::relocate::{relocate_message, Destination, Relocation};
 use ferroma_storage::{AttachmentStore, Maildir, Repositories};
 use ferroma_sync::SyncService;
 use serde::{Deserialize, Serialize};
@@ -609,33 +610,62 @@ impl MessageService {
         deleted: Option<bool>,
     ) -> Result<Message, FerromaError> {
         let (message, _mailbox) = owned_live_message(&self.repos, id, user).await?;
-
-        if let Some(seen) = seen {
-            self.repos.messages.mark_seen(id, seen).await?;
-        }
-        if let Some(flagged) = flagged {
-            if flagged {
-                self.repos.messages.add_flags(id, "flagged").await?;
-            } else {
-                self.repos.messages.remove_flags(id, "flagged").await?;
+        // The messages.flags column is space-separated bare names, whereas
+        // Flags::parse recognises IMAP backslash-prefixed system names. Preserve
+        // the existing token order and private keywords when toggling a flag.
+        let mut tokens: Vec<String> = message.flags.split_whitespace().map(str::to_string).collect();
+        for (name, value) in [("seen", seen), ("flagged", flagged),
+            ("answered", answered), ("deleted", deleted)] {
+            if let Some(value) = value {
+                tokens.retain(|flag| !flag.eq_ignore_ascii_case(name));
+                if value { tokens.push(name.to_string()); }
             }
         }
-        if let Some(answered) = answered {
-            if answered {
-                self.repos.messages.add_flags(id, "answered").await?;
-            } else {
-                self.repos.messages.remove_flags(id, "answered").await?;
+        let updated_flags = tokens.join(" ");
+        if updated_flags == message.flags {
+            // A no-op PATCH can still repair a stale denormalised folder counter.
+            if seen.is_some() {
+                if let Err(error) = self.repos.folders.recount(MailboxId::new(message.folder_id)).await {
+                    tracing::warn!(folder_id = message.folder_id, %error,
+                        "could not recount folder after no-op flag patch");
+                }
             }
-        }
-        if let Some(deleted) = deleted {
-            if deleted {
-                self.repos.messages.mark_deleted(id).await?;
-            } else {
-                self.repos.messages.clear_deleted(id).await?;
-            }
+            return Ok(message);
         }
 
-        let updated = self.repos.messages.find_by_id(id).await?.unwrap_or(message);
+        // Stage a distinct Maildir file while the old path remains readable.
+        // Only after the row, path and cursor commit may the old body be removed.
+        let new_path = match self.maildir.stage_flags(&message.storage_path, &updated_flags) {
+            Ok(path) => path,
+            Err(error) => {
+                // A legacy row may already have a missing body. Preserve the
+                // previous best-effort behavior: update its metadata and cursor
+                // without claiming a Maildir rename that did not happen.
+                tracing::warn!(message_id = message.id, %error,
+                    "could not rename Maildir file while updating flags");
+                message.storage_path.clone()
+            }
+        };
+        let updated = match self.repos.messages.set_flags_with_path_logged(
+            id, user, &message.storage_path, &new_path, &updated_flags,
+        ).await {
+            Ok(row) => row,
+            Err(error) => {
+                if new_path != message.storage_path {
+                    if let Err(cleanup) = self.maildir.delete(&new_path) {
+                        tracing::warn!(message_id = message.id, %cleanup,
+                            "could not remove staged Maildir flags body after database failure");
+                    }
+                }
+                return Err(error.into());
+            }
+        };
+        if new_path != message.storage_path {
+            if let Err(cleanup) = self.maildir.delete(&message.storage_path) {
+                tracing::warn!(message_id = message.id, %cleanup,
+                    "old Maildir body remains after flag update");
+            }
+        }
 
         // `unseen_count` is a denormalised counter the sidebar renders. Delivery and
         // move recounted it, but a flag change did not, so reading a message left the
@@ -655,24 +685,8 @@ impl MessageService {
             );
         }
 
-        // Keep the Maildir file name in step with the flags, which is what an IMAP
-        // client reads directly off the filesystem.
         let mailbox = owned_mailbox(&self.repos, MailboxId::new(updated.mailbox_id), user).await?;
-        let domain = domain_name(&self.repos, mailbox.domain_id).await?;
-        let folder = self
-            .repos
-            .folders
-            .find_by_id(MailboxId::new(updated.folder_id))
-            .await?
-            .ok_or_else(|| FerromaError::NotFound(format!("folder {}", updated.folder_id)))?;
-        if let Err(err) = self
-            .refresh_maildir(&domain, &mailbox, &folder.name, &updated)
-            .await
-        {
-            tracing::warn!(message_id = updated.id, error = %err, "could not rename the maildir file");
-        }
-
-        self.sync.record_message_flags(user, &updated).await?;
+        // set_flags_with_path_logged already committed the FCP cursor entry.
 
         if seen.is_some() {
             self.events
@@ -699,27 +713,6 @@ impl MessageService {
         }
 
         Ok(updated)
-    }
-
-    /// Apply flag changes and persist the new Maildir path.
-    async fn refresh_maildir(
-        &self,
-        domain: &str,
-        mailbox: &Mailbox,
-        folder: &str,
-        message: &Message,
-    ) -> Result<(), FerromaError> {
-        let _ = (domain, mailbox, folder);
-        let path = self
-            .maildir
-            .set_flags(&message.storage_path, &message.flags)?;
-        if path != message.storage_path {
-            self.repos
-                .messages
-                .set_storage_path(message.message_id(), &path)
-                .await?;
-        }
-        Ok(())
     }
 
     /// Move a message into another folder of the same address.
@@ -750,27 +743,12 @@ impl MessageService {
             .map(|folder| folder.name.clone())
             .unwrap_or_else(|| "INBOX".to_string());
 
-        // Move the file first: a row pointing at a file in the old folder would be
-        // served from a directory an IMAP client no longer looks in.
-        let new_path = self.maildir.move_message(
-            &message.storage_path,
-            &domain,
-            &mailbox.local_part,
-            &target.name,
-            &message.flags,
-        )?;
+        let moved = relocate_message(&self.repos, &self.maildir, &message,
+            Destination { folder_id: target.folder_id(), folder_name: &target.name,
+                domain: &domain, local_part: &mailbox.local_part },
+            Relocation::Move, Some(user)).await?;
 
-        let moved = self
-            .repos
-            .messages
-            .move_to_folder(id, target.folder_id(), mailbox.mailbox_id())
-            .await?;
-        self.repos.messages.set_storage_path(id, &new_path).await?;
-        let moved = self.repos.messages.find_by_id(id).await?.unwrap_or(moved);
-
-        self.sync
-            .record_message_moved(user, MailboxId::new(from_folder), &moved)
-            .await?;
+        // The shared relocation commits the cursor entry with the message row.
         self.events
             .publish(
                 EventScope::User(user),
@@ -808,32 +786,11 @@ impl MessageService {
             .ok_or_else(|| FerromaError::NotFound("no such folder".to_string()))?;
 
         let domain = domain_name(&self.repos, mailbox.domain_id).await?;
-        let bytes = self.maildir.read(&message.storage_path)?;
-        let stored = self.maildir.store(
-            &domain,
-            &mailbox.local_part,
-            &target.name,
-            &bytes,
-            &message.flags,
-        )?;
-
-        let copied = self
-            .repos
-            .messages
-            .copy_to_folder(id, target.folder_id(), mailbox.mailbox_id())
-            .await?;
-        self.repos
-            .messages
-            .set_storage_path(copied.message_id(), &stored.path)
-            .await?;
-        let copied = self
-            .repos
-            .messages
-            .find_by_id(copied.message_id())
-            .await?
-            .unwrap_or(copied);
-
-        self.sync.record_message_created(user, &copied).await?;
+        let copied = relocate_message(&self.repos, &self.maildir, &message,
+            Destination { folder_id: target.folder_id(), folder_name: &target.name,
+                domain: &domain, local_part: &mailbox.local_part },
+            Relocation::Copy, Some(user)).await?;
+        // The shared relocation commits the cursor entry with the new row.
         Ok(copied)
     }
 

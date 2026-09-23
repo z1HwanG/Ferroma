@@ -556,6 +556,29 @@ impl FoldersRepository {
         .map_err(|e| unique_conflict(e.into(), format!("folder {name}")))
     }
 
+    /// Create a folder and its FCP cursor entry in one transaction.
+    pub async fn create_in_logged(
+        &self, mailbox_id: MailboxId, name: &str, parent_id: Option<MailboxId>,
+        special_use: Option<&str>, user: UserId,
+    ) -> Result<Folder> {
+        let name = canonical_folder_name(name);
+        if name.is_empty() { return Err(StorageError::Invalid("folder name must not be blank".into())); }
+        validate_special_use(special_use)?;
+        let mut tx = self.pool.begin().await?;
+        let folder: Folder = sqlx::query_as(
+            "INSERT INTO folders (mailbox_id, name, parent_id, special_use)
+             SELECT b.id, $2, $3, $4 FROM mailboxes b WHERE b.id = $1 AND b.user_id = $5
+             RETURNING *",
+        ).bind(mailbox_id.get()).bind(&name).bind(parent_id.map(MailboxId::get))
+            .bind(special_use).bind(user.get())
+            .fetch_optional(&mut *tx).await
+            .map_err(|e| unique_conflict(e.into(), format!("folder {name}")))?
+            .ok_or_else(|| not_found(format!("mailbox {mailbox_id}")))?;
+        append_folder_change(&mut tx, user, &folder, "folder_created").await?;
+        tx.commit().await?;
+        Ok(folder)
+    }
+
     /// Record the parent of an existing folder, when it has none.
     ///
     /// Used to adopt folders created before `parent_id` was populated: a folder whose
@@ -667,6 +690,24 @@ impl FoldersRepository {
         .ok_or_else(|| not_found(format!("folder {id}")))
     }
 
+    /// Rename a user's folder and its FCP cursor entry in one transaction.
+    pub async fn rename_logged(&self, id: MailboxId, new_name: &str, user: UserId) -> Result<Folder> {
+        let name = canonical_folder_name(new_name);
+        if name.is_empty() { return Err(StorageError::Invalid("folder name must not be blank".into())); }
+        let mut tx = self.pool.begin().await?;
+        let folder: Folder = sqlx::query_as(
+            "UPDATE folders f SET name = $2, updated_at = NOW()
+               FROM mailboxes b WHERE f.id = $1 AND f.mailbox_id = b.id AND b.user_id = $3
+               RETURNING f.*",
+        ).bind(id.get()).bind(&name).bind(user.get())
+            .fetch_optional(&mut *tx).await
+            .map_err(|e| unique_conflict(e.into(), format!("folder {name}")))?
+            .ok_or_else(|| not_found(format!("folder {id}")))?;
+        append_folder_change(&mut tx, user, &folder, "folder_updated").await?;
+        tx.commit().await?;
+        Ok(folder)
+    }
+
     /// Every folder beneath `id`, breadth first, by `parent_id`.
     ///
     /// A rename has to move them too: a child left named `Old/Child` under a folder now
@@ -688,15 +729,12 @@ impl FoldersRepository {
         .await?)
     }
 
-    /// Rename a folder, move it under another one, and re-path every descendant — in one
-    /// transaction.
+    /// Rename a folder and its descendants in one database transaction.
     ///
-    /// `new_names` carries the descendant rows and the name each one takes; the caller
-    /// derives them (see the API's `rename_plan`) because the same plan also drives the
-    /// Maildir moves, and the two must agree. `new_parent` is `Some` only when the folder
-    /// is being moved: `None` means "leave the parent alone", and a move to the top level
-    /// passes the caller's explicit `Some(None)` decision as a name change with no parent
-    /// — see the API's handler, which resolves the two into `parent_id`.
+    /// `new_names` maps descendant row ids to their new names. `new_parent = None`
+    /// leaves the parent unchanged; `Some(None)` moves the root to the top level.
+    /// This metadata-only method does not relocate message bodies: use
+    /// [`crate::rename_folder_tree`] for folders backed by Maildir files.
     pub async fn rename_folder_tree(
         &self,
         id: MailboxId,
@@ -712,6 +750,30 @@ impl FoldersRepository {
         }
 
         let mut tx = self.pool.begin().await?;
+        let renamed = Self::rename_folder_tree_in_tx(&mut tx, id, &new_name, new_parent, new_names, &[], None).await?;
+        tx.commit().await?;
+        Ok(renamed)
+    }
+
+    /// Commit folder names and message paths together after their files were staged.
+    /// Each `(id, old_path, new_path)` must still identify the same message and old path.
+    pub async fn rename_folder_tree_with_paths(
+        &self, id: MailboxId, new_name: &str, new_parent: Option<Option<i64>>,
+        new_names: &[(i64, String)], paths: &[(i64, String, String)], user: Option<UserId>,
+    ) -> Result<Folder> {
+        let mut tx = self.pool.begin().await?;
+        let renamed = Self::rename_folder_tree_in_tx(&mut tx, id, new_name, new_parent, new_names, paths, user).await?;
+        tx.commit().await?;
+        Ok(renamed)
+    }
+
+    async fn rename_folder_tree_in_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, id: MailboxId, new_name: &str,
+        new_parent: Option<Option<i64>>, new_names: &[(i64, String)],
+        paths: &[(i64, String, String)], user: Option<UserId>,
+    ) -> Result<Folder> {
+        let new_name = canonical_folder_name(new_name);
+        if new_name.is_empty() { return Err(StorageError::Invalid("folder name must not be blank".into())); }
         let renamed = match new_parent {
             Some(parent) => sqlx::query_as::<_, Folder>(
                 "UPDATE folders SET name = $2, parent_id = $3, updated_at = NOW()
@@ -726,21 +788,38 @@ impl FoldersRepository {
             .bind(id.get())
             .bind(&new_name),
         }
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await
         .map_err(|e| unique_conflict(e.into(), format!("folder {new_name}")))?
         .ok_or_else(|| not_found(format!("folder {id}")))?;
 
         for (child_id, child_name) in new_names {
-            sqlx::query("UPDATE folders SET name = $2, updated_at = NOW() WHERE id = $1")
-                .bind(child_id)
-                .bind(child_name)
-                .execute(&mut *tx)
+            let done = sqlx::query("UPDATE folders SET name = $2, updated_at = NOW() WHERE id = $1 AND mailbox_id = $3")
+                .bind(child_id).bind(child_name).bind(renamed.mailbox_id)
+                .execute(&mut **tx)
                 .await
                 .map_err(|e| unique_conflict(e.into(), format!("folder {child_name}")))?;
+            if done.rows_affected() != 1 { return Err(not_found(format!("folder {child_id}"))); }
         }
-
-        tx.commit().await?;
+        for (message_id, old_path, new_path) in paths {
+            let done = sqlx::query("UPDATE messages SET storage_path = $2, updated_at = NOW() WHERE id = $1 AND storage_path = $3 AND mailbox_id = $4")
+                .bind(message_id).bind(new_path).bind(old_path).bind(renamed.mailbox_id)
+                .execute(&mut **tx).await?;
+            if done.rows_affected() != 1 {
+                return Err(StorageError::Conflict(format!("message {message_id} changed during folder rename")));
+            }
+        }
+        if let Some(user) = user {
+            let owned: Option<(i64,)> = sqlx::query_as("SELECT id FROM mailboxes WHERE id = $1 AND user_id = $2")
+                .bind(renamed.mailbox_id).bind(user.get()).fetch_optional(&mut **tx).await?;
+            if owned.is_none() { return Err(not_found(format!("folder {id}"))); }
+            append_folder_change(tx, user, &renamed, "folder_updated").await?;
+            for (child_id, _) in new_names {
+                let child: Folder = sqlx::query_as("SELECT * FROM folders WHERE id = $1")
+                    .bind(child_id).fetch_one(&mut **tx).await?;
+                append_folder_change(tx, user, &child, "folder_updated").await?;
+            }
+        }
         Ok(renamed)
     }
 
@@ -752,6 +831,31 @@ impl FoldersRepository {
             .execute(&self.pool)
             .await?;
         touched(done.rows_affected(), id)
+    }
+
+    /// Change a subscription and its FCP cursor entry in one transaction.
+    pub async fn set_subscribed_logged(
+        &self, id: MailboxId, subscribed: bool, user: UserId,
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        let changed: Option<Folder> = sqlx::query_as(
+            "UPDATE folders f SET subscribed = $2, updated_at = NOW()
+               FROM mailboxes b WHERE f.id = $1 AND f.mailbox_id = b.id
+                 AND b.user_id = $3 AND f.subscribed IS DISTINCT FROM $2
+               RETURNING f.*",
+        ).bind(id.get()).bind(subscribed).bind(user.get())
+            .fetch_optional(&mut *tx).await?;
+        if let Some(folder) = changed {
+            append_folder_change(&mut tx, user, &folder, "folder_updated").await?;
+        } else {
+            let present: Option<(i64,)> = sqlx::query_as(
+                "SELECT f.id FROM folders f JOIN mailboxes b ON b.id = f.mailbox_id
+                  WHERE f.id = $1 AND b.user_id = $2",
+            ).bind(id.get()).bind(user.get()).fetch_optional(&mut *tx).await?;
+            if present.is_none() { return Err(not_found(format!("folder {id}"))); }
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Set or clear the `special_use` marker.
@@ -773,6 +877,20 @@ impl FoldersRepository {
             .execute(&self.pool)
             .await?;
         Ok(done.rows_affected() > 0)
+    }
+
+    /// Delete a user's folder and record its FCP tombstone in one transaction.
+    pub async fn delete_logged(&self, id: MailboxId, user: UserId) -> Result<bool> {
+        let mut tx = self.pool.begin().await?;
+        let folder: Option<Folder> = sqlx::query_as(
+            "DELETE FROM folders f USING mailboxes b WHERE f.id = $1
+               AND f.mailbox_id = b.id AND b.user_id = $2 RETURNING f.*",
+        ).bind(id.get()).bind(user.get()).fetch_optional(&mut *tx).await?;
+        if let Some(folder) = &folder {
+            append_folder_change(&mut tx, user, folder, "folder_deleted").await?;
+        }
+        tx.commit().await?;
+        Ok(folder.is_some())
     }
 
     /// Atomically hand out the next IMAP UID.
@@ -846,6 +964,21 @@ impl FoldersRepository {
         .await?
         .ok_or_else(|| not_found(format!("folder {id}")))
     }
+}
+
+/// Append one folder cursor change before committing its row mutation.
+async fn append_folder_change(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, user: UserId,
+    folder: &Folder, kind: &str,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO change_log (user_id, mailbox_id, folder_id, kind, payload)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(user.get()).bind(folder.mailbox_id).bind(folder.id).bind(kind)
+    .bind(serde_json::json!({"name": folder.name}))
+    .execute(&mut **tx).await?;
+    Ok(())
 }
 
 /// Spell `INBOX` canonically, and trim everything else.

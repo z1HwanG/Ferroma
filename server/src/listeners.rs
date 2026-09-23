@@ -14,6 +14,7 @@ use ferroma_core::{FerromaError, Result};
 use ferroma_imap::{ImapServer, ImapServerConfig};
 use ferroma_smtp::server::{SmtpServer, SmtpServerConfig, SmtpServerHandle};
 use ferroma_storage::{Maildir, Repositories};
+use ferroma_sync::SyncService;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_rustls::TlsAcceptor;
 
@@ -78,6 +79,8 @@ pub struct ListenerFactories {
     pub tls: Option<TlsAcceptor>,
     /// Shared event bus for IMAP IDLE notifications.
     pub events: Arc<ferroma_events::EventBus>,
+    /// Shared sync service for IMAP changes, retained across listener restarts.
+    pub sync: Arc<SyncService>,
 }
 
 enum Command {
@@ -227,7 +230,8 @@ async fn start_imap(
         Arc::new(factories.repos.clone()),
         Arc::new(factories.maildir.clone()),
     )?
-    .with_events(Arc::clone(&factories.events));
+    .with_events(Arc::clone(&factories.events))
+    .with_sync(Arc::clone(&factories.sync));
     if let Some(acceptor) = factories.tls.clone() {
         server = server.with_tls(acceptor);
     }

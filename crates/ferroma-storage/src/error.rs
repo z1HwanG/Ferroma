@@ -13,7 +13,7 @@ use ferroma_core::FerromaError;
 pub enum StorageError {
     /// The database rejected the query, or the connection failed.
     #[error("database error: {0}")]
-    Database(#[from] sqlx::Error),
+    Database(sqlx::Error),
 
     /// Migrations could not be applied.
     #[error("migration error: {0}")]
@@ -59,6 +59,17 @@ pub enum StorageError {
 
 /// Convenience alias.
 pub type Result<T, E = StorageError> = std::result::Result<T, E>;
+
+impl From<sqlx::Error> for StorageError {
+    fn from(err: sqlx::Error) -> Self {
+        if let sqlx::Error::Database(db) = &err {
+            if db.constraint() == Some("active_queue_message_delete_guard") {
+                return Self::Conflict("message is referenced by an active delivery queue entry".into());
+            }
+        }
+        Self::Database(err)
+    }
+}
 
 impl StorageError {
     /// Whether retrying the same call later could succeed.

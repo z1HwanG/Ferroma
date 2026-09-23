@@ -633,6 +633,33 @@ async fn imap_subjects(user: &str, password: &str, folder: &str) -> Vec<String> 
         .collect()
 }
 
+/// Run authenticated IMAP commands against the same server FCP sync reads.
+async fn imap_mutations(user: &str, password: &str, folder: &str, commands: &[&str]) {
+    let stream = TcpStream::connect(("127.0.0.1", IMAP_PORT)).await.expect("connect IMAP");
+    let (read, mut write) = stream.into_split();
+    let mut reader = BufReader::new(read);
+    let mut greeting = String::new();
+    reader.read_line(&mut greeting).await.expect("IMAP greeting");
+    assert!(greeting.starts_with("* OK"));
+    let lines = [format!("LOGIN {user} \"{password}\""),
+        format!("SELECT {folder}")];
+    for (index, line) in lines.iter().map(String::as_str).chain(commands.iter().copied()).enumerate() {
+        let tag = format!("a{}", index + 1);
+        write.write_all(format!("{tag} {line}\r\n").as_bytes()).await.expect("IMAP write");
+        write.flush().await.expect("IMAP flush");
+        loop {
+            let mut response = String::new();
+            tokio::time::timeout(Duration::from_secs(10), reader.read_line(&mut response))
+                .await.expect("IMAP reply deadline").expect("IMAP reply");
+            assert!(!response.is_empty(), "IMAP disconnected during {line}");
+            if response.starts_with(&format!("{tag} ")) {
+                assert!(response.starts_with(&format!("{tag} OK")), "{line}: {response}");
+                break;
+            }
+        }
+    }
+}
+
 // -----------------------------------------------------------------------------
 // The acceptance run
 // -----------------------------------------------------------------------------
@@ -894,6 +921,17 @@ async fn the_sync_cursor_sees_the_delivery() {
             || page["next_cursor"].as_i64().unwrap_or(0) > 0,
         "the cursor must advance: {page}"
     );
+    let cursor = page["next_cursor"].as_str().map(str::to_string)
+        .unwrap_or_else(|| page["next_cursor"].to_string());
+    imap_mutations(BOB, PASSWORD, "INBOX", &["STORE 1 +FLAGS (\\Seen)", "COPY 1 Archive"]).await;
+    let (status, changes) = http_json("GET", &format!(
+        "http://127.0.0.1:{API_PORT}/api/v1/client/sync?mailbox_id={mailbox_id}&folder_id={folder_id}&cursor={cursor}"
+    ), None, Some(&token)).await;
+    assert_eq!(status, 200, "sync after IMAP writes must succeed: {changes}");
+    let kinds: Vec<_> = changes["changes"].as_array().expect("changes array")
+        .iter().filter_map(|entry| entry["type"].as_str()).collect();
+    assert_eq!(kinds, ["message_updated", "message_created"],
+        "IMAP STORE and COPY must reach FCP in order: {changes}");
     server.cleanup().await;
 
 }

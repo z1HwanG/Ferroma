@@ -280,7 +280,7 @@ source of values.
 | Inbound commands per minute per IP | `limits.smtp_rate_limit` | 100 | command loop, sliding window per IP | `421 4.7.0 Too many commands, slow down` |
 | Submission messages per hour per account | `limits.submission_rate_limit` | 50 | on acceptance of an authenticated transaction | `452 4.7.0 Submission rate limit exceeded` |
 | Messages per account per day | `limits.daily_send_limit` | 500 | on acceptance, counted from `mail_queue`, not from memory | `452 4.7.0 Daily send limit exceeded` |
-| Mailbox quota | `users.quota_bytes`, `mailboxes.quota_bytes`, `limits.mailbox_quota` | 1 GiB | `MailboxesRepository::check_quota(mailbox_id, needed)` before the Maildir write | `452 4.2.2 Mailbox full` — temporary, so the sender retries after the user frees space |
+| Mailbox quota | `users.quota_bytes`, `mailboxes.quota_bytes`, `limits.mailbox_quota` | 1 GiB | advisory precheck plus live usage and whole-batch quota check under user locks in the inbound SQL transaction | `452 4.2.2 Mailbox full` — temporary, so the sender retries after the user frees space |
 | Command timeout | `smtp.command_timeout_secs` | 300 | command loop, per read | `421 4.4.2 Timeout waiting for command`, then close |
 | `DATA` timeout | `smtp.data_timeout_secs` | 600 | body reader | `421 4.4.2 Timeout waiting for data`, then close |
 | MIME nesting depth | `limits.max_mime_depth` | 20 | MIME parser (`ParseLimits` in `ferroma-mail`) | `552 5.3.4 MIME nesting deeper than 20 levels` — the message is refused, not filed into `Junk` |
@@ -480,7 +480,7 @@ retry schedule.
 
 | Column | Meaning |
 |---|---|
-| `mail_queue.message_id` | the stored copy the delivery is for; `ON DELETE CASCADE` |
+| `mail_queue.message_id` | the stored copy the delivery is for; deleting its row is refused while a queue entry is pending, retrying or delivering (a database guard also covers folder/account cascades) |
 | `mail_queue.sender` | envelope reverse-path |
 | `mail_queue.recipient` | envelope forward-path — one row per recipient, so one bad recipient does not delay the others |
 | `mail_queue.attempts` / `max_attempts` | attempts so far / the cap (`queue.max_attempts`, 12) |
@@ -489,10 +489,20 @@ retry schedule.
 | `mail_queue.remote_mx` | the host that was tried |
 | `mail_queue.delivered_at` | when it finally worked |
 
+Cancellation succeeds only for `pending` or `retry`: once a worker claims a row,
+remote SMTP may already have accepted it, so `delivering` cannot honestly be
+reported as cancelled. The sender must wait for the outcome before retrying a
+cancel request.
+
 Every attempt also writes a `delivery_attempts` row (`queue_id`, `attempt`,
 `remote_mx`, `status_code`, `status_text`, `error`, `duration_ms`), which is what
 the Admin "Delivery Logs" screen reads. Attempts are history; the queue row is
-state.
+state. On worker startup, a single-process Ferroma deployment returns claims
+left in `delivering` by a previous process to `retry` before polling. While it
+runs, claims older than one day are requeued on the next poll to recover from a
+failed status update without stealing a merely slow attempt. A crash after a
+remote MX accepted DATA but before the delivered state was recorded can still
+cause duplicate delivery on retry: SMTP cannot provide exactly-once delivery.
 
 ### 11.2 MX resolution
 
@@ -662,6 +672,17 @@ errors itself by string-matching a message is a bug; add a variant or fix
 | SPF hard fail (`-all`) | no rejection on its own — the verdict goes into `Authentication-Results` and feeds DMARC | — |
 | DMARC failure with `p=reject` | `550 5.7.1 Message rejected by the DMARC policy of <domain>` | 5xx |
 | DKIM verification failure | no rejection on its own — the verdict feeds DMARC alignment | — |
+
+For unauthenticated inbound mail, all previously accepted local recipients
+share one DATA acceptance decision: Ferroma stages their Maildir bodies, then
+commits every message row, recipient row, quota update and sync change in a
+single PostgreSQL transaction. If any mailbox is full, DATA returns `452` and
+no recipient receives a partial copy; a storage failure likewise rolls the
+whole transaction back and returns a temporary error. This matters because
+SMTP provides only one reply after DATA: acknowledging one successful mailbox
+with `250` while silently losing another previously accepted RCPT is unsafe.
+Authenticated outbound submission still has a separate per-recipient queueing
+path; this atomic inbound guarantee does not extend to it yet.
 
 Two corrections to the intuition above, both deliberate:
 

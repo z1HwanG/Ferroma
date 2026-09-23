@@ -35,6 +35,7 @@ use ferroma_events::{Event, EventBus, EventScope, SubscriptionError};
 use ferroma_mail::{Flags, ParsedMessage};
 use ferroma_storage::models::{Folder, Message};
 use ferroma_storage::repository::NewMessage;
+use ferroma_storage::relocate::{relocate_message, Destination, Relocation};
 use ferroma_storage::{Maildir, Repositories};
 
 use crate::config::ImapServerConfig;
@@ -449,6 +450,8 @@ pub struct SessionContext {
     pub authenticator: Arc<dyn Authenticator>,
     /// Where mailbox changes are published and `IDLE` listens.
     pub events: Option<Arc<EventBus>>,
+    /// Durable FCP change recording for mailbox mutations.
+    pub sync: Option<Arc<ferroma_sync::SyncService>>,
     /// This connection's id, for structured logs.
     pub connection_id: u64,
     /// The peer address, for structured logs.
@@ -478,6 +481,7 @@ impl SessionContext {
             maildir,
             authenticator,
             events: None,
+            sync: None,
             connection_id: 0,
             remote_ip: String::new(),
         }
@@ -486,6 +490,12 @@ impl SessionContext {
     /// Attach an event bus, enabling `IDLE` push.
     pub fn with_events(mut self, events: Arc<EventBus>) -> Self {
         self.events = Some(events);
+        self
+    }
+
+    /// Attach durable cursor recording for mailbox mutations.
+    pub fn with_sync(mut self, sync: Arc<ferroma_sync::SyncService>) -> Self {
+        self.sync = Some(sync);
         self
     }
 
@@ -1244,12 +1254,14 @@ impl ImapSession {
         }
 
         let special_use = special_use_for(&canonical);
-        self.context
-            .repos
-            .folders
-            .create_in(mailbox_id, &canonical, parent_id, special_use)
-            .await
-            .map_err(FerromaError::storage)?;
+        if let (Some(_sync), Some(user)) = (&self.context.sync, self.user) {
+            self.context.repos.folders.create_in_logged(
+                mailbox_id, &canonical, parent_id, special_use, user,
+            ).await.map_err(FerromaError::storage)?;
+        } else {
+            self.context.repos.folders.create_in(mailbox_id, &canonical, parent_id, special_use)
+                .await.map_err(FerromaError::storage)?;
+        }
         self.create_disk_folder(&canonical)?;
         out.send(&Response::tagged_ok(tag, "CREATE completed", None));
         Ok(SessionFlow::Continue)
@@ -1317,13 +1329,11 @@ impl ImapSession {
             return Ok(SessionFlow::Continue);
         }
 
-        let removed = self
-            .context
-            .repos
-            .folders
-            .delete(folder.folder_id())
-            .await
-            .map_err(FerromaError::storage)?;
+        let removed = if let (Some(_sync), Some(user)) = (&self.context.sync, self.user) {
+            self.context.repos.folders.delete_logged(folder.folder_id(), user).await
+        } else {
+            self.context.repos.folders.delete(folder.folder_id()).await
+        }.map_err(FerromaError::storage)?;
         if !removed {
             out.send(&Response::tagged_no(
                 tag,
@@ -1398,18 +1408,10 @@ impl ImapSession {
             return Ok(SessionFlow::Continue);
         }
 
-        self.context
-            .repos
-            .folders
-            .rename(folder.folder_id(), &to)
-            .await
-            .map_err(FerromaError::storage)?;
-        if let (Some(domain), Some(local)) = (self.domain.as_deref(), self.local_part.as_deref()) {
-            let _ = self
-                .context
-                .maildir
-                .rename_folder(domain, local, &from, &to);
-        }
+        ferroma_storage::rename_folder_tree(
+            &self.context.repos, &self.context.maildir, folder.folder_id(),
+            &to, None, self.user.filter(|_| self.context.sync.is_some()),
+        ).await.map_err(FerromaError::storage)?;
         out.send(&Response::tagged_ok(tag, "RENAME completed", None));
         Ok(SessionFlow::Continue)
     }
@@ -1445,12 +1447,13 @@ impl ImapSession {
             ));
             return Ok(SessionFlow::Continue);
         };
-        self.context
-            .repos
-            .folders
-            .set_subscribed(folder.folder_id(), subscribe)
-            .await
-            .map_err(FerromaError::storage)?;
+        if folder.subscribed != subscribe {
+            if let (Some(_sync), Some(user)) = (&self.context.sync, self.user) {
+                self.context.repos.folders.set_subscribed_logged(folder.folder_id(), subscribe, user).await
+            } else {
+                self.context.repos.folders.set_subscribed(folder.folder_id(), subscribe).await
+            }.map_err(FerromaError::storage)?;
+        }
         out.send(&Response::tagged_ok(
             tag,
             if subscribe {
@@ -1692,7 +1695,7 @@ impl ImapSession {
             .context
             .repos
             .messages
-            .insert(NewMessage {
+            .insert_logged(NewMessage {
                 folder_id: folder.folder_id(),
                 mailbox_id,
                 rfc_message_id: parsed
@@ -1713,17 +1716,24 @@ impl ImapSession {
                 has_attachments,
                 attachment_count,
                 is_draft: flag_set.draft(),
-            })
-            .await
-            .map_err(FerromaError::storage)?;
-
-        // Keep the write-time account usage in step with the new message.
-        let _ = self
-            .context
-            .repos
-            .mailboxes
-            .add_usage(mailbox_id, message.len() as i64)
+            }, self.user.filter(|_| self.context.sync.is_some()))
             .await;
+        let inserted = match inserted {
+            Ok(row) => row,
+            Err(error) => {
+                if let Err(cleanup) = self.context.maildir.delete(&stored.path) {
+                    tracing::warn!(path = %stored.path, %cleanup, "could not remove failed APPEND body");
+                }
+                if matches!(error, ferroma_storage::StorageError::QuotaExceeded { .. }) {
+                    out.send(&Response::tagged_no(tag, "Mailbox is over quota", Some(ResponseCode::OverQuota)));
+                    return Ok(SessionFlow::Continue);
+                }
+                return Err(FerromaError::storage(error));
+            }
+        };
+        if self.context.sync.is_none() {
+            let _ = self.context.repos.mailboxes.add_usage(mailbox_id, message.len() as i64).await;
+        }
 
         self.publish(
             EventScope::User(self.user.unwrap_or_else(|| UserId::new(0))),
@@ -1795,23 +1805,17 @@ impl ImapSession {
     /// messages the client did not ask about. A targeted read-then-delete is the
     /// only way to honour `EXPUNGE`'s and `UID EXPUNGE`'s contract.
     async fn expunge_one(&mut self, id: MessageId) -> Result<(), FerromaError> {
-        let Some(row) = self
-            .context
-            .repos
-            .messages
-            .hard_delete(id)
-            .await
-            .map_err(FerromaError::storage)?
-        else {
-            return Ok(());
-        };
+        let row = if let (Some(_sync), Some(user)) = (&self.context.sync, self.user) {
+            self.context.repos.messages.hard_delete_logged(id, user).await
+        } else {
+            self.context.repos.messages.hard_delete(id).await
+        }.map_err(FerromaError::storage)?;
+        let Some(row) = row else { return Ok(()); };
         self.remove_body_file(&row.storage_path);
-        let _ = self
-            .context
-            .repos
-            .mailboxes
-            .add_usage(MailboxId::new(row.mailbox_id), -row.size_bytes.max(0))
-            .await;
+        if self.context.sync.is_none() {
+            let _ = self.context.repos.mailboxes
+                .add_usage(MailboxId::new(row.mailbox_id), -row.size_bytes.max(0)).await;
+        }
         Ok(())
     }
 
@@ -2134,12 +2138,13 @@ impl ImapSession {
         // persisted here, which is the only place IMAP writes a flag as a side
         // effect of a read.
         if !mark_seen.is_empty() {
+            mark_seen.sort_unstable_by_key(|id| id.get());
+            mark_seen.dedup();
             if let Err(err) = self.persist_seen(&mark_seen).await {
-                tracing::warn!(
-                    connection_id = self.context.connection_id,
-                    error = %err,
-                    "imap could not persist \\Seen"
-                );
+                tracing::warn!(connection_id = self.context.connection_id, error = %err,
+                    "imap could not persist \\Seen");
+                out.send(&Response::tagged_no(tag, "Could not update message flags", None));
+                return Ok(SessionFlow::Continue);
             }
         }
         let _ = implicit_seen;
@@ -2167,24 +2172,48 @@ impl ImapSession {
     /// Add `\Seen` to messages, in the database and in their Maildir names.
     async fn persist_seen(&mut self, ids: &[MessageId]) -> Result<(), FerromaError> {
         for id in ids {
-            self.context
-                .repos
-                .messages
-                .mark_seen(*id, true)
-                .await
+            let Some((before_path, before_flags)) = self.selected.as_ref()
+                .and_then(|selected| selected.messages.iter().find(|message| message.id == *id))
+                .map(|message| (message.storage_path.clone(), message.flags.clone()))
+            else { continue; };
+            let mut flags = Flags::parse(&before_flags);
+            if flags.seen() { continue; }
+            flags.set_seen(true);
+            let updated_flags = flags_to_column(&flags);
+            let new_path = self.context.maildir.stage_flags(&before_path, &updated_flags)
                 .map_err(FerromaError::storage)?;
-            if let Some(selected) = self.selected.as_mut() {
-                if let Some(message) = selected.messages.iter_mut().find(|m| m.id == *id) {
-                    let mut flags = message.flag_set();
-                    flags.set_seen(true);
-                    message.flags = flags_to_column(&flags);
-                    let updated = self
-                        .context
-                        .maildir
-                        .set_flags(&message.storage_path, &message.flags);
-                    if let Ok(path) = updated {
-                        message.storage_path = path;
+            let result = if let (Some(_sync), Some(user)) = (&self.context.sync, self.user) {
+                self.context.repos.messages.set_flags_with_path_logged(
+                    *id, user, &before_path, &new_path, &updated_flags,
+                ).await
+            } else {
+                let result = self.context.repos.messages.set_flags(*id, &updated_flags).await;
+                let result = if result.is_ok() && new_path != before_path {
+                    self.context.repos.messages.set_storage_path(*id, &new_path).await
+                } else { result };
+                match result {
+                    Ok(()) => self.context.repos.messages.require_by_id(*id).await,
+                    Err(error) => Err(error),
+                }
+            };
+            if let Err(error) = result {
+                if new_path != before_path {
+                    if let Err(cleanup) = self.context.maildir.delete(&new_path) {
+                        tracing::warn!(message_id = %id, %cleanup,
+                            "could not remove staged body after failed implicit Seen update");
                     }
+                }
+                return Err(FerromaError::storage(error));
+            }
+            if new_path != before_path {
+                if let Err(cleanup) = self.context.maildir.delete(&before_path) {
+                    tracing::warn!(message_id = %id, %cleanup, "old body remains after Seen update");
+                }
+            }
+            if let Some(selected) = self.selected.as_mut() {
+                if let Some(message) = selected.messages.iter_mut().find(|message| message.id == *id) {
+                    message.flags = updated_flags;
+                    message.storage_path = new_path;
                 }
             }
             self.publish(
@@ -2271,24 +2300,43 @@ impl ImapSession {
                 }
                 continue;
             }
-            self.context
-                .repos
-                .messages
-                .set_flags(id, &updated)
-                .await
-                .map_err(FerromaError::storage)?;
-            let new_path = self
-                .context
-                .maildir
-                .set_flags(&storage_path, &updated)
-                .unwrap_or_else(|_| storage_path.clone());
+            let new_path = match self.context.maildir.stage_flags(&storage_path, &updated) {
+                Ok(path) => path,
+                Err(error) => {
+                    tracing::warn!(message_id = %id, %error, "IMAP STORE Maildir rename failed");
+                    out.send(&Response::tagged_no(tag, "Could not update message flags", None));
+                    return Ok(SessionFlow::Continue);
+                }
+            };
+            let changed = if let (Some(_sync), Some(user)) = (&self.context.sync, self.user) {
+                self.context.repos.messages.set_flags_with_path_logged(
+                    id, user, &storage_path, &new_path, &updated,
+                ).await
+            } else {
+                let result = self.context.repos.messages.set_flags(id, &updated).await;
+                let result = if result.is_ok() && new_path != storage_path {
+                    self.context.repos.messages.set_storage_path(id, &new_path).await
+                } else { result };
+                match result {
+                    Ok(()) => self.context.repos.messages.require_by_id(id).await,
+                    Err(error) => Err(error),
+                }
+            };
+            if let Err(error) = changed {
+                if new_path != storage_path {
+                    if let Err(cleanup) = self.context.maildir.delete(&new_path) {
+                        tracing::warn!(message_id = %id, %cleanup,
+                            "could not remove staged flags body after database failure");
+                    }
+                }
+                tracing::warn!(message_id = %id, %error, "IMAP STORE database update failed");
+                out.send(&Response::tagged_no(tag, "Could not update message flags", None));
+                return Ok(SessionFlow::Continue);
+            }
             if new_path != storage_path {
-                self.context
-                    .repos
-                    .messages
-                    .set_storage_path(id, &new_path)
-                    .await
-                    .map_err(FerromaError::storage)?;
+                if let Err(cleanup) = self.context.maildir.delete(&storage_path) {
+                    tracing::warn!(message_id = %id, %cleanup, "old body remains after STORE");
+                }
             }
             if let Some(selected) = self.selected.as_mut() {
                 if let Some(message) = selected.messages.get_mut(index) {
@@ -2296,6 +2344,7 @@ impl ImapSession {
                     message.storage_path = new_path;
                 }
             }
+            // The logged database update committed the cursor entry with the flags.
             self.publish(
                 EventScope::User(self.user.unwrap_or_else(|| UserId::new(0))),
                 Event::mail_flag_changed(folder_id, id, updated.clone()),
@@ -2371,6 +2420,23 @@ impl ImapSession {
             return Ok(SessionFlow::Continue);
         }
 
+        // Reject an over-quota batch before creating any of its copies. The
+        // repository checks the actual live messages, not a stale usage cache.
+        if !move_messages {
+            let needed = targets.iter().try_fold(0i64, |sum, message| sum.checked_add(message.size.max(0)));
+            let quota = match needed {
+                Some(needed) => self.context.repos.mailboxes.check_quota(source_mailbox, needed).await,
+                None => {
+                    out.send(&Response::tagged_no(tag, "Mailbox is over quota", Some(ResponseCode::OverQuota)));
+                    return Ok(SessionFlow::Continue);
+                }
+            };
+            if quota.is_err() {
+                out.send(&Response::tagged_no(tag, "Mailbox is over quota", Some(ResponseCode::OverQuota)));
+                return Ok(SessionFlow::Continue);
+            }
+        }
+
         let Some(destination_folder) = self
             .context
             .repos
@@ -2405,68 +2471,21 @@ impl ImapSession {
                 .require_by_id(message.id)
                 .await
                 .map_err(FerromaError::storage)?;
-            let copied_row = if move_messages {
-                self.context
-                    .repos
-                    .messages
-                    .move_to_folder(
-                        message.id,
-                        destination_folder.folder_id(),
-                        source_mailbox,
-                    )
-                    .await
-                    .map_err(FerromaError::storage)?
-            } else {
-                self.context
-                    .repos
-                    .messages
-                    .copy_to_folder(
-                        message.id,
-                        destination_folder.folder_id(),
-                        source_mailbox,
-                    )
-                    .await
-                    .map_err(FerromaError::storage)?
+            let copied_row = match relocate_message(&self.context.repos, &self.context.maildir,
+                &row, Destination { folder_id: destination_folder.folder_id(),
+                    folder_name: &canonical, domain: &domain, local_part: &local },
+                if move_messages { Relocation::Move } else { Relocation::Copy },
+                self.user.filter(|_| self.context.sync.is_some()),
+            ).await {
+                Ok(row) => row,
+                Err(error) => {
+                    tracing::warn!(message_id = row.id, %error, "IMAP message relocation failed");
+                    out.send(&Response::tagged_no(tag, "Could not file message", None));
+                    return Ok(SessionFlow::Continue);
+                }
             };
 
-            // The body file moves to the destination folder's Maildir. The
-            // database row is authoritative, and both `store` and `delete` are
-            // idempotent, so a partial failure here cannot corrupt the mailbox.
-            let bytes = self.context.maildir.read(&row.storage_path).ok();
-            let new_path = match bytes {
-                Some(bytes) => self
-                    .context
-                    .maildir
-                    .store(&domain, &local, &canonical, &bytes, &copied_row.flags)
-                    .ok()
-                    .map(|stored| stored.path),
-                None => None,
-            };
-            match new_path {
-                Some(path) => {
-                    let _ = self
-                        .context
-                        .repos
-                        .messages
-                        .set_storage_path(copied_row.message_id(), &path)
-                        .await;
-                    if move_messages {
-                        let _ = self.context.maildir.delete(&row.storage_path);
-                    }
-                }
-                None => {
-                    // No bytes to copy: the row would point at a missing file, so
-                    // undo the row rather than leave a dangling reference.
-                    let _ = self
-                        .context
-                        .repos
-                        .messages
-                        .hard_delete(copied_row.message_id())
-                        .await;
-                    continue;
-                }
-            }
-
+            // The shared relocation commits the FCP change with the row.
             source_uids.push(message.uid.max(0) as u64);
             dest_uids.push(copied_row.uid.max(0) as u64);
             if move_messages {
@@ -2474,13 +2493,14 @@ impl ImapSession {
             }
             self.publish(
                 EventScope::User(self.user.unwrap_or_else(|| UserId::new(0))),
-                Event::mail_moved(
-                    source_folder.folder_id(),
-                    destination_folder.folder_id(),
-                    copied_row.message_id(),
-                ),
-            )
-            .await;
+                if move_messages {
+                    Event::mail_moved(
+                        source_folder.folder_id(), destination_folder.folder_id(), copied_row.message_id(),
+                    )
+                } else {
+                    Event::mail_received(destination_folder.folder_id(), copied_row.message_id())
+                },
+            ).await;
         }
 
         if move_messages && !moved_ids.is_empty() {

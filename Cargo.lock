@@ -714,6 +714,7 @@ dependencies = [
  "ferroma-events",
  "ferroma-mail",
  "ferroma-storage",
+ "ferroma-sync",
  "futures-util",
  "once_cell",
  "pretty_assertions",

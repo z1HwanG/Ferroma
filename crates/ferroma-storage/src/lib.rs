@@ -41,13 +41,17 @@
 pub mod attachment;
 pub mod database;
 pub mod error;
+pub mod folder_rename;
 pub mod maildir;
 pub mod models;
 pub mod repository;
+pub mod relocate;
+pub mod submission;
 
 pub use attachment::{AttachmentStore, StoredBlob};
 pub use database::{Database, PoolStats};
 pub use error::{Result, StorageError};
+pub use folder_rename::rename_folder_tree;
 pub use maildir::{Maildir, MaildirEntry, StoredMessage};
 pub use models::{
     Alias, AttachmentRow, AuditLog, ChangeLogEntry, ClientSyncState, DeliveryAttempt, Device,
@@ -55,3 +59,4 @@ pub use models::{
     Session, Setting, User,
 };
 pub use repository::Repositories;
+pub use submission::{store_submission, Submission};

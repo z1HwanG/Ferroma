@@ -14,6 +14,7 @@ ferroma-mail = { workspace = true }
 ferroma-storage = { workspace = true }
 ferroma-auth = { workspace = true }
 ferroma-events = { workspace = true }
+ferroma-sync = { workspace = true }
 tokio = { workspace = true }
 futures-util = { workspace = true }
 serde = { workspace = true }

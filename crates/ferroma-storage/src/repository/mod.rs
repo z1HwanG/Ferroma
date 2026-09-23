@@ -29,7 +29,7 @@ pub use auth::{DeviceUpsert, DevicesRepository, NewSession, SessionsRepository};
 pub use domains::{AliasesRepository, DomainsRepository};
 pub use mailboxes::{FoldersRepository, MailboxWithDomain, MailboxesRepository, NewMailbox};
 pub use messages::{
-    AttachmentsRepository, MessageSearch, MessagesRepository, NewAttachment, NewMessage, Recipient,
+    AttachmentsRepository, BatchMessage, MessageSearch, MessagesRepository, NewAttachment, NewMessage, Recipient,
 };
 pub use misc::{
     DraftUpdate, DraftsRepository, LoginAttemptsRepository, NewDraft, SettingsRepository,

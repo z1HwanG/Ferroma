@@ -394,6 +394,9 @@ async fn queue_cancel_only_touches_unfinished_entries() {
         .await
         .unwrap();
 
+    assert!(!repos.queue.cancel(pending).await.unwrap(), "in-flight delivery cannot be cancelled");
+    repos.queue.mark_retry(pending, chrono::Utc::now(), "retry", None, None, None)
+        .await.unwrap();
     assert!(repos.queue.cancel(pending).await.unwrap());
     assert!(!repos.queue.cancel(pending).await.unwrap(), "already cancelled");
     assert!(!repos.queue.cancel(delivered).await.unwrap(), "delivered is final");
@@ -453,6 +456,147 @@ async fn queue_requeue_stale_recovers_a_crashed_worker() {
 }
 
 #[tokio::test]
+async fn stale_worker_cannot_overwrite_reclaimed_attempt() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+    let id = enqueue(&t, &f, "leased@example.net").await;
+    let first = repos.queue.claim_due(1).await.unwrap().pop().unwrap();
+    assert_eq!(first.attempts, 1);
+    repos.queue.requeue_stale(Utc::now()).await.unwrap();
+    let newer = repos.queue.claim_due(1).await.unwrap().pop().unwrap();
+    assert_eq!(newer.attempts, 2);
+    assert!(!repos.queue.finish_claim(id, first.attempts, "delivered",
+        None, None, None, Some(250), None, false).await.unwrap());
+    assert_eq!(repos.queue.find_by_id(id).await.unwrap().unwrap().status, "delivering");
+    assert!(repos.queue.finish_claim(id, newer.attempts, "retry",
+        Some(Utc::now()), Some("temporary"), None, Some(451), None, false).await.unwrap());
+    assert_eq!(repos.queue.find_by_id(id).await.unwrap().unwrap().status, "retry");
+    assert!(!repos.queue.finish_claim(id, newer.attempts, "failed",
+        None, Some("too late"), None, None, None, true).await.unwrap());
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn bounce_task_persists_failure_retry_and_completion() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+    let id = enqueue(&t, &f, "dsn@example.net").await;
+    let delivery = repos.queue.claim_due(1).await.unwrap().pop().unwrap();
+    assert!(repos.queue.finish_claim(id, delivery.attempts, "failed", None,
+        Some("550 rejected"), None, Some(550), None, true).await.unwrap());
+    let failed = repos.queue.find_by_id(id).await.unwrap().unwrap();
+    assert_eq!(failed.status, "failed");
+    assert_eq!(failed.bounce_status, "pending");
+    assert_eq!(failed.bounce_attempts, 0);
+    assert!(failed.bounce_next_attempt_at.is_some());
+
+    let first = repos.queue.claim_due_bounces(1).await.unwrap().pop().unwrap();
+    assert_eq!(first.bounce_status, "processing");
+    assert_eq!(first.bounce_attempts, 1);
+    assert!(first.bounce_claimed_at.is_some());
+    assert!(repos.queue.claim_due_bounces(1).await.unwrap().is_empty());
+    // A queued DSN still owns the original message body.
+    let blocked = sqlx::query("DELETE FROM messages WHERE id = $1")
+        .bind(f.message_id.get()).execute(t.pool()).await;
+    assert!(blocked.is_err(), "pending/processing DSN must prevent cascading deletion");
+    let parent_blocked = sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(f.user_id.get()).execute(t.pool()).await;
+    assert!(parent_blocked.is_err(), "parent cascade must preserve a pending DSN body");
+
+    let later = Utc::now() + chrono::Duration::hours(1);
+    assert!(repos.queue.finish_bounce(id, first.bounce_attempts, false, Some(later), None).await.unwrap());
+    let retry = repos.queue.find_by_id(id).await.unwrap().unwrap();
+    assert_eq!(retry.bounce_status, "pending");
+    assert_eq!(retry.bounce_next_attempt_at.unwrap().timestamp_micros(), later.timestamp_micros());
+    assert!(retry.bounce_claimed_at.is_none());
+    assert!(repos.queue.claim_due_bounces(1).await.unwrap().is_empty());
+    sqlx::query("UPDATE mail_queue SET bounce_next_attempt_at = NOW() - INTERVAL '1 second' WHERE id = $1")
+        .bind(id.get()).execute(t.pool()).await.unwrap();
+    let second = repos.queue.claim_due_bounces(1).await.unwrap().pop().unwrap();
+    assert_eq!(second.bounce_attempts, 2);
+    assert!(!repos.queue.finish_bounce(id, first.bounce_attempts, true, None, None).await.unwrap());
+    assert!(repos.queue.finish_bounce(id, second.bounce_attempts, true, None,
+        Some(f.message_id)).await.unwrap());
+    let sent = repos.queue.find_by_id(id).await.unwrap().unwrap();
+    assert_eq!(sent.bounce_status, "sent");
+    assert_eq!(sent.bounce_message_id, Some(f.message_id.get()));
+    assert!(sent.bounce_next_attempt_at.is_none());
+    assert!(repos.queue.claim_due_bounces(1).await.unwrap().is_empty());
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn bounce_stale_recovery_and_historical_failures_are_safe() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+    let old = enqueue(&t, &f, "old@example.net").await;
+    repos.queue.mark_failed(old, "previous failure", None, None, None).await.unwrap();
+    assert_eq!(repos.queue.find_by_id(old).await.unwrap().unwrap().bounce_status, "skipped");
+    let quiet = enqueue(&t, &f, "quiet@example.net").await;
+    let claimed = repos.queue.claim_due(10).await.unwrap();
+    let attempt = claimed.iter().find(|row| row.id == quiet.get()).unwrap().attempts;
+    assert!(repos.queue.finish_claim(quiet, attempt, "failed", None,
+        Some("policy disabled"), None, None, None, false).await.unwrap());
+    assert_eq!(repos.queue.find_by_id(quiet).await.unwrap().unwrap().bounce_status, "skipped");
+    assert!(repos.queue.claim_due_bounces(10).await.unwrap().is_empty());
+    // A row that already says failed without an explicit DSN request is not due.
+    let legacy = enqueue(&t, &f, "legacy@example.net").await;
+    sqlx::query("UPDATE mail_queue SET status = 'failed' WHERE id = $1")
+        .bind(legacy.get()).execute(t.pool()).await.unwrap();
+    assert_eq!(repos.queue.find_by_id(legacy).await.unwrap().unwrap().bounce_status, "none");
+    assert!(repos.queue.claim_due_bounces(10).await.unwrap().is_empty());
+
+    let id = enqueue(&t, &f, "stuck@example.net").await;
+    let claimed = repos.queue.claim_due(1).await.unwrap().pop().unwrap();
+    assert!(repos.queue.finish_claim(id, claimed.attempts, "failed", None,
+        Some("failure"), None, None, None, true).await.unwrap());
+    let first = repos.queue.claim_due_bounces(1).await.unwrap().pop().unwrap();
+    assert_eq!(repos.queue.recover_stale_bounces(Utc::now() - chrono::Duration::hours(1)).await.unwrap(), 0);
+    sqlx::query("UPDATE mail_queue SET bounce_claimed_at = NOW() - INTERVAL '2 hours' WHERE id = $1")
+        .bind(id.get()).execute(t.pool()).await.unwrap();
+    assert_eq!(repos.queue.recover_stale_bounces(Utc::now() - chrono::Duration::minutes(30)).await.unwrap(), 1);
+    let next = repos.queue.claim_due_bounces(1).await.unwrap().pop().unwrap();
+    assert_eq!(next.bounce_attempts, first.bounce_attempts + 1);
+    assert!(!repos.queue.finish_bounce(id, first.bounce_attempts, true, None, None).await.unwrap());
+    assert!(repos.queue.finish_bounce(id, next.bounce_attempts, true, None, None).await.unwrap());
+    t.cleanup().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bounce_concurrent_claims_are_disjoint() {
+    let t = common::fresh_database_with_pool(16).await;
+    let f = fixture(&t).await;
+    let repos = t.repos();
+    for index in 0..24 {
+        enqueue(&t, &f, &format!("dsn{index}@example.net")).await;
+    }
+    let delivery = repos.queue.claim_due(24).await.unwrap();
+    for row in delivery {
+        assert!(repos.queue.finish_claim(row.queue_id(), row.attempts, "failed", None,
+            Some("permanent"), None, None, None, true).await.unwrap());
+    }
+    let mut handles = Vec::new();
+    for _ in 0..4 {
+        let repos = repos.clone();
+        handles.push(tokio::spawn(async move {
+            repos.queue.claim_due_bounces(24).await.expect("claim DSN")
+        }));
+    }
+    let mut ids = Vec::new();
+    for handle in handles {
+        ids.extend(handle.await.unwrap().into_iter().map(|row| row.id));
+    }
+    assert_eq!(ids.len(), 24);
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), 24, "no concurrent worker may claim the same DSN");
+    t.cleanup().await;
+}
+
+#[tokio::test]
 async fn queue_stats_lists_and_counts() {
     let t = setup!();
     let f = fixture(&t).await;
@@ -478,7 +622,9 @@ async fn queue_stats_lists_and_counts() {
         .await
         .unwrap();
     repos.queue.mark_failed(failed, "bounce", None, None, None).await.unwrap();
-    repos.queue.cancel(cancelled).await.unwrap();
+    repos.queue.mark_retry(cancelled, at(3600), "later", None, None, None)
+        .await.unwrap();
+    assert!(repos.queue.cancel(cancelled).await.unwrap());
     repos
         .queue
         .mark_delivered(delivered, None, Some(250), None)
@@ -1299,6 +1445,47 @@ async fn change_log_changes_since_is_exclusive_ordered_and_limited() {
 }
 
 #[tokio::test]
+async fn concurrent_change_transactions_commit_in_cursor_order_for_one_user() {
+    if !common::database_available().await { return; }
+    let t = common::fresh_database_with_pool(4).await;
+    let f = fixture(&t).await;
+    let triggers: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM pg_trigger WHERE tgrelid = 'change_log'::regclass
+            AND tgname = 'change_log_commit_order'",
+    ).fetch_one(t.pool()).await.unwrap();
+    assert_eq!(triggers.0, 1, "cursor trigger must be migrated");
+    let mut first = t.pool().begin().await.unwrap();
+    let first_seq: i64 = sqlx::query_scalar(
+        "INSERT INTO change_log (user_id, mailbox_id, kind, payload)
+         VALUES ($1, $2, 'message_updated', '{}'::jsonb) RETURNING seq",
+    ).bind(f.user_id.get()).bind(f.mailbox_id.get())
+        .fetch_one(&mut *first).await.unwrap();
+    let pool = t.pool().clone();
+    let user = f.user_id.get();
+    let mailbox = f.mailbox_id.get();
+    let second = tokio::spawn(async move {
+        let mut tx = pool.begin().await.unwrap();
+        let seq: i64 = sqlx::query_scalar(
+            "INSERT INTO change_log (user_id, mailbox_id, kind, payload)
+             VALUES ($1, $2, 'message_updated', '{}'::jsonb) RETURNING seq",
+        ).bind(user).bind(mailbox).fetch_one(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        seq
+    });
+    // The second writer must wait for the first transaction to finish, even if
+    // its sequence default was already evaluated. It cannot commit ahead of it.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(!second.is_finished(), "a later cursor cannot commit first");
+    assert!(t.repos().change_log.changes_since(f.user_id, Cursor::ZERO, 10).await.unwrap().is_empty());
+    first.commit().await.unwrap();
+    let second_seq = second.await.unwrap();
+    assert!(second_seq > first_seq);
+    let rows = t.repos().change_log.changes_since(f.user_id, Cursor::ZERO, 10).await.unwrap();
+    assert_eq!(rows.iter().map(|row| row.seq).collect::<Vec<_>>(), vec![first_seq, second_seq]);
+    t.cleanup().await;
+}
+
+#[tokio::test]
 async fn change_log_filters_by_mailbox_and_owner() {
     let t = setup!();
     let f = fixture(&t).await;
@@ -1989,10 +2176,13 @@ async fn queue_entries_disappear_with_their_message() {
     let f = fixture(&t).await;
     let repos = t.repos();
 
-    enqueue(&t, &f, "a@example.net").await;
-    enqueue(&t, &f, "b@example.net").await;
+    let first = enqueue(&t, &f, "a@example.net").await;
+    let second = enqueue(&t, &f, "b@example.net").await;
     assert_eq!(t.count("mail_queue").await, 2);
 
+    assert!(matches!(repos.messages.hard_delete(f.message_id).await, Err(StorageError::Conflict(_))));
+    repos.queue.mark_delivered(first, None, None, None).await.unwrap();
+    repos.queue.mark_failed(second, "permanent failure", None, None, None).await.unwrap();
     repos.messages.hard_delete(f.message_id).await.unwrap();
     assert_eq!(t.count("mail_queue").await, 0, "the queue cascades with the message");
 

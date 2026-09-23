@@ -44,7 +44,27 @@ IMAP 已经能同步邮件。项目书 §20 与 §53 明确指出 FCP 不取代�
 同时跑两套的代价是真实的：每个变更都必须能通过两个入口看到，
 这正是 [architecture.md](architecture.md) §3 中那条分层规则存在的原因。
 通过 IMAP 做的标志变更必须产生与通过 FCP 做的相同的 `change_log` 行，
-否则两种视图就会分叉。
+否则两种视图就会分叉。IMAP 监听器通过与 HTTP 入口相同的 `SyncService` 记录
+APPEND/COPY 创建、STORE 和 FETCH 隐式 `\\Seen` 更新、MOVE 以及 EXPUNGE 墓碑；
+CREATE/DELETE/RENAME/SUBSCRIBE 的文件夹变更也会记录。事件总线只负责内存推送，
+**不是**持久游标日志。
+
+IMAP 与 HTTP 的 COPY/MOVE 现在共用 `ferroma-storage::relocate_message`：先暂存目标
+Maildir 正文，再在同一 SQL 事务中更新文件夹、UID、路径及 FCP 变更日志；MOVE
+成功后才删除源文件。COPY 也在该事务中检查配额、修复缓存用量，防止并发 COPY 同时
+占用最后一份配额。正文写入、数据库更新或日志插入失败时，源信保持不变；故障注入
+测试覆盖这些情况。IMAP 和 REST 的文件夹重命名现也共用文件夹树协调器：先复制目标
+目录而保留可读的源文件，再在一个 SQL 事务中更新文件夹及后代名称、邮件路径和
+文件夹游标；SQL 失败时清理暂存的目标目录。并发写入或重命名同一邮箱仍需序列化，
+否则暂存快照之后新写入的文件可能遗漏。
+
+Maildir 与 PostgreSQL 无法共用一个崩溃时原子提交的事务：目标正文暂存后、SQL
+提交前崩溃仍可能留下孤儿文件；运维应在中断写入后运行 `ferroma storage verify`。
+IMAP STORE/FETCH 隐式 `\\Seen` 与 HTTP 标志更新把行、路径和游标一同提交；IMAP
+EXPUNGE/CLOSE 把逐条删除与游标墓碑一同提交。IMAP APPEND 及
+CREATE/DELETE/RENAME/SUBSCRIBE 也把行、适用时的用量和游标一同提交。
+其他协议路径仍可能在数据库写入后另行记录变更，崩溃后因此缺失游标；这些路径
+也需同样处理，才能宣称所有跨协议变更都具有崩溃原子性。
 
 ---
 
@@ -114,7 +134,7 @@ CREATE TABLE change_log (
 
 | 性质 | `seq` 如何满足 |
 |---|---|
-| 单调 | `BIGSERIAL`，由 PostgreSQL 分配，在一个序列内绝不重复使用 |
+| 单调 | `BIGSERIAL`；迁移 0007 在每用户事务锁之后重新分配可见序号，使该用户的游标遵循提交顺序；序号仍可能有空缺 |
 | 可比较 | `seq > $2` 就是整个查询 |
 | 便宜 | `client_sync_states` 中每个（设备、邮箱、文件夹）一个 `BIGINT` |
 | 不透明 | 客户端把它当作字符串，绝不解析它（[fcp.md](fcp.md) §3） |

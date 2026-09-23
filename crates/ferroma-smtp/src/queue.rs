@@ -250,6 +250,21 @@ impl QueueWorker {
     /// Returns when the loop has stopped *and* every attempt already in flight has
     /// finished, so a caller that awaits `run` knows nothing is still writing.
     pub async fn run(mut self, mut shutdown: watch::Receiver<bool>) {
+        // This deployment has one queue worker process. A previous process cannot
+        // still own a claim after restart; return every abandoned claim before
+        // polling. A remote MX may already have accepted it, so delivery remains
+        // at-least-once rather than exactly-once across a process crash.
+        if let Err(error) = self.recover_stale(Utc::now()).await {
+            tracing::warn!(%error, "could not recover queue claims on startup");
+        }
+        if let Err(error) = self
+            .repos
+            .queue
+            .recover_stale_bounces(Utc::now())
+            .await
+        {
+            tracing::warn!(%error, "could not recover bounce claims on startup");
+        }
         tracing::info!(
             workers = self.config.workers,
             poll_interval_secs = self.config.poll_interval.as_secs(),
@@ -265,6 +280,11 @@ impl QueueWorker {
                 Ok(0) => {}
                 Ok(count) => tracing::debug!(count, "queue batch dispatched"),
                 Err(e) => tracing::warn!(error = %e, "queue batch failed"),
+            }
+            match self.dispatch_bounces().await {
+                Ok(0) => {}
+                Ok(count) => tracing::debug!(count, "bounce batch dispatched"),
+                Err(e) => tracing::warn!(error = %e, "bounce batch failed"),
             }
 
             if self.should_stop(&shutdown) {
@@ -294,10 +314,26 @@ impl QueueWorker {
         self.stop.load(Ordering::Acquire) || *shutdown.borrow()
     }
 
+    /// Return claims older than `older_than` to the retry queue.
+    ///
+    /// Startup calls this with the current time, since the previous process has
+    /// exited; active workers should only reclaim claims older than their maximum
+    /// delivery window. Returns the number recovered.
+    pub async fn recover_stale(&self, older_than: DateTime<Utc>) -> Result<usize, FerromaError> {
+        self.repos.queue.requeue_stale(older_than).await.map_err(FerromaError::storage)
+    }
+
     /// Claim and process one batch. Returns how many rows were claimed.
     ///
     /// Public so a test can drive exactly one round without a timer.
     pub async fn dispatch_batch(&mut self) -> Result<usize, FerromaError> {
+        // A database error after an attempt can leave a claim in `delivering`
+        // while this process stays alive. A full day is intentionally longer
+        // than the configured SMTP attempt: never steal a merely slow worker.
+        let recovered = self.recover_stale(Utc::now() - ChronoDuration::days(1)).await?;
+        if recovered > 0 {
+            tracing::warn!(recovered, "requeued abandoned delivery claims");
+        }
         let limit = self.config.workers.max(1) as i64;
         let claimed = self
             .repos
@@ -342,80 +378,42 @@ impl QueueWorker {
 
         self.record_attempt(&entry, &outcome, duration_ms).await;
 
-        match &outcome {
-            DeliveryOutcome::Delivered { .. } => {
-                self.delivered.fetch_add(1, Ordering::AcqRel);
-                if let Err(e) = self
-                    .repos
-                    .queue
-                    .mark_delivered(
-                        queue_id,
-                        outcome.host(),
-                        outcome.code().map(i32::from),
-                        Some(outcome.text()),
-                    )
-                    .await
-                {
-                    tracing::warn!(error = %e, queue_id = queue_id.get(), "could not mark delivered");
-                }
+        let (status, next, error) = match &outcome {
+            DeliveryOutcome::Delivered { .. } => ("delivered", None, None),
+            DeliveryOutcome::Temporary { .. } if self.config.may_retry(entry.attempts) => (
+                "retry", Some(Utc::now() + self.config.backoff_for_attempt(entry.attempts)),
+                Some(outcome.text()),
+            ),
+            _ => ("failed", None, Some(outcome.text())),
+        };
+        let completed = match self.repos.queue.finish_claim(
+            queue_id, entry.attempts, status, next, error,
+            outcome.host(), outcome.code().map(i32::from), Some(outcome.text()),
+            status == "failed" && self.config.bounce_on_failure && entry.user_id.is_some()
+                && EmailAddress::parse(entry.sender.trim()).is_ok(),
+        ).await {
+            Ok(true) => true,
+            Ok(false) => {
+                tracing::warn!(queue_id = queue_id.get(), attempts = entry.attempts,
+                    "stale delivery result did not overwrite a newer claim");
+                false
             }
-            DeliveryOutcome::Temporary { .. } if self.config.may_retry(entry.attempts) => {
-                let next = Utc::now() + self.config.backoff_for_attempt(entry.attempts);
-                if let Err(e) = self
-                    .repos
-                    .queue
-                    .mark_retry(
-                        queue_id,
-                        next,
-                        outcome.text(),
-                        outcome.host(),
-                        outcome.code().map(i32::from),
-                        Some(outcome.text()),
-                    )
-                    .await
-                {
-                    tracing::warn!(error = %e, queue_id = queue_id.get(), "could not mark retry");
-                }
-                tracing::info!(
-                    queue_id = queue_id.get(),
-                    message_id = message_id.get(),
-                    recipient = %entry.recipient,
-                    attempts = entry.attempts,
-                    next_attempt_at = %next,
-                    result = "retry",
-                    "delivery deferred"
-                );
+            Err(error) => {
+                tracing::warn!(%error, queue_id = queue_id.get(),
+                    "could not finish delivery claim; recovery will retry it");
+                false
             }
+        };
+        if !completed { return; }
+        match status {
+            "delivered" => { self.delivered.fetch_add(1, Ordering::AcqRel); }
+            "retry" => tracing::info!(queue_id = queue_id.get(), ?next, "delivery deferred"),
             _ => {
                 self.failed.fetch_add(1, Ordering::AcqRel);
-                if let Err(e) = self
-                    .repos
-                    .queue
-                    .mark_failed(
-                        queue_id,
-                        outcome.text(),
-                        outcome.host(),
-                        outcome.code().map(i32::from),
-                        Some(outcome.text()),
-                    )
-                    .await
-                {
-                    tracing::warn!(error = %e, queue_id = queue_id.get(), "could not mark failed");
-                }
-                tracing::info!(
-                    queue_id = queue_id.get(),
-                    message_id = message_id.get(),
-                    recipient = %entry.recipient,
-                    attempts = entry.attempts,
-                    result = "failed",
-                    "delivery abandoned"
-                );
-                if self.config.bounce_on_failure {
-                    self.bounce(&entry, message_id, &outcome).await;
-                }
+                // The failed state and pending DSN task were committed together.
+                // A separate pass delivers and acknowledges that durable task.
             }
         }
-
         self.publish(&entry, message_id, &outcome);
     }
 
@@ -764,21 +762,124 @@ impl QueueWorker {
         bus.publish_nowait(scope, event);
     }
 
+    /// Deliver all due bounce notifications claimed from the durable task set.
+    ///
+    /// Returns how many DSN tasks completed (sent or rescheduled). A completed
+    /// task is recorded with its claim token, so a stale worker's late result
+    /// cannot overwrite a newer claim.
+    pub async fn dispatch_bounces(&self) -> Result<usize, FerromaError> {
+        // Recover crashed DSN claims before polling, mirroring queue claims: a
+        // processing task older than a day is abandoned by any live worker.
+        if let Err(error) = self
+            .repos
+            .queue
+            .recover_stale_bounces(Utc::now() - ChronoDuration::days(1))
+            .await
+        {
+            tracing::warn!(%error, "could not recover stale bounce claims");
+        }
+        let limit = self.config.workers.max(1) as i64;
+        let claimed = self
+            .repos
+            .queue
+            .claim_due_bounces(limit)
+            .await
+            .map_err(FerromaError::storage)?;
+        let mut completed = 0usize;
+        for entry in claimed {
+            if self.deliver_bounce(&entry).await {
+                completed += 1;
+            }
+        }
+        Ok(completed)
+    }
+
+    /// Deliver one claimed bounce task and record its outcome.
+    ///
+    /// Returns `true` when the task reached a recorded terminal or scheduled
+    /// state. The task is `processing` with this worker's token on entry; a
+    /// `false` CAS means another worker already reclaimed it.
+    async fn deliver_bounce(&self, entry: &QueueEntry) -> bool {
+        match self.bounce(entry).await {
+            Ok(bounce_message_id) => {
+                match self
+                    .repos
+                    .queue
+                    .finish_bounce(
+                        entry.queue_id(),
+                        entry.bounce_attempts,
+                        true,
+                        None,
+                        Some(bounce_message_id),
+                    )
+                    .await
+                {
+                    Ok(true) => {
+                        tracing::info!(
+                            queue_id = entry.queue_id().get(),
+                            bounce_message_id = bounce_message_id.get(),
+                            recipient = %entry.recipient,
+                            "bounce delivered to the sender"
+                        );
+                        true
+                    }
+                    Ok(false) => {
+                        tracing::warn!(
+                            queue_id = entry.queue_id().get(),
+                            "stale bounce result did not overwrite a newer claim"
+                        );
+                        false
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, queue_id = entry.queue_id().get(),
+                            "could not record the sent bounce; recovery will keep it pending");
+                        false
+                    }
+                }
+            }
+            Err(error) => {
+                let next = Utc::now() + self.config.backoff_for_attempt(entry.bounce_attempts);
+                match self
+                    .repos
+                    .queue
+                    .finish_bounce(entry.queue_id(), entry.bounce_attempts, false, Some(next), None)
+                    .await
+                {
+                    Ok(true) => {
+                        tracing::warn!(%error, queue_id = entry.queue_id().get(),
+                            recipient = %entry.recipient,
+                            "could not deliver the bounce; retry scheduled");
+                        true
+                    }
+                    Ok(false) => {
+                        tracing::warn!(
+                            queue_id = entry.queue_id().get(),
+                            "stale bounce failure did not overwrite a newer claim"
+                        );
+                        false
+                    }
+                    Err(store) => {
+                        tracing::warn!(%store, queue_id = entry.queue_id().get(),
+                            "could not reschedule the bounce; recovery will retry it");
+                        false
+                    }
+                }
+            }
+        }
+    }
+
     /// Send a bounce to the envelope sender.
     ///
     /// The bounce goes through the *local* delivery path, so it lands in the
     /// sender's `INBOX` with the same quota accounting, sync-journal entry and
-    /// `mail.received` event as any other message. A null sender gets no bounce —
-    /// there is nowhere to send it, and bouncing a bounce is how mail loops start.
-    async fn bounce(&self, entry: &QueueEntry, message_id: MessageId, outcome: &DeliveryOutcome) {
+    /// `mail.received` event as any other message. Every caller must have
+    /// claimed the task through `claim_due_bounces` first; `finish_bounce`
+    /// closes the claim token afterwards. At-least-once: a crash between a
+    /// successful local delivery and the `sent` write can re-deliver the DSN.
+    async fn bounce(&self, entry: &QueueEntry) -> Result<MessageId, FerromaError> {
         let sender = entry.sender.trim();
-        if sender.is_empty() || sender == "<>" {
-            return;
-        }
-        let Ok(sender_address) = EmailAddress::parse(sender) else {
-            tracing::warn!(queue_id = entry.queue_id().get(), "cannot bounce: the sender is unparseable");
-            return;
-        };
+        let sender_address = EmailAddress::parse(sender)?;
+        let message_id = MessageId::new(entry.message_id);
 
         let subject = format!("Undelivered Mail Returned to Sender: {}", entry.recipient);
         let text = format!(
@@ -790,12 +891,12 @@ impl QueueWorker {
              No further attempts will be made.\n",
             self.config.mailer_daemon.split('@').nth(1).unwrap_or("this host"),
             entry.recipient,
-            outcome.text(),
+            entry.last_error.as_deref().unwrap_or("remote delivery failed"),
             entry.queue_id(),
             message_id,
         );
 
-        let bytes = match MessageBuilder::new()
+        let bytes = MessageBuilder::new()
             .from(&self.config.mailer_daemon)
             .to(sender)
             .subject(&subject)
@@ -808,31 +909,13 @@ impl QueueWorker {
                     .unwrap_or("localhost"),
             )
             .build()
-        {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                tracing::warn!(error = %e, "could not build the bounce message");
-                return;
-            }
-        };
+            .map_err(|error| {
+                FerromaError::Invalid(format!("could not build the bounce message: {error}"))
+            })?;
 
-        match self
-            .delivery
+        self.delivery
             .deliver_raw(None, &sender_address, INBOX, &bytes)
             .await
-        {
-            Ok(bounce_message_id) => tracing::info!(
-                queue_id = entry.queue_id().get(),
-                bounce_message_id = bounce_message_id.get(),
-                recipient = %entry.recipient,
-                "bounce delivered to the sender"
-            ),
-            Err(e) => tracing::warn!(
-                error = %e,
-                recipient = %entry.recipient,
-                "could not deliver the bounce"
-            ),
-        }
     }
 }
 

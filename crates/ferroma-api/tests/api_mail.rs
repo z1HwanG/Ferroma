@@ -171,6 +171,26 @@ async fn one_user_cannot_download_another_users_attachment() {
 }
 
 #[tokio::test]
+async fn a_later_queue_insert_failure_leaves_no_partial_recipient_queue() {
+    require_database!();
+    let (app, _admin, _mailbox_id, token) = app_with_address().await;
+    app.db().execute("CREATE FUNCTION refuse_second_queue() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF NEW.recipient = 'carol@example.org' THEN
+            RAISE EXCEPTION 'injected second queue failure'; END IF;
+            RETURN NEW; END $$").await.unwrap();
+    app.db().execute("CREATE TRIGGER refuse_second_queue BEFORE INSERT ON mail_queue
+        FOR EACH ROW EXECUTE FUNCTION refuse_second_queue()").await.unwrap();
+    let failed = app.json("POST", "/api/v1/messages", Some(&token), json!({
+        "from": "alice@example.net", "to": ["bob@example.org", "carol@example.org"],
+        "subject": "all recipients or none", "text": "body"
+    })).await;
+    assert_ne!(failed.status, StatusCode::OK);
+    assert_eq!(app.db().count("mail_queue").await, 0,
+        "first recipient must not be scheduled after second failed");
+    app.cleanup().await;
+}
+
+#[tokio::test]
 async fn sending_a_message_queues_one_row_per_recipient_and_copies_it_to_sent() {
     require_database!();
     let (app, _admin, mailbox_id, token) = app_with_address().await;
@@ -549,6 +569,24 @@ async fn moving_and_copying_a_message_keeps_the_folders_consistent() {
         .await;
     let copied_body = copied.expect(StatusCode::CREATED);
     assert_ne!(copied_body["id"].as_i64(), Some(message_id));
+    let copied_id = ferroma_core::MessageId::new(copied_body["id"].as_i64().expect("copy id"));
+    let copied_row = app.state.repos.messages.require_by_id(copied_id).await.expect("copied row");
+    assert_ne!(copied_row.storage_path,
+        app.state.repos.messages.require_by_id(ferroma_core::MessageId::new(message_id))
+            .await.expect("original row").storage_path);
+    assert!(app.state.maildir.read(&copied_row.storage_path).is_ok(), "copied body must exist");
+    let owner = app.state.repos.mailboxes.find_by_id(ferroma_core::MailboxId::new(mailbox_id))
+        .await.unwrap().unwrap().user_id;
+    let page = app.state.sync.sync(ferroma_sync::SyncRequest::account(
+        ferroma_core::UserId::new(owner), ferroma_core::MailboxId::new(mailbox_id),
+        ferroma_core::Cursor::ZERO,
+    )).await.unwrap();
+    assert_eq!(page.changes.iter().filter(|entry|
+        entry.kind == ferroma_sync::ChangeKind::MessageMoved
+            && entry.message_id == Some(ferroma_core::MessageId::new(message_id))).count(), 1);
+    assert_eq!(page.changes.iter().filter(|entry|
+        entry.kind == ferroma_sync::ChangeKind::MessageCreated
+            && entry.message_id == Some(copied_id)).count(), 1);
 
     let archive_list = app
         .get(&format!("/api/v1/messages?folder_id={archive}"), Some(&token))
@@ -556,6 +594,45 @@ async fn moving_and_copying_a_message_keeps_the_folders_consistent() {
         .expect(StatusCode::OK);
     assert_eq!(archive_list["total"], 1);
 
+    // The HTTP entry point must enforce the same quota as IMAP COPY.
+    let current = app.state.repos.mailboxes.used_bytes(ferroma_core::MailboxId::new(mailbox_id))
+        .await.unwrap();
+    app.state.repos.users.set_quota(ferroma_core::UserId::new(owner), current)
+        .await.unwrap();
+    let refused = app.json("POST", &format!("/api/v1/messages/{message_id}/copy"),
+        Some(&token), json!({ "folder_id": archive })).await;
+    assert_eq!(refused.status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(app.state.repos.mailboxes.used_bytes(ferroma_core::MailboxId::new(mailbox_id))
+        .await.unwrap(), current);
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn renaming_a_nonempty_folder_keeps_its_copied_message_readable() {
+    require_database!();
+    let (app, _admin, mailbox_id, token) = app_with_address().await;
+    let sent = app.json("POST", "/api/v1/messages", Some(&token), json!({
+        "from": "alice@example.net", "to": ["bob@example.org"],
+        "subject": "keep body on rename", "text": "body"
+    })).await.expect(StatusCode::OK);
+    let id = sent["message_id"].as_i64().unwrap();
+    let created = app.json("POST", &format!("/api/v1/mailboxes/{mailbox_id}/folders"),
+        Some(&token), json!({"name": "Projects"})).await.expect(StatusCode::CREATED);
+    let folder = created["id"].as_i64().unwrap();
+    let copy = app.json("POST", &format!("/api/v1/messages/{id}/copy"),
+        Some(&token), json!({"folder_id": folder})).await.expect(StatusCode::CREATED);
+    let copied_id = ferroma_core::MessageId::new(copy["id"].as_i64().unwrap());
+    let original = app.state.repos.messages.require_by_id(copied_id).await.unwrap();
+    let renamed = app.json("PATCH", &format!("/api/v1/folders/{folder}"),
+        Some(&token), json!({"name": "Work"})).await.expect(StatusCode::OK);
+    assert_eq!(renamed["name"], "Work");
+    let current = app.state.repos.messages.require_by_id(copied_id).await.unwrap();
+    assert_ne!(current.storage_path, original.storage_path);
+    assert!(app.state.maildir.read(&current.storage_path).is_ok());
+    let detail = app.get(&format!("/api/v1/messages/{}", copied_id.get()), Some(&token))
+        .await.expect(StatusCode::OK);
+    assert_eq!(detail["subject"], "keep body on rename");
     app.cleanup().await;
 }
 
@@ -595,12 +672,21 @@ async fn deleting_moves_to_trash_and_permanent_removes_the_row() {
     // The soft delete updated the same row rather than inserting one.
     assert_eq!(app.db().count("messages").await, 1);
 
-    let permanent = app
-        .delete(
-            &format!("/api/v1/messages/{message_id}?permanent=true"),
-            Some(&token),
-        )
-        .await;
+    let permanent_url = format!("/api/v1/messages/{message_id}?permanent=true");
+    let refused = app.delete(&permanent_url, Some(&token)).await;
+    assert_eq!(refused.status, StatusCode::CONFLICT,
+        "an active outbound delivery must keep its source body");
+    let queued = app.state.repos.queue
+        .list_by_message(ferroma_core::MessageId::new(message_id)).await.unwrap();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].status, "pending");
+    let row = app.state.repos.messages
+        .require_by_id(ferroma_core::MessageId::new(message_id)).await.unwrap();
+    assert!(app.state.maildir.read(&row.storage_path).is_ok());
+
+    app.state.repos.queue.mark_delivered(queued[0].queue_id(), None, None, None)
+        .await.unwrap();
+    let permanent = app.delete(&permanent_url, Some(&token)).await;
     assert_eq!(permanent.status, StatusCode::NO_CONTENT);
     assert_eq!(app.db().count("messages").await, 0);
     // ...and a tombstone survives in the change log.

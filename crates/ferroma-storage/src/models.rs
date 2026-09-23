@@ -314,6 +314,16 @@ pub struct QueueEntry {
     pub status: String,
     pub attempts: i32,
     pub max_attempts: i32,
+    /// DSN task state: `none`, `pending`, `processing`, `sent`, or `skipped`.
+    pub bounce_status: String,
+    /// Number of DSN claims (also the compare-and-swap attempt token).
+    pub bounce_attempts: i32,
+    /// Persisted due time for the next DSN attempt.
+    pub bounce_next_attempt_at: Option<DateTime<Utc>>,
+    /// Start time of the current DSN claim, for crashed-worker recovery.
+    pub bounce_claimed_at: Option<DateTime<Utc>>,
+    /// Stored message produced for the DSN, when available.
+    pub bounce_message_id: Option<i64>,
     pub next_attempt_at: Option<DateTime<Utc>>,
     pub last_attempt_at: Option<DateTime<Utc>>,
     pub delivered_at: Option<DateTime<Utc>>,
@@ -653,6 +663,11 @@ mod tests {
             status: "retry".into(),
             attempts: 3,
             max_attempts: 12,
+            bounce_status: "none".into(),
+            bounce_attempts: 0,
+            bounce_next_attempt_at: None,
+            bounce_claimed_at: None,
+            bounce_message_id: None,
             next_attempt_at: Some(at(500)),
             last_attempt_at: Some(at(200)),
             delivered_at: None,

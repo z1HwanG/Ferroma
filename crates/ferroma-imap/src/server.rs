@@ -22,6 +22,7 @@ use ferroma_core::FerromaError;
 use ferroma_events::EventBus;
 use ferroma_storage::repository::Repositories;
 use ferroma_storage::Maildir;
+use ferroma_sync::SyncService;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
@@ -50,6 +51,7 @@ pub struct ImapServer {
     maildir: Arc<Maildir>,
     authenticator: Arc<dyn Authenticator>,
     events: Option<Arc<EventBus>>,
+    sync: Option<Arc<SyncService>>,
     tls: Option<TlsAcceptor>,
     connections: Arc<AtomicU64>,
     next_connection_id: Arc<AtomicU64>,
@@ -83,6 +85,7 @@ impl ImapServer {
             maildir,
             authenticator,
             events: None,
+            sync: None,
             tls: None,
             connections: Arc::new(AtomicU64::new(0)),
             next_connection_id: Arc::new(AtomicU64::new(1)),
@@ -99,6 +102,12 @@ impl ImapServer {
     /// Attach the event bus, enabling `IDLE` push.
     pub fn with_events(mut self, events: Arc<EventBus>) -> Self {
         self.events = Some(events);
+        self
+    }
+
+    /// Attach the shared sync service to each IMAP session.
+    pub fn with_sync(mut self, sync: Arc<SyncService>) -> Self {
+        self.sync = Some(sync);
         self
     }
 
@@ -130,6 +139,9 @@ impl ImapServer {
         .with_identity(connection_id, remote_ip);
         if let Some(events) = &self.events {
             context = context.with_events(events.clone());
+        }
+        if let Some(sync) = &self.sync {
+            context = context.with_sync(Arc::clone(sync));
         }
         context
     }

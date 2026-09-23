@@ -87,24 +87,12 @@ impl MailSender for QueueMailSender {
         recipients: Vec<String>,
     ) -> Pin<Box<dyn Future<Output = Result<SendOutcome>> + Send + '_>> {
         Box::pin(async move {
-            let mut queued = Vec::with_capacity(recipients.len());
-            for recipient in recipients {
-                self.repos
-                    .queue
-                    .enqueue(NewQueueEntry {
-                        message_id,
-                        user_id,
-                        sender: sender.clone(),
-                        recipient: recipient.clone(),
-                        max_attempts: self.max_attempts,
-                    })
-                    .await?;
-                queued.push(recipient);
-            }
-            Ok(SendOutcome {
-                queued: queued.len(),
-                recipients: queued,
-            })
+            let entries: Vec<NewQueueEntry> = recipients.iter().map(|recipient| NewQueueEntry {
+                message_id, user_id, sender: sender.clone(), recipient: recipient.clone(),
+                max_attempts: self.max_attempts,
+            }).collect();
+            self.repos.queue.enqueue_batch(&entries).await?;
+            Ok(SendOutcome { queued: recipients.len(), recipients })
         })
     }
 }

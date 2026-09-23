@@ -296,9 +296,8 @@ pub async fn ensure_folder_path(
 /// `PATCH /api/v1/folders/:id`
 ///
 /// Renaming a folder renames the path of everything beneath it, the way IMAP `RENAME`
-/// does. The plan is derived first (see [`rename_plan`]) so the Maildir moves and the
-/// database writes cannot disagree, and the filesystem goes first: a conflict there is a
-/// `409` that leaves the database untouched.
+/// does. The shared storage coordinator stages destination Maildir bodies before
+/// committing folder names, message paths and cursor changes together.
 pub async fn update_folder(
     State(state): State<AppState>,
     user: AuthUser,
@@ -370,13 +369,6 @@ pub async fn update_folder(
                 "INBOX cannot be renamed".to_string(),
             )));
         }
-        let children = state
-            .repos
-            .folders
-            .descendants(folder.folder_id())
-            .await
-            .map_err(ApiError::from)?;
-
         // The name the folder ends up with: an explicit one wins, otherwise the move
         // decides it (parent's path + own leaf, or the bare leaf at the top level).
         let name = match (asked_name, new_parent) {
@@ -428,54 +420,12 @@ pub async fn update_folder(
             // Nothing to do: a drag that landed where it started.
             return Ok(Json(FolderResponse::from_row(&folder)));
         }
-        let domain =
-            crate::routes::mail::store::domain_name(&state.repos, mailbox.domain_id).await?;
-        let plan = rename_plan(&folder, &children, name);
-
-        // Rename on disk first, so a conflict (an existing directory) fails before the
-        // database is touched. Anything already moved is put back before answering.
-        let mut moved: Vec<(String, String)> = Vec::new();
-        for (from, to) in &plan {
-            if let Err(err) = state
-                .maildir
-                .rename_folder(&domain, &mailbox.local_part, from, to)
-            {
-                for (done_from, done_to) in moved.iter().rev() {
-                    let _ = state.maildir.rename_folder(
-                        &domain,
-                        &mailbox.local_part,
-                        done_to,
-                        done_from,
-                    );
-                }
-                return Err(ApiError::from(err));
-            }
-            moved.push((from.clone(), to.clone()));
-        }
-
-        let child_names: Vec<(i64, String)> = children
-            .iter()
-            .zip(plan.iter().skip(1))
-            .map(|(child, (_from, to))| (child.id, to.clone()))
-            .collect();
-
-        updated = state
-            .repos
-            .folders
-            .rename_folder_tree(folder.folder_id(), name, new_parent, &child_names)
-            .await
-            .map_err(ApiError::from)?;
-
-        state
-            .sync
-            .record_folder_change(
-                user.user_id(),
-                mailbox.mailbox_id(),
-                updated.folder_id(),
-                &updated.name,
-                ChangeKind::FolderUpdated,
-            )
-            .await?;
+        // Stage the new Maildir directories while old paths remain readable;
+        // names, message paths and the FCP cursor commit in one SQL transaction.
+        updated = ferroma_storage::rename_folder_tree(
+            &state.repos, &state.maildir, folder.folder_id(), name,
+            new_parent, Some(user.user_id()),
+        ).await.map_err(ApiError::from)?;
     }
 
     if let Some(subscribed) = request.subscribed {

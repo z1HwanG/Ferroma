@@ -415,6 +415,86 @@ impl Maildir {
         self.relative(&new_path)
     }
 
+    /// Stage a copy of a message with new flags in the same folder.
+    ///
+    /// Returns a fresh relative path in `new/` for no Maildir flags or `cur/`
+    /// otherwise. The original file remains readable, even when the flags are
+    /// unchanged. Like [`Self::store`], the body is written through `tmp/` and
+    /// synced before it is published; publication refuses to replace any existing
+    /// message, including one created concurrently by another process.
+    pub fn stage_flags(&self, relative_path: &str, flags: &str) -> Result<String> {
+        use std::io::Write;
+
+        let source = self.absolute(relative_path)?;
+        let source_sub = source
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str());
+        if !matches!(source_sub, Some("new" | "cur")) || source.file_name().is_none() {
+            return Err(StorageError::Invalid("message path must be in new/ or cur/".into()));
+        }
+        let folder = source
+            .parent()
+            .and_then(|p| p.parent())
+            .ok_or_else(|| StorageError::Invalid("path has no folder directory".into()))?;
+        // Read before creating any destination, so a missing source cannot leave
+        // behind a staged body (or a newly created folder).
+        let bytes = self.read(relative_path)?;
+        let maildir_flags = flags_to_maildir(flags);
+        let target_sub = if maildir_flags.is_empty() { "new" } else { "cur" };
+        let tmp_dir = folder.join("tmp");
+        let target_dir = folder.join(target_sub);
+        std::fs::create_dir_all(&tmp_dir)?;
+        std::fs::create_dir_all(&target_dir)?;
+
+        loop {
+            let filename = self.unique_filename(&maildir_flags);
+            let tmp_path = tmp_dir.join(format!("{filename}.tmp"));
+            let final_path = target_dir.join(&filename);
+            let relative_final = self.relative(&final_path)?;
+            let mut tmp = match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp_path)
+            {
+                Ok(file) => file,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e.into()),
+            };
+            let result = (|| -> Result<String> {
+                tmp.write_all(&bytes)?;
+                if self.fsync {
+                    tmp.sync_all()?;
+                }
+                drop(tmp);
+                // An atomic, no-clobber publish: unlike rename(2) on Unix,
+                // hard_link fails if the generated destination already exists.
+                // Both paths are in this folder and contain the same complete inode.
+                std::fs::hard_link(&tmp_path, &final_path)?;
+                if let Err(e) = std::fs::remove_file(&tmp_path) {
+                    let _ = std::fs::remove_file(&final_path);
+                    return Err(e.into());
+                }
+                if self.fsync {
+                    if let Ok(dir_handle) = std::fs::File::open(&target_dir) {
+                        let _ = dir_handle.sync_all();
+                    }
+                }
+                Ok(relative_final)
+            })();
+            match result {
+                Ok(path) => return Ok(path),
+                Err(StorageError::Io(ref e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let _ = std::fs::remove_file(&tmp_path);
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    return Err(e);
+                }
+            }
+        }
+    }
+
     /// Move a message to another folder of the same mailbox.
     pub fn move_message(
         &self,
@@ -778,6 +858,53 @@ mod tests {
         let stored = m.store("example.com", "alice", "INBOX", SAMPLE, "seen").unwrap();
         let again = m.set_flags(&stored.path, "seen").unwrap();
         assert_eq!(again, stored.path);
+    }
+
+    #[test]
+    fn stage_flags_keeps_source_and_creates_distinct_paths_with_target_flags() {
+        let (_g, m) = store();
+        m.ensure_mailbox("example.com", "alice").unwrap();
+        let original = m.store("example.com", "alice", "INBOX", SAMPLE, "").unwrap();
+
+        let seen = m.stage_flags(&original.path, "seen flagged").unwrap();
+        assert_ne!(seen, original.path);
+        assert_eq!(Path::new(&seen).parent().unwrap().file_name().unwrap(), "cur");
+        assert_eq!(split_info(Path::new(&seen).file_name().unwrap().to_str().unwrap()).1, "FS");
+        assert_eq!(m.read(&original.path).unwrap(), SAMPLE);
+        assert_eq!(m.read(&seen).unwrap(), SAMPLE);
+
+        let unchanged = m.stage_flags(&seen, "seen flagged").unwrap();
+        assert_ne!(unchanged, seen, "even matching flags need a fresh path");
+        let unread = m.stage_flags(&seen, "").unwrap();
+        assert_ne!(unread, original.path);
+        assert_eq!(Path::new(&unread).parent().unwrap().file_name().unwrap(), "new");
+        assert_eq!(m.read(&unread).unwrap(), SAMPLE);
+        assert_eq!(m.read(&seen).unwrap(), SAMPLE);
+        assert_eq!(m.read(&unchanged).unwrap(), SAMPLE);
+        assert_eq!(m.iter_messages("example.com", "alice", "INBOX").unwrap().len(), 4);
+    }
+
+    #[test]
+    fn stage_flags_failure_never_changes_the_source() {
+        let (_g, m) = store();
+        m.ensure_mailbox("example.com", "alice").unwrap();
+        let original = m.store("example.com", "alice", "INBOX", SAMPLE, "seen").unwrap();
+        assert!(m.stage_flags("../outside/cur/file", "flagged").is_err());
+        assert!(m.stage_flags("example.com/alice/Maildir/cur/missing", "flagged").is_err());
+        assert!(m.stage_flags(&original.path.replace("/cur/", "/tmp/"), "flagged").is_err());
+        assert_eq!(m.read(&original.path).unwrap(), SAMPLE);
+        assert_eq!(m.iter_messages("example.com", "alice", "INBOX").unwrap().len(), 1);
+        assert_eq!(std::fs::read_dir(m.folder_dir("example.com", "alice", "INBOX").unwrap().join("tmp")).unwrap().count(), 0);
+
+        // A destination that cannot be created must leave both the source
+        // body and the staging directory untouched.
+        let folder = m.folder_dir("example.com", "alice", "INBOX").unwrap();
+        std::fs::remove_dir(folder.join("new")).unwrap();
+        std::fs::write(folder.join("new"), b"occupied").unwrap();
+        assert!(m.stage_flags(&original.path, "").is_err());
+        assert_eq!(m.read(&original.path).unwrap(), SAMPLE);
+        assert_eq!(std::fs::read(folder.join("new")).unwrap(), b"occupied");
+        assert_eq!(std::fs::read_dir(folder.join("tmp")).unwrap().count(), 0);
     }
 
     #[test]

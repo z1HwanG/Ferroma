@@ -260,7 +260,7 @@ recipient domain is anything else    →  require a successful AUTH first
 | 每 IP 每分钟收信命令数 | `limits.smtp_rate_limit` | 100 | 命令循环，按 IP 的滑动窗口 | `421 4.7.0 Too many commands, slow down` |
 | 每账号每小时提交邮件数 | `limits.submission_rate_limit` | 50 | 接受已认证事务时 | `452 4.7.0 Submission rate limit exceeded` |
 | 每账号每天邮件数 | `limits.daily_send_limit` | 500 | 接受时，从 `mail_queue` 统计，而非从内存 | `452 4.7.0 Daily send limit exceeded` |
-| 邮箱配额 | `users.quota_bytes`、`mailboxes.quota_bytes`、`limits.mailbox_quota` | 1 GiB | Maildir 写入前的 `MailboxesRepository::check_quota(mailbox_id, needed)` | `452 4.2.2 Mailbox full`——临时性错误，因此发件人在用户腾出空间后会重试 |
+| 邮箱配额 | `users.quota_bytes`、`mailboxes.quota_bytes`、`limits.mailbox_quota` | 1 GiB | 预检，以及入站 SQL 事务内按用户锁住并核对实时用量与整批配额 | `452 4.2.2 Mailbox full`——临时性错误，因此发件人在用户腾出空间后会重试 |
 | 命令超时 | `smtp.command_timeout_secs` | 300 | 命令循环，每次读取 | `421 4.4.2 Timeout waiting for command`，随后关闭 |
 | `DATA` 超时 | `smtp.data_timeout_secs` | 600 | 正文读取器 | `421 4.4.2 Timeout waiting for data`，随后关闭 |
 | MIME 嵌套深度 | `limits.max_mime_depth` | 20 | MIME 解析器（`ferroma-mail` 中的 `ParseLimits`） | `552 5.3.4 MIME nesting deeper than 20 levels`——邮件被拒绝，而不是投进 `Junk` |
@@ -447,7 +447,7 @@ Received: from mail.example.net (mail.example.net [203.0.113.25])
 
 | 列 | 含义 |
 |---|---|
-| `mail_queue.message_id` | 本次投递所针对的存储副本；`ON DELETE CASCADE` |
+| `mail_queue.message_id` | 本次投递所针对的存储副本；队列仍为 pending/retry/delivering 时拒绝删除该消息（数据库防护也覆盖文件夹、账号级联） |
 | `mail_queue.sender` | 信封反向路径 |
 | `mail_queue.recipient` | 信封正向路径——每个收件人一行，因此一个坏收件人不会拖慢其它收件人 |
 | `mail_queue.attempts` / `max_attempts` | 迄今尝试次数 / 上限（`queue.max_attempts`，12） |
@@ -456,9 +456,16 @@ Received: from mail.example.net (mail.example.net [203.0.113.25])
 | `mail_queue.remote_mx` | 尝试过的主机 |
 | `mail_queue.delivered_at` | 最终成功的时刻 |
 
+只有 `pending` 或 `retry` 可以取消：工作进程认领之后，远端 SMTP 可能已接受邮件，
+因此不能把 `delivering` 伪称为取消成功。发件人应等待本次投递结果后再考虑取消。
+
 每次尝试还会写入一行 `delivery_attempts`（`queue_id`、`attempt`、`remote_mx`、
 `status_code`、`status_text`、`error`、`duration_ms`），Admin 的「Delivery Logs」
-界面读的就是它。尝试是历史；队列行是状态。
+界面读的就是它。尝试是历史；队列行是状态。单进程部署的队列工作进程启动时，
+会先把上一个进程遗留的 `delivering` 认领恢复为 `retry`。运行期间，每轮轮询也
+回收超过一天的认领，以补救投递后状态写入失败，同时避免抢走仅仅较慢的投递。
+若远端 MX 已接受 DATA，而进程在记录成功状态前崩溃，重试仍可能重复投递：SMTP
+无法保证恰好一次投递。
 
 ### 11.2 MX 解析
 
@@ -607,6 +614,13 @@ pub fn is_temporary(&self) -> bool {
 | SPF 硬失败（`-all`） | 本身不拒绝——判定结果写入 `Authentication-Results` 并汇入 DMARC | — |
 | DMARC 失败且 `p=reject` | `550 5.7.1 Message rejected by the DMARC policy of <domain>` | 5xx |
 | DKIM 校验失败 | 本身不拒绝——判定结果汇入 DMARC 对齐检查 | — |
+
+对于未经认证的入站邮件，之前接受的所有本地收件人共用一次 DATA 接受决定：Ferroma
+先暂存各自的 Maildir 正文，再于同一 PostgreSQL 事务提交所有邮件行、收件人行、
+配额用量和同步变更。任何一个邮箱超配额时，DATA 返回 `452`，不会给其他收件人
+留下已接受的部分副本；存储失败同样回滚整个事务并返回临时错误。SMTP 在 DATA
+结束后只能给一个应答：只因一个邮箱成功便回答 `250`，会悄悄丢掉已接受的其他地址。
+认证后的对外提交仍走独立的逐收件人入队路径，本段原子保证尚未覆盖它。
 
 对上文直觉的两处更正，都是刻意的：
 

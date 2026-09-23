@@ -252,7 +252,8 @@ async fn start_server(
         maildir,
     )
     .expect("the server configuration must be valid")
-    .with_authenticator(Arc::new(harness.authenticator()));
+    .with_authenticator(Arc::new(harness.authenticator()))
+    .with_sync(Arc::new(ferroma_sync::SyncService::new(harness.repos.clone(), 100, 30)));
     if let Some(events) = events {
         server = server.with_events(events);
     }
@@ -599,7 +600,7 @@ async fn a_message_marked_seen_still_reads_as_seen_after_a_reconnect() {
         return;
     }
     let harness = Harness::new("seen").await;
-    harness
+    let original = harness
         .seed_message("INBOX", &common::sample_message("SeenMe"))
         .await;
     let (_server, address) = start_server(&harness, None).await;
@@ -642,6 +643,10 @@ async fn a_message_marked_seen_still_reads_as_seen_after_a_reconnect() {
         name.contains("2,S"),
         "the Maildir file name must carry the S flag: {name:?}"
     );
+    assert_ne!(row.storage_path, original.storage_path);
+    assert!(harness.maildir.read(&row.storage_path).is_ok());
+    assert!(harness.maildir.read(&original.storage_path).is_err(),
+        "the previous body is cleaned only after commit");
 
     // Second connection: the flag must be visible again.
     let (mut client, _) = Client::connect(address).await;
@@ -660,6 +665,13 @@ async fn a_message_marked_seen_still_reads_as_seen_after_a_reconnect() {
     // And SEARCH must agree.
     let outcome = client.command("b4", "UID SEARCH SEEN").await;
     assert_eq!(outcome.find("SEARCH"), Some("* SEARCH 1"));
+    let sync = ferroma_sync::SyncService::new(harness.repos.clone(), 100, 30);
+    let page = sync.sync(ferroma_sync::SyncRequest::account(
+        harness.user, harness.mailbox, ferroma_core::Cursor::ZERO,
+    )).await.unwrap();
+    assert_eq!(page.changes.len(), 1);
+    assert_eq!(page.changes[0].kind, ferroma_sync::ChangeKind::MessageUpdated);
+    assert_eq!(page.changes[0].flags.as_deref(), Some("seen"));
     harness.cleanup().await;
 }
 
@@ -733,6 +745,13 @@ async fn append_carries_a_literal_into_the_mailbox() {
         .read(&row.storage_path)
         .expect("the body file must exist");
     assert_eq!(stored, message.to_vec());
+    let sync = ferroma_sync::SyncService::new(harness.repos.clone(), 100, 30);
+    let page = sync.sync(ferroma_sync::SyncRequest::account(
+        harness.user, harness.mailbox, ferroma_core::Cursor::ZERO,
+    )).await.unwrap();
+    assert_eq!(page.changes.len(), 1);
+    assert_eq!(page.changes[0].kind, ferroma_sync::ChangeKind::MessageCreated);
+    assert_eq!(page.changes[0].message_id, Some(row.message_id()));
 
     // An APPEND that is too large is refused with TOOBIG, and the session lives.
     let outcome = client
@@ -926,6 +945,28 @@ async fn create_rename_delete_and_subscribe() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn renaming_a_nonempty_folder_keeps_the_message_body_readable() {
+    if !common::require_database().await { return; }
+    let harness = Harness::new("renamebody").await;
+    harness.repos.folders.create(harness.mailbox, "Projects", None).await.unwrap();
+    harness.maildir.create_folder(&harness.domain, &harness.local_part, "Projects").unwrap();
+    let raw = common::sample_message("RenamedBody");
+    let original = harness.seed_message("Projects", &raw).await;
+    let (_server, address) = start_server(&harness, None).await;
+    let (mut client, _) = Client::connect(address).await;
+    assert!(client.command("a1", &format!("LOGIN {} {}", harness.address, harness.password)).await.is_ok());
+    let renamed = client.command("a2", "RENAME Projects ArchiveX").await;
+    assert!(renamed.is_ok(), "{renamed:?}");
+    let current = harness.repos.messages.require_by_id(original.message_id()).await.unwrap();
+    assert_ne!(current.storage_path, original.storage_path);
+    assert_eq!(harness.maildir.read(&current.storage_path).unwrap(), raw);
+    assert!(client.command("a3", "SELECT ArchiveX").await.is_ok());
+    let fetched = client.command("a4", "FETCH 1 (BODY.PEEK[HEADER])").await;
+    assert!(fetched.is_ok() && fetched.find("RenamedBody").is_some(), "{fetched:?}");
+    harness.cleanup().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn status_reports_the_folder_state() {
     if !common::require_database().await {
         return;
@@ -1010,6 +1051,70 @@ async fn copy_and_move_relocate_a_message() {
     let outcome = client.command("a8", "SELECT Trash").await;
     assert!(outcome.is_ok(), "got {outcome:?}");
     assert_eq!(outcome.find("EXISTS"), Some("* 1 EXISTS"));
+    let sync = ferroma_sync::SyncService::new(harness.repos.clone(), 100, 30);
+    let page = sync.sync(ferroma_sync::SyncRequest::account(
+        harness.user, harness.mailbox, ferroma_core::Cursor::ZERO,
+    )).await.expect("IMAP writes must reach the FCP cursor");
+    let kinds: Vec<_> = page.changes.iter().map(|change| change.kind).collect();
+    assert_eq!(kinds, vec![
+        ferroma_sync::ChangeKind::MessageCreated,
+        ferroma_sync::ChangeKind::MessageMoved,
+    ]);
+    assert_eq!(page.changes[1].from_folder_id, Some(harness.folder("INBOX").await.folder_id()));
+    assert_eq!(page.changes[1].to_folder_id, Some(harness.folder("Trash").await.folder_id()));
+    harness.cleanup().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn copy_obeys_quota_and_accounts_for_the_new_body() {
+    if !common::require_database().await { return; }
+    let harness = Harness::new("copyquota").await;
+    let raw = common::sample_message("QuotaCopy");
+    let original = harness.seed_message("INBOX", &raw).await;
+    harness.repos.mailboxes.recompute_usage(harness.mailbox).await.expect("seed usage");
+    harness.repos.users.set_quota(harness.user, raw.len() as i64 * 2 - 1)
+        .await.expect("set quota");
+    let (_server, address) = start_server(&harness, None).await;
+    let (mut client, _) = Client::connect(address).await;
+    assert!(client.command("a1", &format!("LOGIN {} {}", harness.address, harness.password)).await.is_ok());
+    assert!(client.command("a2", "SELECT INBOX").await.is_ok());
+    let refused = client.command("a3", "COPY 1 Sent").await;
+    assert!(refused.is_no() && refused.tagged.contains("OVERQUOTA"), "{refused:?}");
+    assert_eq!(harness.repos.messages.count_by_folder(harness.folder("Sent").await.folder_id()).await.unwrap(), 0);
+    assert!(harness.repos.messages.find_by_id(original.message_id()).await.unwrap().is_some());
+
+    harness.repos.users.set_quota(harness.user, raw.len() as i64 * 2)
+        .await.expect("raise quota");
+    assert!(client.command("a4", "COPY 1 Sent").await.is_ok());
+    let copies = harness.repos.messages.list_unexpunged(harness.folder("Sent").await.folder_id()).await.unwrap();
+    assert_eq!(copies.len(), 1);
+    assert_eq!(harness.maildir.read(&copies[0].storage_path).unwrap(), raw);
+    let user = harness.repos.users.find_by_id(harness.user).await.unwrap().unwrap();
+    assert_eq!(user.used_bytes, (raw.len() * 2) as i64);
+    harness.cleanup().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn move_with_missing_source_body_preserves_the_original_row() {
+    if !common::require_database().await { return; }
+    let harness = Harness::new("movemissing").await;
+    let original = harness.seed_message("INBOX", &common::sample_message("MissingMove")).await;
+    let (_server, address) = start_server(&harness, None).await;
+    let (mut client, _) = Client::connect(address).await;
+    assert!(client.command("a1", &format!("LOGIN {} {}", harness.address, harness.password)).await.is_ok());
+    assert!(client.command("a2", "SELECT INBOX").await.is_ok());
+    harness.maildir.delete(&original.storage_path).unwrap();
+    let refused = client.command("a3", "MOVE 1 Trash").await;
+    assert!(refused.is_no(), "{refused:?}");
+    let unchanged = harness.repos.messages.find_by_id(original.message_id()).await.unwrap().unwrap();
+    assert_eq!(unchanged.folder_id, original.folder_id);
+    assert_eq!(unchanged.storage_path, original.storage_path);
+    assert_eq!(harness.repos.messages.count_by_folder(harness.folder("Trash").await.folder_id()).await.unwrap(), 0);
+    let sync = ferroma_sync::SyncService::new(harness.repos.clone(), 100, 30);
+    let page = sync.sync(ferroma_sync::SyncRequest::account(
+        harness.user, harness.mailbox, ferroma_core::Cursor::ZERO,
+    )).await.unwrap();
+    assert!(page.changes.is_empty(), "a failed MOVE cannot publish a sync change");
     harness.cleanup().await;
 }
 

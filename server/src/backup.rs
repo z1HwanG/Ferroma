@@ -260,10 +260,12 @@ fn find_tool_for_server(name: &str, env_var: &str, server_major: u32) -> Result<
 
 /// The server's major version, read before a dump so the matching client is chosen.
 async fn server_major_of_url(db_url: &str) -> Result<u32> {
-    let mut config = ferroma_core::config::DatabaseConfig::default();
-    config.url = db_url.to_string();
-    config.run_migrations = false;
-    config.max_connections = 1;
+    let config = ferroma_core::config::DatabaseConfig {
+        url: db_url.to_string(),
+        run_migrations: false,
+        max_connections: 1,
+        ..Default::default()
+    };
     let db = ferroma_storage::Database::connect(&config)
         .await
         .map_err(|error| anyhow!("{error}"))?;

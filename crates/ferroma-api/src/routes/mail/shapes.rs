@@ -928,6 +928,11 @@ mod tests {
             last_status_code: Some(421),
             last_status_text: Some("try later".into()),
             remote_mx: Some("mx1.example.net".into()),
+            bounce_status: "none".into(),
+            bounce_attempts: 0,
+            bounce_next_attempt_at: None,
+            bounce_claimed_at: None,
+            bounce_message_id: None,
             created_at: at(0),
             updated_at: at(100),
         };

@@ -281,6 +281,36 @@ async fn without_a_relay_the_same_recipient_cannot_be_delivered() {
 }
 
 #[tokio::test]
+async fn a_claim_abandoned_by_a_crashed_worker_is_recovered_and_delivered() {
+    crate::require_database!();
+    let harness = Harness::start().await;
+    let (user_id, mailbox_id) = seed_mailbox(&harness.repos, "mx.test", "alice", "unused").await;
+    let message_id = harness.store_outbound(mailbox_id, "alice").await;
+    let entry = harness.queue(message_id, user_id, "bob@external.example.net").await;
+    let claimed = harness.repos.queue.claim_due(1).await.expect("simulate old worker claim");
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].status, "delivering");
+    let fake = FakeMx::start(250).await;
+    let replacement = harness.worker(&fake, fast_config());
+    let (shutdown, receiver) = tokio::sync::watch::channel(false);
+    let running = tokio::spawn(replacement.run(receiver));
+    let row = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let row = harness.repos.queue.find_by_id(entry.queue_id()).await.unwrap().unwrap();
+            if row.status == "delivered" { break row; }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }).await.expect("worker startup must recover old claim");
+    shutdown.send(true).unwrap();
+    running.await.unwrap();
+    assert_eq!(row.status, "delivered");
+    assert_eq!(row.attempts, 2);
+    assert_eq!(fake.received(), 1);
+    fake.stop();
+    harness.cleanup().await;
+}
+
+#[tokio::test]
 async fn a_successful_attempt_marks_the_row_delivered() {
     crate::require_database!();
     let harness = Harness::start().await;
@@ -651,6 +681,17 @@ async fn a_5xx_reply_fails_the_row_and_bounces_to_the_sender() {
     assert_eq!(row.last_status_code, Some(550));
     assert!(row.next_attempt_at.is_none(), "a failed row is never due again");
     assert_eq!(worker.failed_count(), 1);
+    assert_eq!(
+        row.bounce_status, "pending",
+        "a failed row with a real sender must carry a durable bounce task"
+    );
+
+    // The bounce is a durable task now: dispatching the normal batch must not
+    // deliver it, but the bounce pass must.
+    assert_eq!(inbox_count(&harness.repos, mailbox_id).await, 0);
+    assert_eq!(worker.dispatch_batch().await.expect("dispatch"), 0);
+    assert_eq!(inbox_count(&harness.repos, mailbox_id).await, 0);
+    assert_eq!(worker.dispatch_bounces().await.expect("bounces"), 1);
 
     // The bounce landed in the sender's INBOX, through the local delivery path.
     let inbox = inbox_count(&harness.repos, mailbox_id).await;
@@ -744,6 +785,8 @@ async fn the_last_allowed_attempt_gives_up_instead_of_retrying() {
         "the last allowed attempt must give up, not retry forever"
     );
     assert_eq!(worker.failed_count(), 1);
+    assert_eq!(inbox_count(&harness.repos, mailbox_id).await, 0);
+    assert_eq!(worker.dispatch_bounces().await.expect("bounces"), 1);
     assert_eq!(inbox_count(&harness.repos, mailbox_id).await, 1, "a bounce");
 
     // Both attempts are in the log.
