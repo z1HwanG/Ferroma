@@ -157,15 +157,18 @@ No authentication. Drives the container health check.
   "smtp": { "enabled": true, "connections": 3 },
   "imap": { "enabled": true, "connections": 1 },
   "clients": { "active_sessions": 4, "active_devices": 2 },
-  "queue": { "pending": 0, "delivering": 0, "retry": 2, "failed": 1, "received_today": 128, "sent_today": 41 }
+  "queue": { "pending": 0, "delivering": 0, "retry": 2, "failed": 1, "cancelled": 0, "bounce_pending": 1, "bounce_processing": 0, "received_today": 128, "sent_today": 41 }
 }
 ```
 
 `clients.active_sessions` counts live Webmail/API/client sessions (rows in `sessions`
 that are neither revoked nor expired), and `active_devices` counts non-revoked
 `devices` rows. `queue.received_today` and `sent_today` cover the current UTC day.
-All four feed the Admin dashboard, which must render an absent figure as `—` rather
-than a fabricated zero.
+`queue.bounce_pending` and `bounce_processing` count delivery reports still owed to a
+sender: a failed delivery whose report has not gone out is otherwise
+indistinguishable from an ordinary failure, and it is the one queue state an operator
+has to act on. All of these feed the Admin dashboard, which must render an absent
+figure as `—` rather than a fabricated zero.
 
 Returns `503` with `"status": "degraded"` when the database is unreachable; the
 `queue` and `clients` blocks are then omitted rather than reported as zero.
@@ -342,7 +345,7 @@ delegates sending is accepted, with a hint naming the condition, rather than war
 | `GET` | `/api/v1/queue/:id` | one entry plus its attempt history |
 | `POST` | `/api/v1/queue/:id/retry` | requeue a failed entry now |
 | `DELETE` | `/api/v1/queue/:id` | cancel |
-| `GET` | `/api/v1/queue/stats` | counts per status, plus `next_due_at` |
+| `GET` | `/api/v1/queue/stats` | counts per status, the outstanding delivery-report tasks, plus `next_due_at` |
 
 ### 4.6 Storage, audit and settings
 

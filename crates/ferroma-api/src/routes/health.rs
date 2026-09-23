@@ -72,6 +72,12 @@ pub struct QueueHealth {
     pub retry: i64,
     /// Given up on (bounced).
     pub failed: i64,
+    /// Withdrawn by the sender before delivery.
+    pub cancelled: i64,
+    /// Delivery reports waiting for a first send.
+    pub bounce_pending: i64,
+    /// Delivery reports a worker has claimed right now.
+    pub bounce_processing: i64,
     /// Messages received during the current UTC day.
     pub received_today: i64,
     /// Messages queued during the current UTC day.
@@ -215,6 +221,12 @@ async fn collect_queue(state: &AppState) -> Option<QueueHealth> {
         delivering: stats.delivering,
         retry: stats.retry,
         failed: stats.failed,
+        cancelled: stats.cancelled,
+        // A bounce task that cannot be delivered is otherwise indistinguishable from
+        // an ordinary failure, and a stuck one is exactly what an operator needs to
+        // see: the delivery is finished, but the sender has not been told.
+        bounce_pending: stats.bounce_pending,
+        bounce_processing: stats.bounce_processing,
         received_today,
         sent_today,
     })
@@ -602,6 +614,9 @@ mod tests {
                 delivering: 0,
                 retry: 2,
                 failed: 1,
+                cancelled: 0,
+                bounce_pending: 1,
+                bounce_processing: 0,
                 received_today: 128,
                 sent_today: 41,
             }),

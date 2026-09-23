@@ -85,6 +85,16 @@ pub struct QueueStatsResponse {
     pub cancelled: i64,
     /// Rows that are neither finished nor in flight.
     pub outstanding: i64,
+    /// Delivery reports waiting for a first send.
+    pub bounce_pending: i64,
+    /// Delivery reports a worker has claimed right now.
+    pub bounce_processing: i64,
+    /// Delivery reports that reached the sender.
+    pub bounce_sent: i64,
+    /// Failed rows that will never produce a report.
+    pub bounce_skipped: i64,
+    /// Reports still owed to a sender.
+    pub bounces_outstanding: i64,
     /// When the next attempt is due, if anything is waiting.
     pub next_due_at: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -338,6 +348,11 @@ pub async fn queue_stats(
         failed: stats.failed,
         cancelled: stats.cancelled,
         outstanding: stats.outstanding(),
+        bounce_pending: stats.bounce_pending,
+        bounce_processing: stats.bounce_processing,
+        bounce_sent: stats.bounce_sent,
+        bounce_skipped: stats.bounce_skipped,
+        bounces_outstanding: stats.bounces_outstanding(),
         next_due_at,
     }))
 }
@@ -433,11 +448,17 @@ mod tests {
             failed: 5,
             cancelled: 6,
             outstanding: 6,
+            bounce_pending: 2,
+            bounce_processing: 1,
+            bounce_sent: 7,
+            bounce_skipped: 1,
+            bounces_outstanding: 3,
             next_due_at: None,
         };
         let json = serde_json::to_value(&response).expect("must serialise");
         assert_eq!(json["pending"], 1);
         assert_eq!(json["outstanding"], 6);
+        assert_eq!(json["bounces_outstanding"], 3);
         assert!(json["next_due_at"].is_null());
     }
 

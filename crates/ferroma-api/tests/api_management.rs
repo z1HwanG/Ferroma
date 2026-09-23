@@ -732,6 +732,74 @@ async fn the_health_endpoint_reports_ok_with_a_live_database() {
     assert!(body["queue"]["pending"].is_number(), "{body}");
     assert!(body["queue"]["received_today"].is_number(), "{body}");
     assert!(body["queue"]["sent_today"].is_number(), "{body}");
+    assert!(body["queue"]["cancelled"].is_number(), "{body}");
+    assert!(body["queue"]["bounce_pending"].is_number(), "{body}");
+    assert!(body["queue"]["bounce_processing"].is_number(), "{body}");
+
+    app.cleanup().await;
+}
+
+/// A delivery report that cannot be delivered is visible to an operator.
+///
+/// The failed delivery and its outstanding bounce task are separate states: without a
+/// count for the task, a sender that never receives a bounce looks exactly like an
+/// ordinary failed delivery, and the one thing an operator must act on is invisible.
+#[tokio::test]
+async fn the_health_endpoint_counts_an_outstanding_bounce_task() {
+    require_database!();
+    let app = TestApp::new().await;
+    let admin = bootstrap_admin(&app).await;
+    let (_user_id, _mailbox_id, token) =
+        seed_account(&app, &admin, "example.net", "alice@example.net", PASSWORD).await;
+
+    let sent = app
+        .json(
+            "POST",
+            "/api/v1/messages",
+            Some(&token),
+            json!({
+                "from": "alice@example.net",
+                "to": ["bob@example.org"],
+                "subject": "bounce me",
+                "text": "body"
+            }),
+        )
+        .await
+        .expect(StatusCode::OK);
+    let message = ferroma_core::MessageId::new(sent["message_id"].as_i64().unwrap());
+
+    // Fail the delivery and leave its report owed, exactly as the worker does:
+    // claim the row, then record the outcome against that claim.
+    let claimed = app.state.repos.queue.claim_due(10).await.unwrap();
+    let entry = claimed
+        .iter()
+        .find(|entry| entry.message_id == message.get())
+        .expect("the row was claimed");
+    let settled = app.state
+        .repos
+        .queue
+        .finish_claim(
+            entry.queue_id(),
+            entry.attempts,
+            "failed",
+            None,
+            Some("550 no such user"),
+            None,
+            Some(550),
+            Some("no such user"),
+            true,
+        )
+        .await
+        .unwrap();
+    assert!(settled, "the claim must settle as failed");
+
+    let body = app.get("/api/v1/health", None).await.expect(StatusCode::OK);
+    assert_eq!(body["queue"]["failed"], 1, "{body}");
+    assert_eq!(
+        body["queue"]["bounce_pending"], 1,
+        "the owed report must be visible: {body}"
+    );
+    assert_eq!(body["queue"]["bounce_processing"], 0, "{body}");
 
     app.cleanup().await;
 }

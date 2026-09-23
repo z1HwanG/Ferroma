@@ -46,12 +46,30 @@ pub struct QueueStats {
     pub failed: i64,
     /// Withdrawn by the sender before delivery.
     pub cancelled: i64,
+    /// Delivery reports waiting for a first send.
+    ///
+    /// A `failed` row with a real envelope sender carries a durable bounce task; its
+    /// state is separate from the delivery status, so a task that cannot be delivered
+    /// yet is visible instead of looking like an ordinary failure.
+    pub bounce_pending: i64,
+    /// Bounce tasks a worker has claimed right now.
+    pub bounce_processing: i64,
+    /// Bounce tasks whose report reached the sender.
+    pub bounce_sent: i64,
+    /// Failed rows that will never produce a report (null sender, policy off, or a
+    /// failure recorded before the task existed).
+    pub bounce_skipped: i64,
 }
 
 impl QueueStats {
     /// Rows that are neither finished nor in flight.
     pub fn outstanding(&self) -> i64 {
         self.pending + self.retry + self.delivering
+    }
+
+    /// Bounce tasks that still need a send attempt.
+    pub fn bounces_outstanding(&self) -> i64 {
+        self.bounce_pending + self.bounce_processing
     }
 }
 
@@ -216,7 +234,11 @@ impl QueueRepository {
                     COUNT(*) FILTER (WHERE status = 'retry')      AS retry,
                     COUNT(*) FILTER (WHERE status = 'delivered')  AS delivered,
                     COUNT(*) FILTER (WHERE status = 'failed')     AS failed,
-                    COUNT(*) FILTER (WHERE status = 'cancelled')  AS cancelled
+                    COUNT(*) FILTER (WHERE status = 'cancelled')  AS cancelled,
+                    COUNT(*) FILTER (WHERE bounce_status = 'pending')    AS bounce_pending,
+                    COUNT(*) FILTER (WHERE bounce_status = 'processing') AS bounce_processing,
+                    COUNT(*) FILTER (WHERE bounce_status = 'sent')       AS bounce_sent,
+                    COUNT(*) FILTER (WHERE bounce_status = 'skipped')    AS bounce_skipped
                FROM mail_queue",
         )
         .fetch_one(&self.pool)

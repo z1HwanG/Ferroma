@@ -14,6 +14,13 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ## [Unreleased]
 
+### Added
+
+- **Delivery-report tasks are visible.** `GET /api/v1/health` and
+  `GET /api/v1/queue/stats` now count bounce tasks by state. A failed delivery whose
+  report has not reached the sender was previously indistinguishable from an ordinary
+  failure, so the one queue condition an operator has to act on could not be seen.
+
 ### Changed
 
 - **The send path commits through `store_submission`.** The API's `MailSender`

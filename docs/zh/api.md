@@ -154,14 +154,16 @@ UTC 下的 RFC 3339 / ISO 8601，例如`2026-09-16T12:00:00Z`。除
   "smtp": { "enabled": true, "connections": 3 },
   "imap": { "enabled": true, "connections": 1 },
   "clients": { "active_sessions": 4, "active_devices": 2 },
-  "queue": { "pending": 0, "delivering": 0, "retry": 2, "failed": 1, "received_today": 128, "sent_today": 41 }
+  "queue": { "pending": 0, "delivering": 0, "retry": 2, "failed": 1, "cancelled": 0, "bounce_pending": 1, "bounce_processing": 0, "received_today": 128, "sent_today": 41 }
 }
 ```
 
 `clients.active_sessions`统计存活的 Webmail/API/客户端会话（`sessions`中
 既未吊销也未过期的行），`active_devices`统计未吊销的
 `devices`行。`queue.received_today`与`sent_today`覆盖当前 UTC 日。
-这四项都供 Admin 看板使用，看板必须把缺失的数字渲染为`—`，而不是
+`queue.bounce_pending`与`bounce_processing`统计仍欠发件人的退信：一封投递失败、
+退信却还没发出的邮件，否则与普通失败无从区分，而它恰恰是运维必须处理的那个队列
+状态。以上各项都供 Admin 看板使用，看板必须把缺失的数字渲染为`—`，而不是
 编造出来的零。
 
 数据库不可达时返回`503`与`"status": "degraded"`；此时
@@ -332,7 +334,7 @@ UTC 下的 RFC 3339 / ISO 8601，例如`2026-09-16T12:00:00Z`。除
 | `GET` | `/api/v1/queue/:id` | 一条记录外加它的尝试历史 |
 | `POST` | `/api/v1/queue/:id/retry` | 立即重新入队一条失败的记录 |
 | `DELETE` | `/api/v1/queue/:id` | 取消 |
-| `GET` | `/api/v1/queue/stats` | 各状态的计数，外加`next_due_at` |
+| `GET` | `/api/v1/queue/stats` | 各状态的计数、尚未发出的退信任务数，外加`next_due_at` |
 
 ### 4.6 存储、审计与设置
 

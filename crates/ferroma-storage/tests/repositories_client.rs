@@ -641,9 +641,14 @@ async fn queue_stats_lists_and_counts() {
             delivered: 1,
             failed: 1,
             cancelled: 1,
+            bounce_pending: 0,
+            bounce_processing: 0,
+            bounce_sent: 0,
+            bounce_skipped: 1,
         }
     );
     assert_eq!(stats.outstanding(), 3);
+    assert_eq!(stats.bounces_outstanding(), 0);
 
     assert_eq!(repos.queue.count_by_status("delivering").await.unwrap(), 2);
     assert_eq!(repos.queue.count_by_status("retry").await.unwrap(), 1);
