@@ -804,6 +804,111 @@ async fn the_last_allowed_attempt_gives_up_instead_of_retrying() {
     harness.cleanup().await;
 }
 
+/// A bounce claim left behind by a dead worker is picked up, not stranded.
+#[tokio::test]
+async fn a_bounce_claim_left_by_a_dead_worker_is_recovered() {
+    crate::require_database!();
+    let harness = Harness::start().await;
+    let (user_id, mailbox_id) = seed_mailbox(&harness.repos, "mx.test", "alice", "unused").await;
+    let message_id = harness.store_outbound(mailbox_id, "alice").await;
+    let entry = harness.queue(message_id, user_id, "bob@external.example.net").await;
+
+    let fake = FakeMx::start(550).await;
+    let mut worker = harness.worker(&fake, fast_config());
+    assert_eq!(worker.dispatch_batch().await.expect("dispatch"), 1);
+
+    // The worker that owned the bounce died two days ago, mid-send.
+    sqlx::query(
+        "UPDATE mail_queue SET bounce_status = 'processing', bounce_attempts = 1,
+                bounce_claimed_at = NOW() - INTERVAL '2 days' WHERE id = $1",
+    )
+    .bind(entry.id)
+    .execute(harness.repos.pool())
+    .await
+    .unwrap();
+    drop(worker);
+
+    // A fresh worker recovers the claim on its next bounce pass.
+    let replacement = harness.worker(&fake, fast_config());
+    assert_eq!(replacement.dispatch_bounces().await.expect("bounces"), 1);
+    let row = harness.repos.queue.find_by_id(entry.queue_id()).await.unwrap().unwrap();
+    assert_eq!(row.bounce_status, "sent");
+    assert!(row.bounce_message_id.is_some(), "the saved DSN is recorded");
+    assert_eq!(inbox_count(&harness.repos, mailbox_id).await, 1);
+
+    // Nothing is re-sent once the task is final.
+    assert_eq!(replacement.dispatch_bounces().await.expect("bounces"), 0);
+    assert_eq!(inbox_count(&harness.repos, mailbox_id).await, 1);
+
+    fake.stop();
+    harness.cleanup().await;
+}
+
+/// A bounce that cannot be delivered yet is rescheduled, never dropped.
+#[tokio::test]
+async fn a_bounce_that_cannot_be_delivered_is_rescheduled_with_backoff() {
+    crate::require_database!();
+    let harness = Harness::start().await;
+    let (user_id, mailbox_id) = seed_mailbox(&harness.repos, "mx.test", "alice", "unused").await;
+    let message_id = harness.store_outbound(mailbox_id, "alice").await;
+    // The sender has no mailbox here, so the local bounce delivery fails.
+    let entry = harness
+        .repos
+        .queue
+        .enqueue(NewQueueEntry {
+            message_id,
+            user_id: Some(user_id),
+            sender: "ghost@mx.test".to_string(),
+            recipient: "bob@external.example.net".to_string(),
+            max_attempts: 1,
+        })
+        .await
+        .expect("enqueue");
+
+    let fake = FakeMx::start(550).await;
+    let mut worker = harness.worker(&fake, fast_config());
+    assert_eq!(worker.dispatch_batch().await.expect("dispatch"), 1);
+
+    assert_eq!(worker.dispatch_bounces().await.expect("bounces"), 1);
+    let row = harness.repos.queue.find_by_id(entry.queue_id()).await.unwrap().unwrap();
+    assert_eq!(row.bounce_status, "pending", "the task stays outstanding");
+    assert_eq!(row.bounce_attempts, 1);
+    let due = row.bounce_next_attempt_at.expect("a retry time is recorded");
+    assert!(due > chrono::Utc::now(), "the retry waits for its backoff: {due}");
+
+    // Polling again immediately must not hammer the same failed delivery.
+    assert_eq!(worker.dispatch_bounces().await.expect("bounces"), 0);
+    assert_eq!(inbox_count(&harness.repos, mailbox_id).await, 0);
+
+    fake.stop();
+    harness.cleanup().await;
+}
+
+/// The bounce pass never delivers the same DSN twice.
+#[tokio::test]
+async fn a_bounce_is_delivered_exactly_once_across_polls() {
+    crate::require_database!();
+    let harness = Harness::start().await;
+    let (user_id, mailbox_id) = seed_mailbox(&harness.repos, "mx.test", "alice", "unused").await;
+    let message_id = harness.store_outbound(mailbox_id, "alice").await;
+    let entry = harness.queue(message_id, user_id, "bob@external.example.net").await;
+
+    let fake = FakeMx::start(550).await;
+    let mut worker = harness.worker(&fake, fast_config());
+    assert_eq!(worker.dispatch_batch().await.expect("dispatch"), 1);
+    assert_eq!(worker.dispatch_bounces().await.expect("bounces"), 1);
+    for _ in 0..3 {
+        assert_eq!(worker.dispatch_bounces().await.expect("bounces"), 0);
+    }
+    assert_eq!(inbox_count(&harness.repos, mailbox_id).await, 1);
+    let row = harness.repos.queue.find_by_id(entry.queue_id()).await.unwrap().unwrap();
+    assert_eq!(row.bounce_status, "sent");
+    assert_eq!(row.bounce_attempts, 1, "one attempt sent the DSN");
+
+    fake.stop();
+    harness.cleanup().await;
+}
+
 #[tokio::test]
 async fn bouncing_is_skipped_for_the_null_sender() {
     crate::require_database!();
