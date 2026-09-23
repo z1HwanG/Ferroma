@@ -99,6 +99,14 @@ const FRAME_QUOTE_CSS = `<style>
   blockquote { color: rgba(127, 127, 127, 1); }
 </style>`;
 
+// CSP is enforced by the browser, including CSS url(), srcset, unquoted src and
+// resource-bearing elements the server sanitiser may not recognise. Keep inline CID
+// data images and inline formatting; only the explicit per-message opt-in allows
+// remote image URLs. External stylesheets, fonts, media and frames stay blocked.
+export const framePolicy = (allowRemote) =>
+  '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; ' +
+  `img-src data:${allowRemote ? ' http: https:' : ''}; style-src 'unsafe-inline'; ` +
+  'form-action \'none\'">';
 const FRAME_BASE = '<base target="_blank">' + FRAME_QUOTE_CSS;
 
 /**
@@ -111,29 +119,12 @@ const FRAME_BASE = '<base target="_blank">' + FRAME_QUOTE_CSS;
  * @param {string} html
  */
 function frameSource(html) {
-  const body = remoteImages ? html : stripRemoteImages(html);
-  return (darkMode() ? DARK_MESSAGE_CSS : '') + FRAME_BASE + body;
+  return framePolicy(remoteImages) + (darkMode() ? DARK_MESSAGE_CSS : '') + FRAME_BASE + html;
 }
 
-/**
- * Drop remote image sources so the frame does not fetch them.
- *
- * A `cid:` source is not remote — the parent rewrites it to a `data:` URL before the
- * frame is composed. `http:`, `https:` and a scheme-relative `//` are. The tag stays,
- * so the layout keeps the box; only the request is removed.
- *
- * @param {string} html
- */
-function stripRemoteImages(html) {
-  return html.replace(
-    /(<img\b[^>]*?\bsrc\s*=\s*)(["'])(?:https?:|\/\/)[^"']*\2/gi,
-    '$1$2$2',
-  );
-}
-
-/** Whether the HTML names an image the browser would have to fetch. */
-function hasRemoteImages(html) {
-  return /\bsrc\s*=\s*["'](?:https?:|\/\/)/i.test(html);
+/** Only controls visibility; the frame CSP, not this heuristic, blocks requests. */
+export function hasRemoteImages(html) {
+  return new RegExp('\\b(?:src|srcset|background)\\s*=\\s*["\\\']?\\s*(?:https?:|//)|\\burl\\s*\\(\\s*["\\\']?\\s*(?:https?:|//)', 'i').test(html);
 }
 
 /** Inline images already fetched for the message currently on screen, keyed by attachment id. */

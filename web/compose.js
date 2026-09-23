@@ -28,6 +28,25 @@ import { toastError, toastSuccess } from '../shared/toast.js';
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
+/** Extract HTML-only quoted text in inert template content, never the live editor. */
+function quotedSourceText(source) {
+  if (String(source.text || '').trim()) return source.text;
+  const template = document.createElement('template');
+  template.innerHTML = String(source.html || '');
+  const lines = [];
+  const walk = (node) => {
+    if (node.nodeType === 3) { lines.push(node.textContent); return; }
+    if (node.nodeType !== 1 && node.nodeType !== 11) return;
+    const tag = node.nodeName.toLowerCase();
+    if (['style', 'script', 'template', 'head'].includes(tag)) return;
+    if (tag === 'br') { lines.push('\n'); return; }
+    for (const child of node.childNodes) walk(child);
+    if (['p', 'div', 'li', 'tr', 'blockquote', 'h1', 'h2', 'h3', 'h4'].includes(tag)) lines.push('\n');
+  };
+  walk(template.content);
+  return lines.join('').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 /**
  * @typedef {object} ComposeSeed
  * @property {'new'|'reply'|'reply-all'|'forward'|'draft'} mode
@@ -173,10 +192,12 @@ export function openCompose(seed) {
         to: source.to.join(', '),
       },
     );
-    editor.innerHTML =
-      textToHtml(header) + (source.html && source.html.trim() ? source.html : textToHtml(source.text));
+    // The reader's HTML is only safe inside its opaque-origin, CSP-restricted frame.
+    // Never transplant it into this same-origin contenteditable: even a CSS url() or
+    // an unquoted img src would start fetching before Send is clicked.
+    editor.innerHTML = textToHtml(header + quotedSourceText(source));
   } else if ((mode === 'reply' || mode === 'reply-all') && source) {
-    editor.innerHTML = quoteHtml(source);
+    editor.innerHTML = quoteHtml({ ...source, html: '', text: quotedSourceText(source) });
   } else if (seed.html !== undefined) {
     editor.innerHTML = seed.html;
   } else if (seed.text !== undefined) {
@@ -384,6 +405,16 @@ export function openCompose(seed) {
 
   /** @type {Array<{id: number, filename: string}>} */
   const uploadedAttachments = [];
+  let pendingUploads = 0;
+  let submitting = false;
+  // Uploads are asynchronous: never submit a partial attachment id list.
+  const updateUploadControls = () => {
+    send.disabled = pendingUploads > 0 || submitting;
+    saveDraft.disabled = pendingUploads > 0 || submitting;
+    attachButton.disabled = submitting;
+  };
+  const uploadStarted = () => { pendingUploads += 1; updateUploadControls(); };
+  const uploadFinished = () => { pendingUploads -= 1; updateUploadControls(); };
 
   const uploadFile = (file) => {
     const bar = el('span');
@@ -466,11 +497,20 @@ export function openCompose(seed) {
       remove.addEventListener('click', detach);
     });
 
-    xhr.send(body);
+    xhr.addEventListener('loadend', uploadFinished);
+    uploadStarted();
+    try {
+      xhr.send(body);
+    } catch {
+      uploadFinished();
+      stateText.textContent = t('failed');
+      toastError(t('{name} could not be uploaded — the server was unreachable.', { name: file.name }));
+    }
   };
 
   attachButton.addEventListener('click', () => attachmentsInput.click());
   attachmentsInput.addEventListener('change', () => {
+    if (submitting) { attachmentsInput.value = ''; return; }
     for (const file of Array.from(attachmentsInput.files || [])) uploadFile(file);
     attachmentsInput.value = '';
   });
@@ -636,6 +676,10 @@ export function openCompose(seed) {
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     showStatus('');
+    if (pendingUploads > 0) {
+      showStatus(t('Wait for attachments to finish uploading.'));
+      return;
+    }
     if (!to.commitPending() || !cc.commitPending() || !bcc.commitPending()) {
       showStatus(t('One of the addresses is not valid.'));
       return;
@@ -649,8 +693,8 @@ export function openCompose(seed) {
 
     const extra = threadingExtra();
 
-    send.disabled = true;
-    saveDraft.disabled = true;
+    submitting = true;
+    updateUploadControls();
     setText(send, t('Sending…'));
     try {
       // `POST /drafts/:id/send` takes the same body and falls back to the stored draft for
@@ -682,14 +726,18 @@ export function openCompose(seed) {
       showStatus(message);
       toastError(message);
     } finally {
-      send.disabled = false;
-      saveDraft.disabled = false;
+      submitting = false;
+      updateUploadControls();
       setText(send, t('Send'));
     }
   });
 
   saveDraft.addEventListener('click', async () => {
     showStatus('');
+    if (pendingUploads > 0) {
+      showStatus(t('Wait for attachments to finish uploading.'));
+      return;
+    }
     if (!to.commitPending()) {
       showStatus(t('One of the addresses is not valid.'));
       return;
@@ -699,7 +747,8 @@ export function openCompose(seed) {
       showStatus(t('Write something before saving a draft.'));
       return;
     }
-    saveDraft.disabled = true;
+    submitting = true;
+    updateUploadControls();
     setText(saveDraft, t('Saving…'));
     try {
       await request(draftId ? `${API_BASE}/drafts/${draftId}` : `${API_BASE}/drafts`, {
@@ -716,7 +765,8 @@ export function openCompose(seed) {
       showStatus(message);
       toastError(message);
     } finally {
-      saveDraft.disabled = false;
+      submitting = false;
+      updateUploadControls();
       setText(saveDraft, t('Save draft'));
     }
   });

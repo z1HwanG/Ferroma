@@ -26,6 +26,12 @@ let observer = null;
 let focusedRowId = 0;
 /** Signature of the last paint; see `renderList`. */
 let renderedSignature = '';
+/** Latest request identity; a reset supersedes an in-flight page from another route. */
+let listRequest = 0;
+let loadingContext = '';
+function contextKey(state) {
+  return `${state.mailboxId}|${state.folder?.id || ''}|${state.search || ''}`;
+}
 
 export function initList(options) {
   handlers = options;
@@ -72,11 +78,16 @@ export function initList(options) {
  */
 export async function loadMessages(options = {}) {
   const state = getState();
-  if (state.listLoading) return;
+  const context = contextKey(state);
+  if (state.listLoading && !options.reset && loadingContext === context) return;
+  const ticket = ++listRequest;
+  loadingContext = context;
   if (!state.folder && !state.search) {
     mutate((draft) => {
       draft.messages = [];
       draft.total = 0;
+      draft.listLoading = false;
+      draft.hasMore = false;
     });
     return;
   }
@@ -96,6 +107,7 @@ export async function loadMessages(options = {}) {
 
   try {
     const payload = await request(`${API_BASE}/messages${query(params)}`, { toast: false });
+    if (ticket !== listRequest || context !== contextKey(getState())) return;
     const page = messagesOf(payload);
     mutate((draft) => {
       draft.messages = options.reset ? page : draft.messages.concat(page);
@@ -105,6 +117,7 @@ export async function loadMessages(options = {}) {
       draft.listLoading = false;
     });
   } catch (error) {
+    if (ticket !== listRequest || context !== contextKey(getState())) return;
     mutate((draft) => {
       draft.listLoading = false;
       if (options.reset) draft.messages = [];

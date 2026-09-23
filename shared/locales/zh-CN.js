@@ -1049,6 +1049,7 @@ export const zhCN = {
   'Updated': '已更新',
   'Upload failed (HTTP {status}).': '上传失败（HTTP {status}）。',
   'uploaded': '已上传',
+  'Wait for attachments to finish uploading.': '请等待附件上传完成。',
   'What you have written will be lost.': '你写的内容将丢失。',
   'Write something before saving a draft.': '保存草稿前请先写点内容。',
   'Wrong address or password.': '地址或密码错误。',

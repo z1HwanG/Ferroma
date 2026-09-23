@@ -307,7 +307,10 @@ for (const file of jsFiles) {
     const target = assignment[1];
     const value = assignment[2].trim();
     check(
-      INNERHTML_ALLOWED_TARGET.test(target) && INNERHTML_ALLOWED_SOURCE.test(value),
+      (INNERHTML_ALLOWED_TARGET.test(target) && INNERHTML_ALLOWED_SOURCE.test(value)) ||
+        // Template content is inert and never inserted into the live document: used
+        // only to extract quoted text from an HTML-only message before composing.
+        (/[\\/]web[\\/]compose\.js$/.test(file) && target === 'template' && value === "String(source.html || '')"),
       file,
       'js:innerhtml',
       `innerHTML assigned on "${target}" from "${value.slice(0, 48)}"`,
