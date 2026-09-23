@@ -32,9 +32,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::routes::mail::ownership::{owned_live_message, owned_mailbox, owned_message};
 use crate::routes::mail::store::{
-    describe_built_message, domain_name, outgoing_from, OutgoingMessage, StoredOutgoing,
+    content_digest,
+    describe_built_message, domain_name, outgoing_from, OutgoingMessage,
 };
-use crate::state::MailSender;
 
 /// What a send request asks for.
 #[derive(Debug, Clone, Default)]
@@ -100,7 +100,6 @@ pub struct MessageService {
     events: Arc<EventBus>,
     sync: Arc<SyncService>,
     config: Arc<Config>,
-    mail: Arc<dyn MailSender>,
 }
 
 impl std::fmt::Debug for MessageService {
@@ -120,7 +119,6 @@ impl MessageService {
         events: Arc<EventBus>,
         sync: Arc<SyncService>,
         config: Arc<Config>,
-        mail: Arc<dyn MailSender>,
     ) -> Self {
         MessageService {
             repos,
@@ -129,7 +127,6 @@ impl MessageService {
             events,
             sync,
             config,
-            mail,
         }
     }
 
@@ -144,13 +141,6 @@ impl MessageService {
     #[must_use]
     pub fn with_attachments(mut self, attachments: Arc<AttachmentStore>) -> Self {
         self.attachments = attachments;
-        self
-    }
-
-    /// Swap the delivery seam.
-    #[must_use]
-    pub fn with_mail_sender(mut self, mail: Arc<dyn MailSender>) -> Self {
-        self.mail = mail;
         self
     }
 
@@ -278,36 +268,77 @@ impl MessageService {
 
         let bytes = outgoing.build(&domain)?;
         let body = describe_built_message(&bytes, &outgoing);
-        let stored = self
-            .store_bytes(
-                &domain,
-                &mailbox,
-                folder_name,
-                flags,
-                request.draft,
-                &outgoing,
-                &body,
-            )
-            .await?;
 
-        self.sync
-            .record_message_created(user, &stored.message)
-            .await?;
-
-        let (queued, queued_recipients) = if request.draft {
-            (0usize, Vec::new())
+        // The Sent copy, its attachments and every outbound queue row commit in
+        // one transaction. Storing the copy and queueing the recipients as two
+        // steps meant a failed enqueue left a Sent row the user had been told
+        // had not sent, and a retry produced a duplicate.
+        let folder_row = self
+            .repos
+            .folders
+            .find_by_name(mailbox.mailbox_id(), folder_name)
+            .await?
+            .ok_or_else(|| FerromaError::NotFound(format!("folder {folder_name}")))?;
+        let staged = self
+            .maildir
+            .store(&domain, &mailbox.local_part, folder_name, &bytes, flags)?;
+        let remote_recipients = if request.draft {
+            Vec::new()
         } else {
-            let outcome = self
-                .mail
-                .enqueue(
-                    Some(user),
-                    stored.message.message_id(),
-                    outgoing.from.clone(),
-                    recipients,
-                )
-                .await?;
-            (outcome.queued, outcome.recipients)
+            recipients.clone()
         };
+        let submission = ferroma_storage::Submission {
+            user_id: user,
+            message: NewMessage {
+                folder_id: folder_row.folder_id(),
+                mailbox_id: mailbox.mailbox_id(),
+                rfc_message_id: body.message_id.clone(),
+                thread_id: body.thread_id.clone(),
+                subject: Some(outgoing.subject.clone()).filter(|s| !s.is_empty()),
+                sender: Some(outgoing.from.clone()),
+                sender_name: outgoing.from_name.clone(),
+                snippet: body.snippet.clone(),
+                size_bytes: staged.size as i64,
+                storage_path: staged.path.clone(),
+                checksum_sha256: Some(staged.sha256.clone()),
+                flags: flags.to_string(),
+                internal_date: None,
+                sent_at: body.sent_at,
+                has_attachments: !outgoing.attachments.is_empty(),
+                attachment_count: outgoing.attachments.len() as i32,
+                is_draft: request.draft,
+            },
+            recipients: body.recipients.clone(),
+            attachments: outgoing
+                .attachments
+                .iter()
+                .map(|attachment| ferroma_storage::SubmissionAttachment {
+                    filename: Some(attachment.filename.clone()),
+                    content_type: attachment.content_type.clone(),
+                    size_bytes: attachment.data.len() as i64,
+                    storage_path: attachment.path(),
+                    content_id: None,
+                    is_inline: false,
+                    checksum_sha256: Some(content_digest(&attachment.data)),
+                    replaces: attachment.id,
+                })
+                .collect(),
+            sender: outgoing.from.clone(),
+            remote_recipients: remote_recipients.clone(),
+            max_attempts: i32::try_from(self.config.queue.max_attempts).unwrap_or(i32::MAX),
+        };
+        let message = match ferroma_storage::store_submission(&self.repos, &submission).await {
+            Ok(message) => message,
+            Err(error) => {
+                if let Err(cleanup) = self.maildir.delete(&staged.path) {
+                    tracing::warn!(path = %staged.path, %cleanup,
+                        "could not remove staged body after a failed submission");
+                }
+                return Err(error.into());
+            }
+        };
+        let queued = remote_recipients.len();
+        let queued_recipients = remote_recipients;
 
         if !request.draft {
             for address in request.to.iter().chain(request.cc.iter()).chain(request.bcc.iter()) {
@@ -327,7 +358,7 @@ impl MessageService {
                     EventScope::User(user),
                     Event::mail_sent(
                         mailbox.mailbox_id(),
-                        stored.message.message_id(),
+                        message.message_id(),
                         queued,
                         true,
                     ),
@@ -337,14 +368,14 @@ impl MessageService {
 
         tracing::info!(
             user_id = user.get(),
-            message_id = stored.message.id,
+            message_id = message.id,
             queued,
             draft = request.draft,
             "message stored"
         );
 
         Ok(SendResult {
-            message_id: stored.message.id,
+            message_id: message.id,
             queued,
             recipients: queued_recipients,
             draft: request.draft,
@@ -461,32 +492,6 @@ impl MessageService {
             .and_hms_opt(0, 0, 0)
             .map(|naive| naive.and_utc())
             .unwrap_or(now)
-    }
-
-    /// Write bytes to the Maildir and the matching rows to the database.
-    #[allow(clippy::too_many_arguments)]
-    async fn store_bytes(
-        &self,
-        domain: &str,
-        mailbox: &Mailbox,
-        folder: &str,
-        flags: &str,
-        is_draft: bool,
-        outgoing: &OutgoingMessage,
-        body: &crate::routes::mail::store::ParsedBody,
-    ) -> Result<StoredOutgoing, FerromaError> {
-        crate::routes::mail::store::store_message(
-            &self.repos,
-            &self.maildir,
-            domain,
-            mailbox,
-            folder,
-            flags,
-            is_draft,
-            outgoing,
-            body,
-        )
-        .await
     }
 
     /// Import an RFC 5322 blob into one folder owned by `user`.
@@ -974,7 +979,6 @@ mod tests {
             Arc::new(EventBus::with_defaults()),
             Arc::new(SyncService::new(repos.clone(), 500, 30)),
             Arc::new(Config::default()),
-            Arc::new(crate::state::QueueMailSender::new(repos, 12)),
         )
     }
 
@@ -1037,7 +1041,6 @@ mod tests {
             Arc::new(EventBus::with_defaults()),
             Arc::new(SyncService::new(repos.clone(), 500, 30)),
             Arc::new(Config::default()),
-            Arc::new(crate::state::QueueMailSender::new(repos, 12)),
         );
 
         let swapped = service

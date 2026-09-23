@@ -59,4 +59,4 @@ pub use models::{
     Session, Setting, User,
 };
 pub use repository::Repositories;
-pub use submission::{store_submission, Submission};
+pub use submission::{store_submission, Submission, SubmissionAttachment};

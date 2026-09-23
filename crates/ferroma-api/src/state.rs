@@ -5,16 +5,13 @@
 //! repository handle (which is itself a pool handle) or a plain value, so cloning it
 //! per request costs a handful of atomic increments.
 //!
-//! # The send-path seam
+//! # Where a send is committed
 //!
-//! `ferroma-smtp` is the crate that will own SMTP delivery and the outbound queue
-//! worker. While it is still being written it exports nothing this crate can use, so
-//! the API talks to [`MailSender`] — a one-method trait defined *here* — and ships
-//! [`QueueMailSender`], which writes one `mail_queue` row per recipient through
-//! `ferroma-storage`'s [`ferroma_storage::Repositories::queue`] and lets the delivery
-//! worker pick it up later. When `ferroma-smtp` gains its queue-worker entry point,
-//! the only change is to hand `AppState::with_mail_sender` a different implementation;
-//! no route, and no response shape, has to move.
+//! The send path writes the Sent copy, its attachment rows and every outbound queue
+//! row in one `ferroma_storage::store_submission` transaction, so a failure leaves no
+//! half-sent state for a retry to duplicate. It used to go through a `MailSender`
+//! trait defined here, which queued recipients as a second step; that seam is gone
+//! because a queue row and the message it points at have to commit together.
 
 use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
@@ -28,74 +25,8 @@ use ferroma_auth::{AuthService, TokenService};
 use ferroma_core::config::Config;
 use ferroma_core::{FerromaError, MessageId, Result, UserId};
 use ferroma_events::EventBus;
-use ferroma_storage::repository::NewQueueEntry;
 use ferroma_storage::{AttachmentStore, Database, Maildir, Repositories};
 use ferroma_sync::SyncService;
-
-/// What [`MailSender::enqueue`] reports back to the caller.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SendOutcome {
-    /// How many queue rows were written.
-    pub queued: usize,
-    /// The recipients that were queued, in the order they were given.
-    pub recipients: Vec<String>,
-}
-
-/// The seam between this crate and the outbound delivery path.
-///
-/// A handler hands over the stored message id, the envelope sender and the resolved
-/// recipient list; the implementation decides how the mail actually leaves the
-/// building. See the module documentation for why this indirection exists.
-pub trait MailSender: Send + Sync + std::fmt::Debug {
-    /// Queue `message_id` for delivery to `recipients`.
-    fn enqueue(
-        &self,
-        user_id: Option<UserId>,
-        message_id: MessageId,
-        sender: String,
-        recipients: Vec<String>,
-    ) -> Pin<Box<dyn Future<Output = Result<SendOutcome>> + Send + '_>>;
-}
-
-/// The production [`MailSender`]: one `mail_queue` row per recipient.
-///
-/// Rows are written with `status = 'pending'` and `next_attempt_at = NOW()`, which is
-/// exactly what the queue dispatcher claims, so a message is delivered as soon as a
-/// worker is running.
-#[derive(Debug, Clone)]
-pub struct QueueMailSender {
-    repos: Repositories,
-    max_attempts: i32,
-}
-
-impl QueueMailSender {
-    /// Build the sender over `repos`, using the queue's configured attempt budget.
-    pub fn new(repos: Repositories, max_attempts: u32) -> Self {
-        QueueMailSender {
-            repos,
-            max_attempts: i32::try_from(max_attempts).unwrap_or(i32::MAX),
-        }
-    }
-}
-
-impl MailSender for QueueMailSender {
-    fn enqueue(
-        &self,
-        user_id: Option<UserId>,
-        message_id: MessageId,
-        sender: String,
-        recipients: Vec<String>,
-    ) -> Pin<Box<dyn Future<Output = Result<SendOutcome>> + Send + '_>> {
-        Box::pin(async move {
-            let entries: Vec<NewQueueEntry> = recipients.iter().map(|recipient| NewQueueEntry {
-                message_id, user_id, sender: sender.clone(), recipient: recipient.clone(),
-                max_attempts: self.max_attempts,
-            }).collect();
-            self.repos.queue.enqueue_batch(&entries).await?;
-            Ok(SendOutcome { queued: recipients.len(), recipients })
-        })
-    }
-}
 
 /// Live SMTP/IMAP connection counts, for `GET /api/v1/health`.
 ///
@@ -247,7 +178,7 @@ pub struct ManagedListenerStates {
 ///
 /// `ferroma-api` intentionally does not depend on the protocol crates. The binary owns
 /// sockets and implements this trait; routes only see this narrow, JSON-safe control
-/// seam, exactly as the outbound mail path uses [`MailSender`].
+/// seam, and the protocols stay out of this crate entirely.
 pub trait ListenerControl: Send + Sync + std::fmt::Debug {
     /// Current effective listener state.
     fn states(&self) -> ManagedListenerStates;
@@ -603,8 +534,6 @@ pub struct AppState {
     pub maildir: Maildir,
     /// Content-addressed attachment blobs.
     pub attachments: Arc<AttachmentStore>,
-    /// How outbound mail leaves the building.
-    pub mail: Arc<dyn MailSender>,
     /// When the process started.
     pub started_at: Instant,
     /// Wall-clock instant of the same moment, for `.well-known` and uptime reports.
@@ -708,10 +637,6 @@ impl AppState {
             config.attachment_root(),
             config.storage.fsync_on_write,
         ));
-        let mail: Arc<dyn MailSender> = Arc::new(QueueMailSender::new(
-            repos.clone(),
-            config.queue.max_attempts,
-        ));
         let mail_service = crate::service::MessageService::new(
             repos.clone(),
             maildir.clone(),
@@ -719,7 +644,6 @@ impl AppState {
             Arc::clone(&events),
             Arc::clone(&sync),
             Arc::clone(&config),
-            Arc::clone(&mail),
         );
         let listeners: Arc<dyn ListenerControl> = Arc::new(StaticListenerControl::from_config(&config));
         AppState {
@@ -732,7 +656,6 @@ impl AppState {
             tokens,
             maildir,
             attachments,
-            mail,
             started_at: Instant::now(),
             started_wall: Utc::now(),
             connections: Arc::new(ConnTracker::new()),
@@ -759,14 +682,6 @@ impl AppState {
         let shared = Arc::new(attachments);
         self.mail_service = self.mail_service.with_attachments(Arc::clone(&shared));
         self.attachments = shared;
-        self
-    }
-
-    /// Replace the delivery seam, for tests and for a future `ferroma-smtp` worker.
-    #[must_use]
-    pub fn with_mail_sender(mut self, mail: Arc<dyn MailSender>) -> Self {
-        self.mail = Arc::clone(&mail);
-        self.mail_service = self.mail_service.with_mail_sender(mail);
         self
     }
 
@@ -981,22 +896,6 @@ mod tests {
         assert!(registry.remove("tok-3").is_some());
         assert!(registry.get("tok-3").is_none());
         assert!(registry.is_empty());
-    }
-
-    #[tokio::test]
-    async fn queue_sender_writes_one_row_per_recipient() {
-        // Uses a connect-lazy pool: the sender is not exercised against a database
-        // here (the integration tests do that), only its construction and shape.
-        let sender = QueueMailSender::new(lazy_repos(), 12);
-        assert_eq!(sender.max_attempts, 12);
-        assert_eq!(
-            SendOutcome {
-                queued: 2,
-                recipients: vec!["a@b.c".into(), "d@e.f".into()]
-            }
-            .queued,
-            2
-        );
     }
 
     #[tokio::test]

@@ -12,7 +12,7 @@ use ferroma_storage::models::Message;
 use ferroma_storage::repository::{
     BatchMessage, MessageSearch, NewAttachment, NewMailbox, NewMessage, NewQueueEntry, NewUser, Recipient,
 };
-use ferroma_storage::{store_submission, StorageError, Submission};
+use ferroma_storage::{store_submission, StorageError, Submission, SubmissionAttachment};
 
 use common::{fresh_database, TestDatabase};
 
@@ -315,6 +315,7 @@ fn submission(f: &Fixture, sent: MailboxId) -> Submission {
             kind: "to".into(), address: "first@remote.test".into(),
             display_name: None, ordinal: 0,
         }],
+        attachments: Vec::new(),
         sender: "alice@example.com".into(),
         remote_recipients: vec!["first@remote.test".into(), "second@remote.test".into()],
         max_attempts: 5,
@@ -347,6 +348,64 @@ async fn submission_second_queue_insert_failure_rolls_back_sent_log_and_usage() 
     assert_eq!(counters(&after), (0, 0, 0));
     assert_eq!(after.uid_next, 1);
     assert_eq!(repos.users.require_by_id(f.user_id).await.unwrap().used_bytes, 0);
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn submission_writes_attachment_rows_and_replaces_the_uploader_placeholder() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+    let sent = repos.folders.require_by_name(f.mailbox_id, "Sent").await.unwrap();
+
+    // The uploader's placeholder: a row on a hidden draft, owned by the same user.
+    let draft = repos.messages.insert(message_in(&f, f.inbox_id, "placeholder", 0)).await.unwrap();
+    let placeholder = repos
+        .attachments
+        .insert(
+            draft.message_id(),
+            NewAttachment {
+                filename: Some("jmap-upload".into()),
+                content_type: "application/octet-stream".into(),
+                size_bytes: 4,
+                storage_path: "aa/bb/deadbeef".into(),
+                content_id: None,
+                is_inline: false,
+                checksum_sha256: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let mut proposed = submission(&f, sent.folder_id());
+    proposed.message.has_attachments = true;
+    proposed.message.attachment_count = 1;
+    proposed.attachments = vec![SubmissionAttachment {
+        filename: Some("invoice.pdf".into()),
+        content_type: "application/pdf".into(),
+        size_bytes: 4,
+        storage_path: "cc/dd/cafebabe".into(),
+        content_id: None,
+        is_inline: false,
+        checksum_sha256: None,
+        replaces: Some(placeholder.id),
+    }];
+    let message = store_submission(&repos, &proposed).await.unwrap();
+
+    let rows = repos.attachments.list_by_message(message.message_id()).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].filename.as_deref(), Some("invoice.pdf"));
+    assert_eq!(rows[0].storage_path, "cc/dd/cafebabe");
+    // The placeholder is gone, so the blob has exactly one owner.
+    assert!(repos.attachments.find_by_id(ferroma_core::AttachmentId::new(placeholder.id))
+        .await.unwrap().is_none());
+
+    // A mismatch between the row count and the metadata is refused, not stored.
+    let mut lying = submission(&f, sent.folder_id());
+    lying.message.has_attachments = true;
+    lying.message.attachment_count = 3;
+    assert!(matches!(store_submission(&repos, &lying).await, Err(StorageError::Invalid(_))));
+    assert_eq!(repos.messages.count_by_folder(sent.folder_id()).await.unwrap(), 1);
     t.cleanup().await;
 }
 

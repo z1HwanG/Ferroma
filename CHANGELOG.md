@@ -14,6 +14,18 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ## [Unreleased]
 
+### Changed
+
+- **The send path commits through `store_submission`.** The API's `MailSender`
+  seam queued recipients as a second step after storing the Sent copy, so a
+  failed enqueue left a Sent message the user had been told had not sent — and a
+  retry produced a duplicate. Authenticated SMTP submission had the same shape.
+  Both now stage the body, then commit the Sent row, its attachment rows, the
+  usage and every outbound queue row in one transaction through
+  `ferroma_storage::store_submission`. `Submission` carries attachment rows, and
+  an uploaded attachment's placeholder row is replaced in the same transaction.
+  The `MailSender` trait and `QueueMailSender` are gone with the seam.
+
 ### Fixed
 
 - **Outbound delivery survives worker crashes.** Claims a dead worker left in

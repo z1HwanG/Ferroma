@@ -47,6 +47,16 @@ pub const SNIPPET_CHARS: usize = 160;
 /// The folder inbound mail lands in.
 pub const INBOX: &str = "INBOX";
 
+/// The folder a submitted message is filed in.
+pub const SENT: &str = "Sent";
+
+/// Delivery attempts granted to a queue row this crate creates itself.
+///
+/// The queue worker re-reads `mail_queue.max_attempts` for its own give-up rule, so
+/// this is only the default a submission starts with; the configured
+/// `queue.max_attempts` is what the API path writes.
+const SELF_ATTEMPTS: i32 = 12;
+
 /// The folder a quarantined message lands in.
 ///
 /// The DMARC quarantine action files here instead of `INBOX`: the message is kept
@@ -143,6 +153,18 @@ impl ReceivedMessage {
         out.extend_from_slice(&self.body);
         out
     }
+}
+
+/// A submission's Sent copy staged on disk, waiting for its single commit.
+struct StagedSubmission {
+    /// The sender's address row, used for the Maildir path and the queue owner.
+    mailbox: Mailbox,
+    /// The `Sent` folder the row will live in.
+    folder_id: MailboxId,
+    /// The body file already written.
+    stored: ferroma_storage::StoredMessage,
+    /// Attachment rows to commit with the message.
+    attachments: Vec<ferroma_storage::SubmissionAttachment>,
 }
 
 /// What happened to one recipient.
@@ -538,34 +560,37 @@ impl DeliveryService {
         // One copy per mailbox per transaction: a message addressed to an address and
         // to an alias of the same mailbox is stored once.
         let mut per_mailbox: HashMap<MailboxId, MessageId> = HashMap::new();
-        // One Sent copy for the whole submission, however many remote recipients it has.
-        let mut submitted: Option<MessageId> = None;
+        // One Sent copy for the whole submission, however many remote recipients it
+        // has. It stays staged — not committed — until every remote queue row can
+        // commit with it.
+        let mut staged: Option<StagedSubmission> = None;
 
         for (address, resolution, is_local) in resolved {
             match resolution {
                 ResolvedRecipient::Unknown if submitter.is_some() && !is_local => {
                     if let Some(user_id) = submitter {
-                        if submitted.is_none() {
-                            match self.keep_submission(user_id, message, parsed).await {
-                                Ok(stored) => submitted = Some(stored),
+                        if staged.is_none() {
+                            match self.stage_submission(user_id, message, parsed).await {
+                                Ok(prepared) => staged = Some(prepared),
                                 Err(error) => {
                                     report.outcomes.push(RecipientOutcome::Failed {
                                         address: address.to_string(),
-                                        reason: error.to_string(),
+                                        reason: brief(&error),
                                     });
                                     continue;
                                 }
                             }
                         }
-                        if submitted.is_some() {
+                        if staged.is_some() {
                             remote_recipients.push(address.to_string());
+                            // The id is filled in after the commit below; a staged
+                            // copy has no row yet, and inventing one here would be
+                            // a lie the reply would carry.
+                            report.outcomes.push(RecipientOutcome::Queued {
+                                address: address.to_string(),
+                                message_id: MessageId::new(0),
+                            });
                         }
-                    }
-                    if let Some(message_id) = submitted {
-                        report.outcomes.push(RecipientOutcome::Queued {
-                            address: address.to_string(),
-                            message_id,
-                        });
                     }
                 }
                 ResolvedRecipient::Unknown => report.outcomes.push(RecipientOutcome::Unknown {
@@ -625,30 +650,33 @@ impl DeliveryService {
             }
         }
 
-        if let (Some(user_id), Some(stored)) = (submitter, submitted) {
-            let sender = message.sender.as_ref().map(ToString::to_string).unwrap_or_default();
-            let entries: Vec<ferroma_storage::repository::NewQueueEntry> = remote_recipients.iter()
-                .map(|recipient| ferroma_storage::repository::NewQueueEntry {
-                    message_id: stored, user_id: Some(user_id), sender: sender.clone(),
-                    recipient: recipient.clone(), max_attempts: 12,
-                }).collect();
-            if let Err(error) = self.repos.queue.enqueue_batch(&entries).await {
-                return Err(map_storage(error));
-            }
-            for recipient in &remote_recipients {
-                let _ = self.repos.contacts.remember(user_id, recipient, None).await;
+        if let Some(prepared) = staged {
+            let message_id = self
+                .commit_submission(message, parsed, prepared, &remote_recipients)
+                .await?;
+            for outcome in report.outcomes.iter_mut() {
+                if let RecipientOutcome::Queued { message_id: id, .. } = outcome {
+                    *id = message_id;
+                }
             }
         }
         Ok(report)
     }
 
     /// Keep a submitted message in the sender's Sent folder.
-    async fn keep_submission(
+    /// Stage the sender's Sent copy without committing it.
+    ///
+    /// The row, its attachment rows and every outbound queue entry commit later in
+    /// one [`ferroma_storage::store_submission`] transaction. Storing the copy here
+    /// and queueing afterwards — the previous shape — left a Sent message behind
+    /// when the queue write failed, so a peer that retried on our `4xx` produced a
+    /// duplicate the user could see but could not unsend.
+    async fn stage_submission(
         &self,
         user_id: UserId,
         message: &ReceivedMessage,
         parsed: &ParsedMessage,
-    ) -> Result<MessageId> {
+    ) -> Result<StagedSubmission> {
         let sender = message
             .sender
             .as_ref()
@@ -664,17 +692,121 @@ impl DeliveryService {
                 FerromaError::Forbidden(format!("{sender} is not an address of this account"))
             })?;
 
-        let mut copy = message.clone();
-        copy.deliver_to = Some("Sent".to_string());
-        let stored = self
-            .deliver_one(&mailbox, sender, parsed, &message.body, &copy)
-            .await?;
-        let _ = self
+        let folders = self
             .repos
-            .contacts
-            .remember(user_id, &sender.to_string(), None)
-            .await;
-        Ok(stored)
+            .folders
+            .ensure_standard(mailbox.mailbox_id())
+            .await
+            .map_err(map_storage)?;
+        let sent = folders
+            .iter()
+            .find(|folder| folder.name.eq_ignore_ascii_case(SENT))
+            .ok_or_else(|| FerromaError::internal("mailbox has no Sent folder"))?
+            .clone();
+        let stored = self
+            .maildir
+            .store(sender.domain(), sender.local_part(), &sent.name, &message.body, "")
+            .map_err(map_storage)?;
+
+        // Attachment blobs are written before the row that points at them. A blob
+        // that cannot be stored is skipped, and the counts below follow the rows
+        // that actually exist — a row may never claim an attachment it lacks.
+        let mut attachments = Vec::new();
+        for part in parsed.attachments() {
+            let content = part.content.clone();
+            if content.is_empty() {
+                continue;
+            }
+            let blob = match self.attachments.store(&content) {
+                Ok(blob) => blob,
+                Err(error) => {
+                    tracing::warn!(%error, "could not store attachment blob for the Sent copy");
+                    continue;
+                }
+            };
+            attachments.push(ferroma_storage::SubmissionAttachment {
+                filename: part.filename(),
+                content_type: part.content_type.to_string(),
+                size_bytes: blob.size as i64,
+                storage_path: blob.path,
+                content_id: part.content_id().map(str::to_string),
+                is_inline: part
+                    .disposition()
+                    .map(|d| d.eq_ignore_ascii_case("inline"))
+                    .unwrap_or(false),
+                checksum_sha256: Some(blob.sha256),
+                replaces: None,
+            });
+        }
+
+        Ok(StagedSubmission {
+            mailbox,
+            folder_id: sent.folder_id(),
+            stored,
+            attachments,
+        })
+    }
+
+    /// Commit a staged Sent copy and every remote queue row in one transaction.
+    ///
+    /// Nothing is visible until this succeeds, so a failure leaves the peer a clean
+    /// `4xx` to retry with no half-sent state behind it. The staged body file is
+    /// removed when the transaction rolls back.
+    async fn commit_submission(
+        &self,
+        message: &ReceivedMessage,
+        parsed: &ParsedMessage,
+        prepared: StagedSubmission,
+        remote_recipients: &[String],
+    ) -> Result<MessageId, FerromaError> {
+        let user_id = UserId::new(prepared.mailbox.user_id);
+        let sender = message.sender.as_ref().map(EmailAddress::to_string).unwrap_or_default();
+        let submission = ferroma_storage::Submission {
+            user_id,
+            message: NewMessage {
+                folder_id: prepared.folder_id,
+                mailbox_id: prepared.mailbox.mailbox_id(),
+                rfc_message_id: parsed.message_id().map(|id| id.as_str().to_string()),
+                thread_id: parsed
+                    .header("References")
+                    .or_else(|| parsed.header("In-Reply-To"))
+                    .map(|raw| raw.split_whitespace().next().unwrap_or(raw).to_string()),
+                subject: parsed.subject(),
+                sender: Some(sender.clone()),
+                sender_name: parsed.from().first().and_then(|from| from.name.clone()),
+                snippet: Some(parsed.snippet(SNIPPET_CHARS)),
+                size_bytes: prepared.stored.size as i64,
+                storage_path: prepared.stored.path.clone(),
+                checksum_sha256: Some(prepared.stored.sha256.clone()),
+                flags: String::new(),
+                internal_date: Some(message.received_at),
+                sent_at: parsed.date(),
+                has_attachments: !prepared.attachments.is_empty(),
+                attachment_count: prepared.attachments.len() as i32,
+                is_draft: false,
+            },
+            recipients: parsed_recipients(parsed),
+            attachments: prepared.attachments,
+            sender: sender.clone(),
+            remote_recipients: remote_recipients.to_vec(),
+            max_attempts: SELF_ATTEMPTS,
+        };
+        match ferroma_storage::store_submission(&self.repos, &submission).await {
+            Ok(row) => {
+                let _ = self.repos.contacts.remember(user_id, &sender, None).await;
+                for recipient in remote_recipients {
+                    let _ = self.repos.contacts.remember(user_id, recipient, None).await;
+                }
+                Ok(row.message_id())
+            }
+            Err(error) => {
+                if let Err(cleanup) = self.maildir.delete(&prepared.stored.path) {
+                    tracing::warn!(path = %prepared.stored.path, %cleanup,
+                        "could not remove the staged Sent body after a failed submission");
+                }
+                Err(map_storage(error))
+            }
+        }
     }
 
     /// Accept all unauthenticated local RCPTs as a single durable SMTP decision.

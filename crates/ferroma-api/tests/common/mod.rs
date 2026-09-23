@@ -28,7 +28,7 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use axum::Router;
-use ferroma_api::{AppState, ConnTracker, MailSender};
+use ferroma_api::{AppState, ConnTracker};
 use ferroma_auth::{AuthService, TokenService};
 use ferroma_core::config::MailboxLayout;
 use ferroma_core::{Config, Limits};
@@ -378,13 +378,6 @@ impl TestApp {
             database,
             dir,
         }
-    }
-
-    /// Replace the delivery seam, so a test can assert on what would be queued.
-    pub fn with_mail_sender(mut self, sender: Arc<dyn MailSender>) -> Self {
-        self.state = self.state.clone().with_mail_sender(sender);
-        self.router = ferroma_api::build(self.state.clone());
-        self
     }
 
     /// The temporary directory the stores live in.

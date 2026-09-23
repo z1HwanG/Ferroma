@@ -9,15 +9,43 @@ use crate::models::Message;
 use crate::repository::{NewMessage, Recipient, Repositories};
 use ferroma_core::UserId;
 
+/// One attachment row to write alongside a staged submission.
+///
+/// The bytes are already in the blob store; only the row that points at them is
+/// written here, so it commits with the message that owns it.
+#[derive(Debug, Clone)]
+pub struct SubmissionAttachment {
+    /// Original file name, when the part had one.
+    pub filename: Option<String>,
+    /// MIME type of the part.
+    pub content_type: String,
+    /// Size of the stored blob.
+    pub size_bytes: i64,
+    /// Path of the blob in the attachment store.
+    pub storage_path: String,
+    /// `Content-ID` for inline parts, without angle brackets.
+    pub content_id: Option<String>,
+    /// Whether the part is referenced from the HTML body.
+    pub is_inline: bool,
+    /// SHA-256 of the blob.
+    pub checksum_sha256: Option<String>,
+    /// An existing row to replace — the uploader's placeholder, which hangs from
+    /// a hidden draft message until the real one exists. It is deleted in the
+    /// same transaction, scoped to this submission's owner.
+    pub replaces: Option<i64>,
+}
+
 /// All database inputs for one staged Sent copy and its remote delivery recipients.
 #[derive(Debug, Clone)]
 pub struct Submission {
     /// Authenticated owner of the Sent mailbox and queue rows.
     pub user_id: UserId,
-    /// Already-staged Sent message metadata, without attachment rows.
+    /// Already-staged Sent message metadata.
     pub message: NewMessage,
     /// Header recipients recorded with the Sent copy.
     pub recipients: Vec<Recipient>,
+    /// Attachment rows to write, in the order the message lists them.
+    pub attachments: Vec<SubmissionAttachment>,
     /// SMTP envelope sender shared by every remote queue row.
     pub sender: String,
     /// SMTP envelope recipients, one pending queue entry per address.
@@ -26,16 +54,39 @@ pub struct Submission {
     pub max_attempts: i32,
 }
 
-/// Commit one Sent message, header recipients, outbound queue, usage and creation log.
+impl Submission {
+    /// A submission with no attachment rows.
+    pub fn without_attachments(
+        user_id: UserId,
+        message: NewMessage,
+        recipients: Vec<Recipient>,
+        sender: String,
+        remote_recipients: Vec<String>,
+        max_attempts: i32,
+    ) -> Self {
+        Submission {
+            user_id,
+            message,
+            recipients,
+            attachments: Vec::new(),
+            sender,
+            remote_recipients,
+            max_attempts,
+        }
+    }
+}
+
+/// Commit one Sent message, its header recipients, attachment rows, outbound
+/// queue, usage and creation log in a single transaction.
 ///
 /// The owner and destination folder are locked before reading actual live message
 /// totals. Both the account quota and an optional mailbox override are enforced;
 /// cached `users.used_bytes` is repaired from live rows in the same transaction.
-/// A failed recipient, journal or queue insert rolls everything back, including
-/// folder counters and UID allocation. The caller owns the staged Maildir body and
-/// must remove it on failure. Attachment rows are outside this API: submissions
-/// with attachment metadata are rejected rather than committing an incomplete copy.
-/// An empty remote recipient list is allowed (a local-only Sent copy).
+/// A failed recipient, attachment, journal or queue insert rolls everything back,
+/// including folder counters, UID allocation and the deleted placeholder rows.
+/// The caller owns the staged Maildir body and blob files and must remove the
+/// body on failure. `message.has_attachments` and `message.attachment_count` must
+/// agree with `attachments`, so a row can never claim attachments it does not have.
 pub async fn store_submission(repos: &Repositories, submission: &Submission) -> Result<Message> {
     let new = &submission.message;
     if new.size_bytes < 0 || new.attachment_count < 0 {
@@ -43,9 +94,20 @@ pub async fn store_submission(repos: &Repositories, submission: &Submission) -> 
             "message size_bytes and attachment_count must be >= 0".into(),
         ));
     }
-    if new.has_attachments || new.attachment_count != 0 {
+    if new.attachment_count != submission.attachments.len() as i32
+        || new.has_attachments != !submission.attachments.is_empty()
+    {
         return Err(StorageError::Invalid(
-            "submission does not support attachment rows".into(),
+            "message attachment_count and has_attachments must match the submission's rows".into(),
+        ));
+    }
+    if submission
+        .attachments
+        .iter()
+        .any(|attachment| attachment.size_bytes < 0 || attachment.content_type.trim().is_empty())
+    {
+        return Err(StorageError::Invalid(
+            "an attachment needs a content type and a non-negative size".into(),
         ));
     }
     if submission.max_attempts < 0
@@ -133,6 +195,37 @@ pub async fn store_submission(repos: &Repositories, submission: &Submission) -> 
         .bind(&recipient.address)
         .bind(recipient.display_name.as_deref())
         .bind(recipient.ordinal)
+        .execute(&mut *tx)
+        .await?;
+    }
+    for attachment in &submission.attachments {
+        // The uploader's placeholder hangs from a hidden draft and is owned by the
+        // same user; replacing it here is what keeps the blob's only row pointing
+        // at the message that actually goes out.
+        if let Some(replaced) = attachment.replaces {
+            sqlx::query(
+                "DELETE FROM attachments a USING messages m, mailboxes b
+                  WHERE a.id = $1 AND a.message_id = m.id AND m.mailbox_id = b.id
+                    AND b.user_id = $2",
+            )
+            .bind(replaced)
+            .bind(submission.user_id.get())
+            .execute(&mut *tx)
+            .await?;
+        }
+        sqlx::query(
+            "INSERT INTO attachments (message_id, filename, content_type, size_bytes,
+                                      storage_path, content_id, is_inline, checksum_sha256)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        )
+        .bind(message.id)
+        .bind(attachment.filename.as_deref())
+        .bind(&attachment.content_type)
+        .bind(attachment.size_bytes)
+        .bind(&attachment.storage_path)
+        .bind(attachment.content_id.as_deref())
+        .bind(attachment.is_inline)
+        .bind(attachment.checksum_sha256.as_deref())
         .execute(&mut *tx)
         .await?;
     }

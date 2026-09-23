@@ -687,6 +687,75 @@ async fn auth_login_with_the_username_as_an_initial_response() {
     harness.finish().await;
 }
 
+/// A submission whose queue write fails must leave no Sent copy behind.
+///
+/// The Sent row and the outbound queue rows commit in one transaction. When the
+/// queue insert is refused the peer is told to retry, and there must be nothing
+/// for that retry to duplicate — previously the Sent copy was stored first, so a
+/// retrying client produced a second one the user could see but not unsend.
+#[tokio::test]
+async fn a_failed_submission_queue_write_leaves_no_sent_copy() {
+    crate::require_database!();
+    let harness = Harness::start(|_| {}).await;
+    sqlx::query(
+        "CREATE FUNCTION refuse_submission_queue() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN RAISE EXCEPTION 'injected queue failure'; END $$",
+    )
+    .execute(harness.db.db().pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER refuse_submission_queue BEFORE INSERT ON mail_queue
+         FOR EACH ROW EXECUTE FUNCTION refuse_submission_queue()",
+    )
+    .execute(harness.db.db().pool())
+    .await
+    .unwrap();
+
+    let (mut client, _banner) = TestClient::connect(harness.address).await;
+    let _ = client.command("EHLO client.example.net").await;
+    let payload = sasl("\0alice@mx.test\0correct horse battery staple");
+    assert!(first_line(&client.command(&format!("AUTH PLAIN {payload}")).await).starts_with("235"));
+
+    let _ = client.command("MAIL FROM:<alice@mx.test>").await;
+    assert_eq!(
+        first_line(&client.command("RCPT TO:<friend@external.example.net>").await),
+        "250 2.1.0 Ok"
+    );
+    assert_eq!(
+        first_line(&client.command("DATA").await),
+        "354 End data with <CR><LF>.<CR><LF>"
+    );
+    let reply = first_line(
+        &client
+            .command("Subject: refused\r\n\r\nbody\r\n.")
+            .await,
+    );
+    assert!(
+        reply.starts_with("451 ") || reply.starts_with("452 ") || reply.starts_with("421 "),
+        "a failed submission must be a temporary failure: {reply}"
+    );
+
+    let sent = harness
+        .repos
+        .folders
+        .require_by_name(harness.mailbox_id, "Sent")
+        .await
+        .expect("Sent exists");
+    assert_eq!(
+        harness.repos.messages.count_by_folder(sent.folder_id()).await.unwrap(),
+        0,
+        "a rolled-back submission must leave no Sent copy"
+    );
+    let queued: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mail_queue")
+        .fetch_one(harness.db.db().pool())
+        .await
+        .unwrap();
+    assert_eq!(queued, 0);
+
+    harness.finish().await;
+}
+
 #[tokio::test]
 async fn an_authenticated_peer_may_relay() {
     crate::require_database!();
