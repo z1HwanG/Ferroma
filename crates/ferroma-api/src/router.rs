@@ -195,7 +195,19 @@ pub fn management_api() -> Router<AppState> {
         .route("/auth/refresh", post(routes::auth::refresh))
         .route("/auth/logout", post(routes::auth::logout))
         .route("/auth/me", get(routes::auth::me))
-        .route("/auth/password", post(routes::auth::change_password));
+        .route("/auth/password", post(routes::auth::change_password))
+        .route("/auth/totp", get(routes::mfa::totp_status))
+        .route("/auth/totp/enroll", post(routes::mfa::totp_enroll))
+        .route("/auth/totp/confirm", post(routes::mfa::totp_confirm))
+        .route("/auth/totp/disable", post(routes::mfa::totp_disable))
+        .route(
+            "/auth/app-passwords",
+            get(routes::mfa::list_app_passwords).post(routes::mfa::create_app_password),
+        )
+        .route(
+            "/auth/app-passwords/{id}",
+            delete(routes::mfa::revoke_app_password),
+        );
 
     let setup = Router::new().route(
         "/setup",

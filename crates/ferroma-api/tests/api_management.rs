@@ -1598,3 +1598,176 @@ async fn accept_language_selects_the_language_of_the_error_message() {
 
     app.cleanup().await;
 }
+
+// ---------------------------------------------------------------------------
+// Second factors and application passwords
+// ---------------------------------------------------------------------------
+
+/// The current TOTP code for a secret, as an authenticator app would show it.
+fn totp_code(secret: &str) -> String {
+    ferroma_auth::totp::current_code(secret, std::time::SystemTime::now()).expect("a code")
+}
+
+#[tokio::test]
+async fn a_second_factor_can_be_enrolled_confirmed_and_removed() {
+    require_database!();
+    let app = TestApp::new().await;
+    let admin = bootstrap_admin(&app).await;
+    let (_user_id, _mailbox_id, token) =
+        seed_account(&app, &admin, "example.net", "alice@example.net", PASSWORD).await;
+
+    // Nothing enrolled yet.
+    let status = app.get("/api/v1/auth/totp", Some(&token)).await;
+    let body = status.expect(StatusCode::OK);
+    assert_eq!(body["status"], "disabled");
+    assert_eq!(body["recovery_codes_left"], 0);
+
+    // Enroll: a secret and a scannable URI come back once.
+    let enrolled = app
+        .json("POST", "/api/v1/auth/totp/enroll", Some(&token), json!({}))
+        .await
+        .expect(StatusCode::OK);
+    let secret = enrolled["secret"].as_str().expect("a secret").to_string();
+    assert!(enrolled["uri"].as_str().unwrap_or_default().starts_with("otpauth://totp/"));
+
+    // Pending, not enforced: the password still logs in.
+    assert_eq!(
+        app.get("/api/v1/auth/totp", Some(&token)).await.expect(StatusCode::OK)["status"],
+        "pending"
+    );
+    let _ = login(&app, "alice@example.net", PASSWORD).await;
+
+    // A wrong code does not confirm it.
+    let refused = app
+        .json("POST", "/api/v1/auth/totp/confirm", Some(&token), json!({ "code": "000000" }))
+        .await;
+    assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+
+    let confirmed = app
+        .json("POST", "/api/v1/auth/totp/confirm", Some(&token), json!({ "code": totp_code(&secret) }))
+        .await
+        .expect(StatusCode::OK);
+    let codes: Vec<String> = confirmed["recovery_codes"]
+        .as_array()
+        .expect("recovery codes")
+        .iter()
+        .filter_map(|value| value.as_str().map(str::to_string))
+        .collect();
+    assert_eq!(codes.len(), ferroma_auth::totp::RECOVERY_CODE_COUNT);
+
+    let enabled = app.get("/api/v1/auth/totp", Some(&token)).await.expect(StatusCode::OK);
+    assert_eq!(enabled["status"], "enabled");
+    assert_eq!(
+        enabled["recovery_codes_left"],
+        ferroma_auth::totp::RECOVERY_CODE_COUNT as i64
+    );
+
+    // The password alone no longer logs in, and the answer says which half is missing.
+    let gated = app
+        .json("POST", "/api/v1/auth/login", None, json!({
+            "email": "alice@example.net", "password": PASSWORD
+        }))
+        .await;
+    assert_eq!(gated.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(gated.error_code(), "totp_required");
+
+    // With the code it does.
+    let logged_in = app
+        .json("POST", "/api/v1/auth/login", None, json!({
+            "email": "alice@example.net", "password": PASSWORD, "totp": totp_code(&secret)
+        }))
+        .await;
+    assert_eq!(logged_in.status, StatusCode::OK);
+
+    // Turning it off needs the account password, not just the session.
+    let without_password = app
+        .json("POST", "/api/v1/auth/totp/disable", Some(&token), json!({ "password": "wrong" }))
+        .await;
+    assert_eq!(without_password.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        app.get("/api/v1/auth/totp", Some(&token)).await.expect(StatusCode::OK)["status"],
+        "enabled",
+        "a failed disable must leave the factor in place"
+    );
+
+    let disabled = app
+        .json("POST", "/api/v1/auth/totp/disable", Some(&token), json!({ "password": PASSWORD }))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(disabled["status"], "disabled");
+
+    // And the password works alone again.
+    let _ = login(&app, "alice@example.net", PASSWORD).await;
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn an_application_password_is_minted_listed_and_revoked() {
+    require_database!();
+    let app = TestApp::new().await;
+    let admin = bootstrap_admin(&app).await;
+    let (_user_id, _mailbox_id, token) =
+        seed_account(&app, &admin, "example.net", "alice@example.net", PASSWORD).await;
+
+    let empty = app
+        .get("/api/v1/auth/app-passwords", Some(&token))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(empty["items"].as_array().map(Vec::len), Some(0));
+
+    let created = app
+        .json("POST", "/api/v1/auth/app-passwords", Some(&token), json!({ "label": "Thunderbird" }))
+        .await
+        .expect(StatusCode::CREATED);
+    let secret = created["secret"].as_str().expect("the secret").to_string();
+    let id = created["id"].as_i64().expect("an id");
+    assert!(secret.starts_with("ap_"));
+    assert_eq!(created["label"], "Thunderbird");
+    assert!(created["last_used_at"].is_null());
+
+    // It is a working credential for a client that cannot present a code.
+    let used = app
+        .json("POST", "/api/v1/auth/login", None, json!({
+            "email": "alice@example.net", "password": secret
+        }))
+        .await;
+    assert_eq!(used.status, StatusCode::OK);
+
+    let listed = app
+        .get("/api/v1/auth/app-passwords", Some(&token))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(listed["items"].as_array().map(Vec::len), Some(1));
+    assert_eq!(listed["items"][0]["label"], "Thunderbird");
+    assert!(
+        listed["items"][0]["last_used_at"].is_string(),
+        "a used password must be stamped: {listed}"
+    );
+
+    let revoked = app
+        .delete(&format!("/api/v1/auth/app-passwords/{id}"), Some(&token))
+        .await;
+    assert_eq!(revoked.status, StatusCode::NO_CONTENT);
+
+    // Revoking twice is a 404, not a silent success.
+    let again = app
+        .delete(&format!("/api/v1/auth/app-passwords/{id}"), Some(&token))
+        .await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND);
+
+    // And the secret stops working.
+    let refused = app
+        .json("POST", "/api/v1/auth/login", None, json!({
+            "email": "alice@example.net", "password": secret
+        }))
+        .await;
+    assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+
+    // A blank label is refused rather than stored.
+    let blank = app
+        .json("POST", "/api/v1/auth/app-passwords", Some(&token), json!({ "label": "   " }))
+        .await;
+    assert_eq!(blank.status, StatusCode::BAD_REQUEST);
+
+    app.cleanup().await;
+}

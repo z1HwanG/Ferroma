@@ -19,6 +19,7 @@ mod domains;
 mod greylist;
 mod mailboxes;
 mod messages;
+mod mfa;
 mod misc;
 mod queue;
 mod sync;
@@ -32,6 +33,10 @@ pub use greylist::{GreylistDecision, GreylistRepository};
 pub use mailboxes::{FoldersRepository, MailboxWithDomain, MailboxesRepository, NewMailbox};
 pub use messages::{
     AttachmentsRepository, BatchMessage, MessageSearch, MessagesRepository, NewAttachment, NewMessage, Recipient,
+};
+pub use mfa::{
+    AppPassword, AppPasswordsRepository, RecoveryCode, RecoveryCodesRepository, TotpEnrollment,
+    TotpRepository,
 };
 pub use misc::{
     DraftUpdate, DraftsRepository, LoginAttemptsRepository, NewDraft, SettingsRepository,
@@ -90,6 +95,12 @@ pub struct Repositories {
     pub contacts: ContactsRepository,
     /// Peer triplets already seen, for greylisting.
     pub greylist: GreylistRepository,
+    /// TOTP registrations: one secret per account.
+    pub totp: TotpRepository,
+    /// Single-use second-factor recovery codes.
+    pub recovery_codes: RecoveryCodesRepository,
+    /// Long-lived credentials for individual mail clients.
+    pub app_passwords: AppPasswordsRepository,
 }
 
 impl Repositories {
@@ -116,6 +127,9 @@ impl Repositories {
             settings: SettingsRepository::new(pool.clone()),
             contacts: ContactsRepository::new(pool.clone()),
             greylist: GreylistRepository::new(pool.clone()),
+            totp: TotpRepository::new(pool.clone()),
+            recovery_codes: RecoveryCodesRepository::new(pool.clone()),
+            app_passwords: AppPasswordsRepository::new(pool.clone()),
             pool,
         }
     }

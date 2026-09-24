@@ -688,3 +688,254 @@ async fn sessions_can_be_listed_and_revoked_in_bulk() {
 
     t.cleanup().await;
 }
+
+// ===========================================================================
+// Second factors and application passwords
+// ===========================================================================
+
+/// A valid code for the enrollment the harness is holding.
+fn current_code(secret: &str) -> String {
+    ferroma_auth::totp::current_code(secret, std::time::SystemTime::now()).expect("a code")
+}
+
+/// Enroll and confirm a second factor, returning the recovery codes.
+async fn enable_totp(t: &TestAuth, user: &ferroma_storage::models::User) -> Vec<String> {
+    let enrollment = t.auth.begin_totp_enrollment(user).await.expect("begin");
+    let codes = t
+        .auth
+        .confirm_totp_enrollment(UserId::new(user.id), &current_code(&enrollment.secret))
+        .await
+        .expect("confirm");
+    codes
+}
+
+#[tokio::test]
+async fn enrolling_needs_a_code_before_it_is_enforced() {
+    if !common::database_available().await {
+        eprintln!("skipping: no PostgreSQL reachable");
+        return;
+    }
+    let t = fresh_auth().await;
+    let user = t.create_user("alice@example.com").await;
+
+    // Not enrolled: a password is enough.
+    assert_eq!(t.auth.totp_status(UserId::new(user.id)).await.unwrap(), ferroma_auth::TotpStatus::Disabled);
+    login(&t, "alice@example.com").await;
+
+    let enrollment = t.auth.begin_totp_enrollment(&user).await.expect("begin");
+    assert!(enrollment.uri.starts_with("otpauth://totp/"));
+    assert!(enrollment.uri.contains(&enrollment.secret));
+    assert!(enrollment.secret.len() >= 32);
+
+    // Pending, not enforced: a bad scan must not lock the account out.
+    assert_eq!(t.auth.totp_status(UserId::new(user.id)).await.unwrap(), ferroma_auth::TotpStatus::Pending);
+    login(&t, "alice@example.com").await;
+
+    // A wrong code does not confirm it.
+    let refused = t
+        .auth
+        .confirm_totp_enrollment(UserId::new(user.id), "000000")
+        .await;
+    assert!(matches!(refused, Err(FerromaError::Unauthorized(_))), "{refused:?}");
+    assert_eq!(t.auth.totp_status(UserId::new(user.id)).await.unwrap(), ferroma_auth::TotpStatus::Pending);
+
+    let codes = t
+        .auth
+        .confirm_totp_enrollment(UserId::new(user.id), &current_code(&enrollment.secret))
+        .await
+        .expect("confirm");
+    assert_eq!(codes.len(), ferroma_auth::totp::RECOVERY_CODE_COUNT);
+    assert_eq!(t.auth.totp_status(UserId::new(user.id)).await.unwrap(), ferroma_auth::TotpStatus::Enabled);
+    assert_eq!(
+        t.auth.recovery_codes_left(UserId::new(user.id)).await.unwrap(),
+        ferroma_auth::totp::RECOVERY_CODE_COUNT as i64
+    );
+
+    // Confirming again is refused rather than reissuing codes silently.
+    let again = t
+        .auth
+        .confirm_totp_enrollment(UserId::new(user.id), &current_code(&enrollment.secret))
+        .await;
+    assert!(matches!(again, Err(FerromaError::Conflict(_))), "{again:?}");
+
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn an_enforced_second_factor_gates_every_password_login() {
+    if !common::database_available().await {
+        eprintln!("skipping: no PostgreSQL reachable");
+        return;
+    }
+    let t = fresh_auth().await;
+    let user = t.create_user("alice@example.com").await;
+    let enrollment = t.auth.begin_totp_enrollment(&user).await.expect("begin");
+    t.auth
+        .confirm_totp_enrollment(UserId::new(user.id), &current_code(&enrollment.secret))
+        .await
+        .expect("confirm");
+
+    // The old entry point cannot satisfy the factor, and must say so distinctly:
+    // "send the code", not "wrong password".
+    let gated = t
+        .auth
+        .login("alice@example.com", TEST_PASSWORD, SessionKind::Api, None, None, None)
+        .await;
+    assert!(matches!(gated, Err(FerromaError::TotpRequired)), "{gated:?}");
+
+    // A wrong code is a failed login, and it is counted so codes cannot be brute
+    // forced at the speed of the network.
+    let wrong = t
+        .auth
+        .login_with_factor("alice@example.com", TEST_PASSWORD, Some("000000"),
+            SessionKind::Api, None, None, None)
+        .await;
+    assert!(matches!(wrong, Err(FerromaError::Unauthorized(_))), "{wrong:?}");
+    let reloaded = t.repos().users.require_by_id(UserId::new(user.id)).await.unwrap();
+    assert_eq!(reloaded.failed_logins, 1, "a guessed code must count as a failure");
+
+    // The right code opens the session.
+    let outcome = t
+        .auth
+        .login_with_factor("alice@example.com", TEST_PASSWORD, Some(&current_code(&enrollment.secret)),
+            SessionKind::Api, None, Some("test"), None)
+        .await
+        .expect("login with the factor");
+    assert_eq!(outcome.user.id, user.id);
+    let cleared = t.repos().users.require_by_id(UserId::new(user.id)).await.unwrap();
+    assert_eq!(cleared.failed_logins, 0);
+
+    // Turning it off restores a password-only login.
+    assert!(t.auth.disable_totp(UserId::new(user.id)).await.unwrap());
+    assert_eq!(t.auth.totp_status(UserId::new(user.id)).await.unwrap(), ferroma_auth::TotpStatus::Disabled);
+    login(&t, "alice@example.com").await;
+
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_recovery_code_works_once_and_is_counted_down() {
+    if !common::database_available().await {
+        eprintln!("skipping: no PostgreSQL reachable");
+        return;
+    }
+    let t = fresh_auth().await;
+    let user = t.create_user("alice@example.com").await;
+    let codes = enable_totp(&t, &user).await;
+
+    let first = t
+        .auth
+        .login_with_factor("alice@example.com", TEST_PASSWORD, Some(&codes[0]),
+            SessionKind::Api, None, None, None)
+        .await
+        .expect("the first code must work");
+    assert_eq!(first.user.id, user.id);
+    assert_eq!(
+        t.auth.recovery_codes_left(UserId::new(user.id)).await.unwrap(),
+        codes.len() as i64 - 1
+    );
+
+    // Single use: the same code cannot be replayed.
+    let replay = t
+        .auth
+        .login_with_factor("alice@example.com", TEST_PASSWORD, Some(&codes[0]),
+            SessionKind::Api, None, None, None)
+        .await;
+    assert!(matches!(replay, Err(FerromaError::Unauthorized(_))), "{replay:?}");
+
+    // And the spacing/case a person types does not matter.
+    let second = t
+        .auth
+        .login_with_factor("alice@example.com", TEST_PASSWORD,
+            Some(&codes[1].replace('-', " ").to_lowercase()),
+            SessionKind::Api, None, None, None)
+        .await
+        .expect("a code typed back in another shape must work");
+    assert_eq!(second.user.id, user.id);
+
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn an_application_password_is_the_way_a_client_gets_in() {
+    if !common::database_available().await {
+        eprintln!("skipping: no PostgreSQL reachable");
+        return;
+    }
+    let t = fresh_auth().await;
+    let user = t.create_user("alice@example.com").await;
+    let user_id = UserId::new(user.id);
+
+    // Before the second factor, the account password works for a client.
+    let matched = t.auth.authenticate_client("alice@example.com", TEST_PASSWORD).await.unwrap();
+    assert_eq!(matched, Some(user_id));
+    assert_eq!(t.auth.authenticate_client("alice@example.com", "wrong").await.unwrap(), None);
+    assert_eq!(t.auth.authenticate_client("nobody@example.com", TEST_PASSWORD).await.unwrap(), None);
+
+    enable_totp(&t, &user).await;
+
+    // With it enforced, a client that cannot present a code must not slide by on the
+    // password alone — that is the whole point of enabling it.
+    assert_eq!(t.auth.authenticate_client("alice@example.com", TEST_PASSWORD).await.unwrap(), None);
+
+    let (row, token) = t.auth.create_app_password(user_id, "Thunderbird").await.expect("create");
+    assert_eq!(row.label, "Thunderbird");
+    assert!(token.starts_with("ap_"));
+    assert_eq!(t.auth.authenticate_client("alice@example.com", &token).await.unwrap(), Some(user_id));
+
+    // Using it stamps last_used_at, which is what tells an operator it is live.
+    let listed = t.auth.list_app_passwords(user_id).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].last_used_at.is_some(), "a used password must be stamped");
+
+    // Revoking it closes that door and only that door.
+    assert!(t.auth.revoke_app_password(user_id, row.id).await.unwrap());
+    assert_eq!(t.auth.authenticate_client("alice@example.com", &token).await.unwrap(), None);
+
+    // A label is required, and another account cannot revoke this one's password.
+    assert!(matches!(t.auth.create_app_password(user_id, "   ").await, Err(FerromaError::Invalid(_))));
+    let stranger = t.create_user("bob@example.com").await;
+    assert!(!t.auth.revoke_app_password(UserId::new(stranger.id), row.id).await.unwrap());
+
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn an_application_password_opens_an_api_session_too() {
+    if !common::database_available().await {
+        eprintln!("skipping: no PostgreSQL reachable");
+        return;
+    }
+    let t = fresh_auth().await;
+    let user = t.create_user("alice@example.com").await;
+    let user_id = UserId::new(user.id);
+    enable_totp(&t, &user).await;
+
+    let (_row, token) = t.auth.create_app_password(user_id, "JMAP client").await.expect("create");
+
+    // A client that can only send Basic credentials — JMAP's discovery request, for
+    // instance — is served by the application password without a TOTP code.
+    let outcome = t
+        .auth
+        .login("alice@example.com", &token, SessionKind::Jmap, None, Some("jmap"), None)
+        .await
+        .expect("an application password must open a session");
+    assert_eq!(outcome.user.id, user.id);
+
+    // A wrong application password is a failure, not an accidental password check.
+    let wrong = t
+        .auth
+        .login("alice@example.com", "ap_not-a-real-token", SessionKind::Jmap, None, None, None)
+        .await;
+    assert!(matches!(wrong, Err(FerromaError::Unauthorized(_))), "{wrong:?}");
+
+    // Revoking it stops working immediately, and the TOTP gate is back in force.
+    assert!(t.auth.revoke_app_password(user_id, t.auth.list_app_passwords(user_id).await.unwrap()[0].id).await.unwrap());
+    let revoked = t
+        .auth
+        .login("alice@example.com", &token, SessionKind::Jmap, None, None, None)
+        .await;
+    assert!(matches!(revoked, Err(FerromaError::Unauthorized(_))), "{revoked:?}");
+
+    t.cleanup().await;
+}

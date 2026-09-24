@@ -182,6 +182,11 @@ impl TokenService {
         self.ephemeral_secret
     }
 
+    /// The issuer string, which is also the name an authenticator app shows.
+    pub fn issuer(&self) -> &str {
+        &self.issuer
+    }
+
     /// Access-token lifetime, in seconds.
     pub fn access_ttl_secs(&self) -> u64 {
         self.access_ttl.as_secs()

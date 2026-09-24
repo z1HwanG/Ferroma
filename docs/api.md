@@ -210,7 +210,7 @@ See §4.4.
 ### `POST /api/v1/auth/login`
 
 ```json
-{ "email": "alice@example.com", "password": "…", "device_name": "Firefox on Linux" }
+{ "email": "alice@example.com", "password": "…", "device_name": "Firefox on Linux", "totp": "123456" }
 ```
 
 ```json
@@ -227,6 +227,17 @@ Sets the `ferroma_session` cookie when `device_name` is absent (browser flow).
 `401 unauthorized` for bad credentials; `429 rate_limited` after
 `limits.max_failed_logins` failures, with the account locked for
 `limits.login_lockout_secs`.
+
+`totp` is a six-digit code or a one-time recovery code, and is required only when
+the account enforces a second factor. Omitting it then answers
+`401 totp_required` — deliberately **not** `unauthorized`, because it means "send
+the code" rather than "the password was wrong", and a client that conflated the two
+would retry the password forever. A wrong code counts as a failed login, so the
+lockout covers code guessing too.
+
+`password` may also be an **application password** (`ap_…`) on any login surface,
+including the client and JMAP ones. That is what lets a mail client — which cannot
+be asked for a code — keep working while the second factor is enforced.
 
 ### `POST /api/v1/auth/refresh`
 
@@ -256,6 +267,25 @@ The authenticated user, plus their addresses:
 ### `POST /api/v1/auth/password`
 
 `{ "current_password": "…", "new_password": "…" }`. Revokes every other session.
+
+### Second factors and application passwords
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/v1/auth/totp` | `{ "status": "disabled\|pending\|enabled", "recovery_codes_left": 0 }` |
+| `POST` | `/api/v1/auth/totp/enroll` | issue `{ "secret", "uri" }` — a `pending` enrollment, **not** enforced |
+| `POST` | `/api/v1/auth/totp/confirm` | `{ "code": "123456" }` proves the authenticator holds the secret; answers `{ "enabled": true, "recovery_codes": ["…"] }` |
+| `POST` | `/api/v1/auth/totp/disable` | `{ "password": "…" }` |
+| `GET` | `/api/v1/auth/app-passwords` | every application password, revoked ones included |
+| `POST` | `/api/v1/auth/app-passwords` | `{ "label": "Thunderbird" }` → the secret, returned **once** |
+| `DELETE` | `/api/v1/auth/app-passwords/:id` | revoke one; `404` on a second attempt |
+
+Three properties are deliberate. An enrollment is **not enforced until confirmed**,
+so a mis-scanned QR code cannot lock an account out. `recovery_codes` are returned
+in plaintext exactly once — only digests are stored — and each works once.
+Disabling the factor **costs the account password**, not merely a live session: a
+stolen session is the case the factor exists for, so it must not be able to remove
+it.
 
 ---
 

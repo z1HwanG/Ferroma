@@ -44,6 +44,16 @@ sets `FERROMA__IMAP__REQUIRE_TLS_FOR_LOGIN` to `'true'`; a production deployment
 should keep it. `LOGIN` sends the password in cleartext, and there is no
 `CRAM-MD5` or `SCRAM-*` to fall back on (see §8).
 
+**A second factor means an application password.** IMAP cannot carry a TOTP code,
+so an account that has enabled one authenticates here with an application password
+minted at `/api/v1/auth/app-passwords` — the password is the credential, and the
+second factor is satisfied by the user having minted it while signed in. A plain
+account password is refused for such an account rather than quietly accepted,
+because accepting it would make the factor decorative. This is the only way a mail
+client keeps working, so it is a feature rather than a workaround; see
+[security.md](security.md) §15.3 for what an operator should understand before
+enabling the factor.
+
 **rustls only, and no `LOGINDISABLED`-versus-`AUTH=PLAIN` dance.** When
 `require_tls_for_login` is on, `LOGIN` is not advertised as available over
 cleartext; the client sees `STARTTLS` in `CAPABILITY` and is expected to use it.

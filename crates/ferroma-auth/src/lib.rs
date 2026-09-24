@@ -56,10 +56,15 @@
 pub mod password;
 pub mod service;
 pub mod token;
+pub mod totp;
 
 pub use password::{validate_password, Argon2Params, PasswordHasher};
 pub use service::{
     shared, AuthService, Authenticated, DeviceInfo, LoginOutcome, SessionKind, SharedAuth,
-    TokenPair,
+    TokenPair, TotpEnrollment, TotpStatus,
 };
 pub use token::{AccessClaims, TokenService};
+pub use totp::{
+    generate_app_password, generate_secret, hash_app_password, hash_recovery_code, otpauth_uri,
+    verify_code, RECOVERY_CODE_COUNT,
+};

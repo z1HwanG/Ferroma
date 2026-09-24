@@ -52,6 +52,9 @@ pub struct ClientLoginRequest {
     pub device: Option<DeviceDescriptor>,
     /// A bare installation id, for clients that send the rest in headers.
     pub device_uid: Option<String>,
+    /// A TOTP code or a recovery code, when the account enforces a second factor.
+    /// A client that cannot be asked for one uses an application password.
+    pub totp: Option<String>,
 }
 
 /// The `POST /client/auth/login` response.
@@ -196,9 +199,10 @@ pub async fn client_login(
 
     let outcome = state
         .auth
-        .login(
+        .login_with_factor(
             &request.email,
             &request.password,
+            request.totp.as_deref(),
             SessionKind::Client,
             ip,
             info.user_agent.as_deref(),

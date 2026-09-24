@@ -96,6 +96,30 @@ impl Authenticator for ServiceAuthenticator {
                 return Ok(None);
             }
 
+            let user_id = UserId::new(record.id);
+
+            // An application password is a credential of the account, and it is the
+            // only way in for a client that cannot be asked for a TOTP code. It is
+            // checked first because its shape is unambiguous, and because it must
+            // keep working after the account password is rotated.
+            if ferroma_auth::totp::is_app_password(password) {
+                let matched = self
+                    .repos
+                    .app_passwords
+                    .verify(user_id, &ferroma_auth::totp::hash_app_password(password))
+                    .await
+                    .map_err(FerromaError::storage)?;
+                if !matched {
+                    return Ok(None);
+                }
+                let _ = self
+                    .repos
+                    .users
+                    .record_login_success(user_id, Utc::now())
+                    .await;
+                return Ok(Some(user_id));
+            }
+
             // Argon2 verification is CPU-bound; it must not block the reactor.
             let stored = record.password_hash.clone();
             let hasher = self.hasher;
@@ -104,7 +128,6 @@ impl Authenticator for ServiceAuthenticator {
                 .await
                 .map_err(|err| FerromaError::Internal(format!("password task failed: {err}")))?;
 
-            let user_id = UserId::new(record.id);
             if !verified {
                 let _ = self
                     .repos
@@ -116,6 +139,24 @@ impl Authenticator for ServiceAuthenticator {
                         self.limits.max_failed_logins,
                     )
                     .await;
+                return Ok(None);
+            }
+
+            // A correct password is not enough once a second factor is enforced. This
+            // protocol cannot carry one, so the account has to mint an application
+            // password — refusing here is what keeps the factor meaningful.
+            let gated = self
+                .repos
+                .totp
+                .find(user_id)
+                .await
+                .map_err(FerromaError::storage)?
+                .is_some_and(|enrollment| enrollment.confirmed_at.is_some());
+            if gated {
+                tracing::info!(
+                    user_id = user_id.get(),
+                    "IMAP login refused: the account needs an application password"
+                );
                 return Ok(None);
             }
 

@@ -2129,19 +2129,13 @@ async fn finish_auth(
     };
 
     let email = username.trim().to_ascii_lowercase();
-    let lookup = context
-        .config
-        .repos
-        .users
-        .find_by_email(&email)
-        .await
-        .map_err(FerromaError::storage);
 
-    let authenticated = match lookup {
-        Ok(Some(user)) if user.enabled => {
-            auth.verify_password(password, &user.password_hash).await
-        }
-        Ok(_) => false,
+    // One credential check for both kinds of secret: the account password, or an
+    // application password for an account whose second factor this protocol cannot
+    // carry. `authenticate_client` refuses a password-only login once a second
+    // factor is enforced, which is the whole point of enabling it.
+    let authenticated_user = match auth.authenticate_client(&email, password).await {
+        Ok(user_id) => user_id,
         Err(e) => {
             session.abort_auth();
             tracing::warn!(error = %e, "could not look up the account for AUTH");
@@ -2149,19 +2143,8 @@ async fn finish_auth(
         }
     };
 
-    if authenticated {
-        // `find_by_email` returns a row from the same pool we just used; re-reading
-        // is safe and keeps the id typed.
-        let user_id = context
-            .config
-            .repos
-            .users
-            .find_by_email(&email)
-            .await
-            .ok()
-            .flatten()
-            .map(|u| u.user_id());
-        match user_id {
+    if authenticated_user.is_some() {
+        match authenticated_user {
             Some(user_id) => {
                 session.authenticate(user_id, email.clone());
                 // `AUTH PLAIN` with the payload on the same line never called

@@ -68,6 +68,15 @@ pub enum FerromaError {
     #[error("rate limited")]
     RateLimited,
 
+    /// The password was right and a second factor is still owed.
+    ///
+    /// Deliberately distinct from [`FerromaError::Unauthorized`], because the two ask
+    /// the caller for different things: this one means "send the code", not "the
+    /// credentials were wrong". Collapsing them would make a client retry the same
+    /// password forever, and would tell an attacker which half they had guessed.
+    #[error("second factor required")]
+    TotpRequired,
+
     /// The peer violated the protocol, or we could not make sense of it.
     #[error("protocol error: {0}")]
     Protocol(String),
@@ -144,6 +153,7 @@ impl FerromaError {
             FerromaError::LimitExceeded(_) => "limit_exceeded",
             FerromaError::MailboxFull(_) => "mailbox_full",
             FerromaError::RateLimited => "rate_limited",
+            FerromaError::TotpRequired => "totp_required",
             FerromaError::Protocol(_) => "protocol_error",
             FerromaError::Tls(_) => "tls_error",
             FerromaError::Dns(_) => "dns_error",
@@ -190,6 +200,7 @@ impl FerromaError {
             FerromaError::LimitExceeded(_) => 413,
             FerromaError::MailboxFull(_) => 413,
             FerromaError::RateLimited => 429,
+            FerromaError::TotpRequired => 401,
             FerromaError::Protocol(_) | FerromaError::Tls(_) => 400,
             FerromaError::Dns(_) | FerromaError::Network(_) | FerromaError::Timeout(_) => 502,
             FerromaError::Unsupported(_) => 501,

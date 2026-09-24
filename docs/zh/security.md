@@ -935,21 +935,19 @@ Ferroma 不扫描附件。没有 ClamAV 集成、没有`clamd`套接字、没有
 **运维者的缓解措施：**在前面放一道过滤网关，或者用托管过滤服务。`Junk`文件夹与`\Junk`
 特殊用途标记已经在 schema 里（`special_use`的`CHECK`），因此日后加过滤器不需要迁移。
 
-### 15.3 没有 OIDC、没有 OAuth2、没有 2FA
+### 15.3 没有 OIDC、没有 OAuth2、没有 WebAuthn
 
-规范§15把`OAuth2`、`OIDC`与`2FA`列在「后续」之下，§57又重复了一遍。Ferroma v1只支持
-密码认证，经由：
+规范§15把`OAuth2`、`OIDC`与`2FA`列在「后续」之下。**TOTP 已实现**；OAuth2、OIDC 与
+WebAuthn 未实现，因此仍没有联邦身份，也没有抗钓鱼的第二因子。所有入口的第一因子仍然是
+密码，经由：
 
 * `POST /api/v1/auth/login`与`/api/v1/client/auth/login`，
 * SMTP 的`AUTH PLAIN` / `AUTH LOGIN`，
 * IMAP 的`LOGIN` / `AUTHENTICATE PLAIN` / `AUTHENTICATE LOGIN`。
 
-没有 TOTP、没有 WebAuthn、没有恢复码、没有`mfa_required`标志。一个被钓走的密码就是完整的
-账号接管，只受登录限流和`limits.max_failed_logins`约束。
-
-**运维者的缓解措施：**对 Webmail 这一面，在前面放一个执行 2FA 并传递已认证身份的 SSO
-代理；对 SMTP/IMAP，除了在Ferroma之外管理应用专用密码，没有诚实的缓解办法。不要把一次
-Ferroma部署说成「受 2FA 保护」。
+**运维者的缓解措施：**若需要联邦身份，在 Webmail 前面放 SSO 代理。只有当每个该启用的
+账号都已注册，并且运维者理解「应用专用密码是一枚完整强度的凭据」时，一次部署才可以声称
+具备 2FA：它按设计绕过第二因子，这正是它能被邮件客户端使用的原因。
 
 ### 15.4 没有跨进程事件总线
 

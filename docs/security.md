@@ -1035,23 +1035,24 @@ filtering service. The `Junk` folder and the `\Junk` special-use marker are
 already in the schema (`special_use` `CHECK`), so a filter can be added later
 without a migration.
 
-### 15.3 No OIDC, no OAuth2, no 2FA
+### 15.3 No OIDC, no OAuth2, no WebAuthn
 
-Specification §15 lists `OAuth2`, `OIDC` and `2FA` under "后续" (later) and §57
-repeats them. Ferroma v1 supports password authentication only, over:
+Specification §15 lists `OAuth2`, `OIDC` and `2FA` under "后续" (later). **TOTP is
+implemented**; OAuth2, OIDC and WebAuthn are not, so there is still no federated
+identity and no phishing-resistant factor. A password remains the first factor on
+every surface.
+
+Passwords are accepted over:
 
 * `POST /api/v1/auth/login` and `/api/v1/client/auth/login`,
 * SMTP `AUTH PLAIN` / `AUTH LOGIN`,
 * IMAP `LOGIN` / `AUTHENTICATE PLAIN` / `AUTHENTICATE LOGIN`.
 
-There is no TOTP, no WebAuthn, no recovery codes, no `mfa_required` flag. A
-phished password is a full account takeover, bounded only by the login throttle
-and by `limits.max_failed_logins`.
-
-**Operator mitigation:** for the Webmail surface, put an SSO proxy in front that
-performs 2FA and passes an authenticated identity; for SMTP/IMAP there is no
-honest mitigation other than app passwords managed outside Ferroma. Do not
-describe a Ferroma deployment as "2FA-protected".
+**Operator mitigation:** put an SSO proxy in front of the Webmail surface if
+federated identity is required. A deployment may claim 2FA only when every account
+that has one has enrolled, and when the operator understands that an application
+password is a full-strength credential: it bypasses the second factor by design,
+which is what makes it usable from a mail client at all.
 
 ### 15.4 No cross-process event bus
 

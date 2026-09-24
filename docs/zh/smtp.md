@@ -327,6 +327,14 @@ max_message_size` 时，当 `max_message_size` 为 `0` 时，或者当 `max_mime
 
 ---
 
+### 8.1 第二因子意味着应用专用密码
+
+SMTP `AUTH` 只能携带一个秘密，因此启用了 TOTP 第二因子的账号在提交端口使用
+**应用专用密码**（`/api/v1/auth/app-passwords`）认证，而不是账号密码。这类账号的
+账号密码会被拒绝：接受它会让这个因子形同虚设，而本协议也无从索取验证码。
+
+---
+
 ## 9. `STARTTLS`、SMTPS 与 submission 角色
 
 | 端口 | 发生什么 | 策略 |

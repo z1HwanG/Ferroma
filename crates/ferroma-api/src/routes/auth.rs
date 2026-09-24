@@ -41,6 +41,12 @@ pub struct LoginRequest {
     pub password: String,
     /// Names the device. When present, the flow is a token flow and no cookie is set.
     pub device_name: Option<String>,
+    /// A TOTP code or a recovery code, when the account enforces a second factor.
+    ///
+    /// Omitted on the first attempt. The answer is `401 totp_required`, which means
+    /// "send the code" — not "the password was wrong", so a client must not retry
+    /// the password.
+    pub totp: Option<String>,
 }
 
 /// The token pair every login and refresh answers with.
@@ -84,6 +90,10 @@ pub struct JmapLoginRequest {
     pub password: String,
     /// A human-readable name for this JMAP client installation.
     pub device_name: String,
+    /// A TOTP code or a recovery code, when the account enforces a second factor.
+    /// A JMAP client that cannot be asked for one uses an application password as
+    /// its `password` instead.
+    pub totp: Option<String>,
 }
 
 /// The `POST /api/v1/auth/password` body.
@@ -172,9 +182,10 @@ pub async fn login(
 
     let outcome = state
         .auth
-        .login(
+        .login_with_factor(
             &request.email,
             &request.password,
+            request.totp.as_deref(),
             SessionKind::Web,
             ip,
             user_agent,
@@ -239,9 +250,10 @@ pub async fn jmap_login(
         .and_then(|value| value.to_str().ok());
     let outcome = state
         .auth
-        .login(
+        .login_with_factor(
             &request.email,
             &request.password,
+            request.totp.as_deref(),
             SessionKind::Jmap,
             ip,
             user_agent,

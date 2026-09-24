@@ -2287,3 +2287,488 @@ async fn a_greylist_triplet_needs_a_peer_and_a_recipient() {
     assert_eq!(t.count("greylist").await, 0);
     t.cleanup().await;
 }
+// ===========================================================================
+// multi-factor authentication: TOTP, recovery codes, app passwords
+// ===========================================================================
+
+/// Seed a second account, for the cross-account isolation assertions.
+async fn second_user(t: &TestDatabase, email: &str) -> UserId {
+    t.repos()
+        .users
+        .create(NewUser {
+            email: email.into(),
+            password_hash: "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA".into(),
+            display_name: None,
+            is_admin: false,
+            enabled: true,
+            quota_bytes: None,
+        })
+        .await
+        .expect("seed user")
+        .user_id()
+}
+
+/// The stored form of a recovery code: storage only ever sees hashes.
+fn hash(code: &str) -> String {
+    format!("sha256:{code}")
+}
+
+/// [`hash`] for a whole set of recovery codes.
+fn hashes(codes: &[&str]) -> Vec<String> {
+    codes.iter().copied().map(hash).collect()
+}
+
+#[tokio::test]
+async fn a_totp_secret_is_unconfirmed_until_it_is_confirmed() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+
+    assert!(repos.totp.find(f.user_id).await.unwrap().is_none());
+
+    repos
+        .totp
+        .upsert_secret(f.user_id, "JBSWY3DPEHPK3PXP")
+        .await
+        .unwrap();
+    let enrolment = repos
+        .totp
+        .find(f.user_id)
+        .await
+        .unwrap()
+        .expect("enrolment");
+    assert_eq!(enrolment.secret, "JBSWY3DPEHPK3PXP");
+    assert!(
+        enrolment.confirmed_at.is_none(),
+        "a generated secret protects nothing until the user proves their authenticator"
+    );
+
+    // Re-enrolling replaces the secret, and the replacement is unconfirmed again:
+    // an enrolment in progress must not inherit the old confirmation.
+    repos
+        .totp
+        .upsert_secret(f.user_id, "KRSXG5CTMVRXEZLU")
+        .await
+        .unwrap();
+    let enrolment = repos
+        .totp
+        .find(f.user_id)
+        .await
+        .unwrap()
+        .expect("enrolment");
+    assert_eq!(enrolment.secret, "KRSXG5CTMVRXEZLU");
+    assert!(enrolment.confirmed_at.is_none());
+    assert_eq!(
+        t.count("user_totp").await,
+        1,
+        "one row per account, not one per enrolment"
+    );
+
+    assert!(repos.totp.confirm(f.user_id, at(0)).await.unwrap());
+    assert_eq!(
+        repos
+            .totp
+            .find(f.user_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .confirmed_at,
+        Some(at(0)),
+        "the caller's instant is what is recorded"
+    );
+
+    // Confirming again changes nothing, so the first instant stays.
+    assert!(
+        !repos.totp.confirm(f.user_id, at(60)).await.unwrap(),
+        "there is no unconfirmed registration left to confirm"
+    );
+    assert_eq!(
+        repos
+            .totp
+            .find(f.user_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .confirmed_at,
+        Some(at(0))
+    );
+
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn confirming_nothing_is_false_and_a_blank_secret_is_refused() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+
+    assert!(
+        !repos.totp.confirm(f.user_id, at(0)).await.unwrap(),
+        "an account with no registration has nothing to confirm"
+    );
+    assert!(
+        matches!(
+            repos.totp.upsert_secret(f.user_id, "   ").await,
+            Err(StorageError::Invalid(_))
+        ),
+        "a blank secret would satisfy NOT NULL and protect nothing"
+    );
+    assert!(!repos.totp.delete(f.user_id).await.unwrap());
+    assert_eq!(t.count("user_totp").await, 0);
+
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn deleting_totp_takes_the_secret_and_every_recovery_code() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+
+    repos
+        .totp
+        .upsert_secret(f.user_id, "JBSWY3DPEHPK3PXP")
+        .await
+        .unwrap();
+    repos.totp.confirm(f.user_id, at(0)).await.unwrap();
+    repos
+        .recovery_codes
+        .replace_all(f.user_id, &hashes(&["one", "two"]))
+        .await
+        .unwrap();
+    assert_eq!(
+        repos.recovery_codes.count_unused(f.user_id).await.unwrap(),
+        2
+    );
+
+    assert!(repos.totp.delete(f.user_id).await.unwrap());
+    assert!(repos.totp.find(f.user_id).await.unwrap().is_none());
+    assert_eq!(t.count("user_totp").await, 0);
+    assert_eq!(
+        t.count("totp_recovery_codes").await,
+        0,
+        "codes without a secret are a way in, so they go together"
+    );
+
+    // A second delete has nothing left to report.
+    assert!(!repos.totp.delete(f.user_id).await.unwrap());
+
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn replacing_recovery_codes_replaces_the_whole_set() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+
+    repos
+        .recovery_codes
+        .replace_all(f.user_id, &hashes(&["old-1", "old-2", "old-3"]))
+        .await
+        .unwrap();
+    assert_eq!(
+        repos.recovery_codes.count_unused(f.user_id).await.unwrap(),
+        3
+    );
+    let listed = repos.recovery_codes.list(f.user_id).await.unwrap();
+    assert_eq!(listed.len(), 3);
+    assert!(listed.iter().all(|code| code.used_at.is_none()));
+
+    repos
+        .recovery_codes
+        .replace_all(f.user_id, &hashes(&["new-1", "new-2"]))
+        .await
+        .unwrap();
+    assert_eq!(
+        repos.recovery_codes.count_unused(f.user_id).await.unwrap(),
+        2
+    );
+    assert_eq!(
+        t.count("totp_recovery_codes").await,
+        2,
+        "the old set is replaced, not appended to"
+    );
+    assert!(
+        !repos
+            .recovery_codes
+            .consume(f.user_id, &hash("old-1"))
+            .await
+            .unwrap(),
+        "a code from the previous set no longer exists"
+    );
+
+    // An empty replacement is how a caller clears the set.
+    repos
+        .recovery_codes
+        .replace_all(f.user_id, &[])
+        .await
+        .unwrap();
+    assert_eq!(
+        repos.recovery_codes.count_unused(f.user_id).await.unwrap(),
+        0
+    );
+    let remaining = repos.recovery_codes.list(f.user_id).await.unwrap();
+    assert!(remaining.is_empty());
+
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_recovery_code_is_spent_exactly_once_by_its_own_account() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let other = second_user(&t, "bob@example.com").await;
+    let repos = t.repos();
+
+    repos
+        .recovery_codes
+        .replace_all(f.user_id, &hashes(&["alice-code"]))
+        .await
+        .unwrap();
+    repos
+        .recovery_codes
+        .replace_all(other, &hashes(&["bob-code"]))
+        .await
+        .unwrap();
+
+    // Another account's code is not a code for this account, and consuming it is
+    // not allowed to spend it for its owner either.
+    assert!(!repos
+        .recovery_codes
+        .consume(f.user_id, &hash("bob-code"))
+        .await
+        .unwrap());
+    assert_eq!(
+        repos.recovery_codes.count_unused(other).await.unwrap(),
+        1,
+        "bob's code is untouched"
+    );
+
+    assert!(repos
+        .recovery_codes
+        .consume(f.user_id, &hash("alice-code"))
+        .await
+        .unwrap());
+    assert!(
+        !repos
+            .recovery_codes
+            .consume(f.user_id, &hash("alice-code"))
+            .await
+            .unwrap(),
+        "a spent code cannot be spent twice"
+    );
+    assert!(
+        !repos
+            .recovery_codes
+            .consume(f.user_id, &hash("never-issued"))
+            .await
+            .unwrap(),
+        "a code that was never issued is not a code"
+    );
+    assert_eq!(
+        repos.recovery_codes.count_unused(f.user_id).await.unwrap(),
+        0
+    );
+
+    // The spent row is kept, with the time it was spent.
+    let listed = repos.recovery_codes.list(f.user_id).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert!(
+        listed[0].used_at.is_some(),
+        "a spent code records when it went"
+    );
+
+    assert!(matches!(
+        repos
+            .recovery_codes
+            .replace_all(f.user_id, &["".to_string()])
+            .await,
+        Err(StorageError::Invalid(_))
+    ));
+
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn an_app_password_is_used_then_revoked_but_stays_in_the_list() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+
+    assert!(repos
+        .app_passwords
+        .list(f.user_id)
+        .await
+        .unwrap()
+        .is_empty());
+
+    let created = repos
+        .app_passwords
+        .create(f.user_id, "Phone (Thunderbird)", "hash-a")
+        .await
+        .unwrap();
+    assert_eq!(created.user_id, f.user_id.get());
+    assert_eq!(created.label, "Phone (Thunderbird)");
+    assert!(created.last_used_at.is_none());
+    assert!(created.revoked_at.is_none());
+
+    let listed = repos.app_passwords.list(f.user_id).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, created.id);
+
+    // A successful verify stamps the row in the same statement.
+    assert!(repos
+        .app_passwords
+        .verify(f.user_id, "hash-a")
+        .await
+        .unwrap());
+    let after = repos.app_passwords.list(f.user_id).await.unwrap();
+    assert!(after[0].last_used_at.is_some(), "a use is recorded");
+    assert!(!repos
+        .app_passwords
+        .verify(f.user_id, "hash-b")
+        .await
+        .unwrap());
+    assert!(repos
+        .app_passwords
+        .verify(f.user_id, "hash-a")
+        .await
+        .unwrap());
+
+    assert!(repos
+        .app_passwords
+        .revoke(f.user_id, created.id)
+        .await
+        .unwrap());
+    assert!(
+        !repos
+            .app_passwords
+            .revoke(f.user_id, created.id)
+            .await
+            .unwrap(),
+        "the second revoke changed nothing"
+    );
+    assert!(
+        !repos
+            .app_passwords
+            .verify(f.user_id, "hash-a")
+            .await
+            .unwrap(),
+        "a revoked app password is refused"
+    );
+
+    let after = repos.app_passwords.list(f.user_id).await.unwrap();
+    assert_eq!(after.len(), 1, "the revoked entry stays visible");
+    assert!(
+        after[0].revoked_at.is_some(),
+        "list shows when it was revoked"
+    );
+    assert!(after[0].last_used_at.is_some(), "and that it had been used");
+
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn app_password_tokens_are_globally_unique_and_never_cross_accounts() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let other = second_user(&t, "bob@example.com").await;
+    let repos = t.repos();
+
+    let alice = repos
+        .app_passwords
+        .create(f.user_id, "Laptop", "alice-token")
+        .await
+        .unwrap();
+    repos
+        .app_passwords
+        .create(other, "Laptop", "bob-token")
+        .await
+        .unwrap();
+
+    // A token is presented without a username, so one account's token must never
+    // authenticate another — and asking about it must not spend it either.
+    assert!(!repos
+        .app_passwords
+        .verify(other, "alice-token")
+        .await
+        .unwrap());
+    assert!(repos
+        .app_passwords
+        .verify(f.user_id, "alice-token")
+        .await
+        .unwrap());
+
+    // The hash alone identifies the row, so it cannot be stored twice.
+    assert!(matches!(
+        repos
+            .app_passwords
+            .create(other, "Tablet", "alice-token")
+            .await,
+        Err(StorageError::Conflict(_))
+    ));
+
+    // Nor can another account revoke it by naming its identifier.
+    assert!(!repos.app_passwords.revoke(other, alice.id).await.unwrap());
+    assert!(repos
+        .app_passwords
+        .verify(f.user_id, "alice-token")
+        .await
+        .unwrap());
+
+    assert!(matches!(
+        repos
+            .app_passwords
+            .create(f.user_id, "  ", "fresh-hash")
+            .await,
+        Err(StorageError::Invalid(_))
+    ));
+    assert!(matches!(
+        repos.app_passwords.create(f.user_id, "Laptop", "  ").await,
+        Err(StorageError::Invalid(_))
+    ));
+    assert!(!repos.app_passwords.verify(f.user_id, "").await.unwrap());
+
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn deleting_an_account_takes_its_second_factors_with_it() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+
+    repos
+        .totp
+        .upsert_secret(f.user_id, "JBSWY3DPEHPK3PXP")
+        .await
+        .unwrap();
+    repos.totp.confirm(f.user_id, at(0)).await.unwrap();
+    repos
+        .recovery_codes
+        .replace_all(f.user_id, &hashes(&["one", "two"]))
+        .await
+        .unwrap();
+    repos
+        .app_passwords
+        .create(f.user_id, "Laptop", "hash-a")
+        .await
+        .unwrap();
+
+    assert_eq!(t.count("user_totp").await, 1);
+    assert_eq!(t.count("totp_recovery_codes").await, 2);
+    assert_eq!(t.count("app_passwords").await, 1);
+
+    assert!(repos.users.delete(f.user_id).await.unwrap());
+
+    assert_eq!(t.count("user_totp").await, 0, "the secret cascades");
+    assert_eq!(t.count("totp_recovery_codes").await, 0, "the codes cascade");
+    assert_eq!(
+        t.count("app_passwords").await,
+        0,
+        "the app passwords cascade"
+    );
+
+    t.cleanup().await;
+}

@@ -16,6 +16,17 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ### Added
 
+- **TOTP second factors and application passwords.** An account can enroll a TOTP
+  authenticator (`/api/v1/auth/totp/enroll`, confirmed with a code) and receives ten
+  single-use recovery codes. Every password login then answers
+  `401 totp_required` until the code arrives; a wrong code counts as a failed login,
+  so the lockout covers code guessing. Disabling the factor costs the account
+  password rather than merely a live session. Because IMAP and SMTP cannot carry a
+  code, and an authenticated submission cannot either, those surfaces — and JMAP
+  `Basic` — accept an **application password** instead
+  (`/api/v1/auth/app-passwords`), so enabling the factor does not lock every mail
+  client out. `docs/security.md` §15.3 states what a deployment may claim.
+
 - **Greylisting.** `[policy.greylist]` defers an unauthenticated peer whose
   `(address, sender, recipient)` triplet has never been seen, once, with
   `451 4.7.1`. Off by default. Authenticated sessions, a null reverse-path and

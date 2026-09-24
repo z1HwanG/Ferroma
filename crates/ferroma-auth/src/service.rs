@@ -30,6 +30,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use ferroma_core::{FerromaError, Limits, MailboxId, Result, SessionId, UserId};
 use ferroma_storage::models::{Device, Session, User};
+use ferroma_storage::repository::AppPassword;
 use ferroma_storage::{Repositories, StorageError};
 
 use crate::password::{validate_password, PasswordHasher};
@@ -112,6 +113,30 @@ pub struct LoginOutcome {
     pub device: Option<Device>,
     /// The credentials to hand back.
     pub tokens: TokenPair,
+}
+
+/// What starting a TOTP enrollment hands back.
+///
+/// The secret is returned **once**, to be shown as a QR code. Nothing else reads it
+/// back: an enrollment that can be re-read is one that can be re-read by whoever
+/// takes the database.
+#[derive(Debug, Clone)]
+pub struct TotpEnrollment {
+    /// The base32 shared secret.
+    pub secret: String,
+    /// The `otpauth://` URI the user scans.
+    pub uri: String,
+}
+
+/// How far an account's second factor has got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TotpStatus {
+    /// No enrollment at all.
+    Disabled,
+    /// A secret exists but no code has proved the authenticator holds it.
+    Pending,
+    /// The second factor is enforced at every login.
+    Enabled,
 }
 
 /// The identity behind an authenticated request.
@@ -325,6 +350,257 @@ impl AuthService {
     }
 
     // -------------------------------------------------------------------------
+    // Second factors
+    // -------------------------------------------------------------------------
+
+    /// Start a TOTP enrollment: mint a secret and return it with its `otpauth://` URI.
+    ///
+    /// The secret is stored **unconfirmed**. Until a code proves the user's
+    /// authenticator holds it, the enrollment must not be enforced: a bad scan would
+    /// otherwise lock the account out on the next login.
+    pub async fn begin_totp_enrollment(&self, user: &User) -> Result<TotpEnrollment> {
+        let secret = crate::totp::generate_secret();
+        self.repos
+            .totp
+            .upsert_secret(UserId::new(user.id), &secret)
+            .await
+            .map_err(map_storage)?;
+        let uri = crate::totp::otpauth_uri(&self.issuer(), &user.email, &secret);
+        Ok(TotpEnrollment { secret, uri })
+    }
+
+    /// Confirm an enrollment with a code, and issue the recovery codes.
+    ///
+    /// Returns the plaintext recovery codes exactly once; only their digests are
+    /// stored. Replacing an existing set is deliberate: confirming again must not
+    /// leave the previous codes alive.
+    pub async fn confirm_totp_enrollment(
+        &self,
+        user_id: UserId,
+        code: &str,
+    ) -> Result<Vec<String>> {
+        let Some(enrollment) = self.repos.totp.find(user_id).await.map_err(map_storage)? else {
+            return Err(FerromaError::Invalid(
+                "no second-factor enrollment is in progress".into(),
+            ));
+        };
+        if enrollment.confirmed_at.is_some() {
+            return Err(FerromaError::Conflict(
+                "second-factor authentication is already enabled".into(),
+            ));
+        }
+        if !crate::totp::verify_code(
+            &enrollment.secret,
+            code,
+            std::time::SystemTime::now(),
+            crate::totp::DEFAULT_SKEW_STEPS,
+        )? {
+            return Err(FerromaError::Unauthorized(
+                "the code did not match; check the authenticator's clock and try again".into(),
+            ));
+        }
+
+        let confirmed = self
+            .repos
+            .totp
+            .confirm(user_id, Utc::now())
+            .await
+            .map_err(map_storage)?;
+        if !confirmed {
+            return Err(FerromaError::Conflict(
+                "the enrollment disappeared before it could be confirmed".into(),
+            ));
+        }
+
+        let codes: Vec<String> = (0..crate::totp::RECOVERY_CODE_COUNT)
+            .map(|_| crate::totp::generate_recovery_code())
+            .collect();
+        let hashes: Vec<String> = codes
+            .iter()
+            .map(|code| crate::totp::hash_recovery_code(code))
+            .collect();
+        self.repos
+            .recovery_codes
+            .replace_all(user_id, &hashes)
+            .await
+            .map_err(map_storage)?;
+
+        tracing::info!(user_id = user_id.get(), "second-factor enrollment confirmed");
+        Ok(codes)
+    }
+
+    /// Turn the second factor off, deleting its secret and recovery codes.
+    pub async fn disable_totp(&self, user_id: UserId) -> Result<bool> {
+        let removed = self.repos.totp.delete(user_id).await.map_err(map_storage)?;
+        if removed {
+            tracing::info!(user_id = user_id.get(), "second factor disabled");
+        }
+        Ok(removed)
+    }
+
+    /// Whether the account enforces a second factor.
+    pub async fn totp_enabled(&self, user_id: UserId) -> Result<bool> {
+        Ok(self
+            .repos
+            .totp
+            .find(user_id)
+            .await
+            .map_err(map_storage)?
+            .is_some_and(|enrollment| enrollment.confirmed_at.is_some()))
+    }
+
+    /// How the account stands: not enrolled, pending confirmation, or enforced.
+    pub async fn totp_status(&self, user_id: UserId) -> Result<TotpStatus> {
+        Ok(match self.repos.totp.find(user_id).await.map_err(map_storage)? {
+            None => TotpStatus::Disabled,
+            Some(enrollment) if enrollment.confirmed_at.is_none() => TotpStatus::Pending,
+            Some(_) => TotpStatus::Enabled,
+        })
+    }
+
+    /// How many unused recovery codes remain.
+    pub async fn recovery_codes_left(&self, user_id: UserId) -> Result<i64> {
+        self.repos
+            .recovery_codes
+            .count_unused(user_id)
+            .await
+            .map_err(map_storage)
+    }
+
+    /// Whether a TOTP code or a recovery code satisfies the second factor.
+    ///
+    /// A recovery code is consumed on use: single-use is the whole point of a code
+    /// that exists for the day the phone is gone.
+    pub async fn verify_second_factor(&self, user_id: UserId, code: &str) -> Result<bool> {
+        let Some(enrollment) = self.repos.totp.find(user_id).await.map_err(map_storage)? else {
+            return Ok(false);
+        };
+        if crate::totp::verify_code(
+            &enrollment.secret,
+            code,
+            std::time::SystemTime::now(),
+            crate::totp::DEFAULT_SKEW_STEPS,
+        )? {
+            return Ok(true);
+        }
+        let hash = crate::totp::hash_recovery_code(code);
+        let consumed = self
+            .repos
+            .recovery_codes
+            .consume(user_id, &hash)
+            .await
+            .map_err(map_storage)?;
+        if consumed {
+            tracing::warn!(user_id = user_id.get(), "a recovery code was used to log in");
+        }
+        Ok(consumed)
+    }
+
+    // -------------------------------------------------------------------------
+    // Application passwords
+    // -------------------------------------------------------------------------
+
+    /// Mint an application password. The plaintext is returned once and stored only
+    /// as a digest.
+    pub async fn create_app_password(
+        &self,
+        user_id: UserId,
+        label: &str,
+    ) -> Result<(AppPassword, String)> {
+        let label = label.trim();
+        if label.is_empty() {
+            return Err(FerromaError::Invalid(
+                "an application password needs a label".into(),
+            ));
+        }
+        let token = crate::totp::generate_app_password();
+        let row = self
+            .repos
+            .app_passwords
+            .create(user_id, label, &crate::totp::hash_app_password(&token))
+            .await
+            .map_err(map_storage)?;
+        Ok((row, token))
+    }
+
+    /// Every application password the account holds, revoked ones included.
+    pub async fn list_app_passwords(&self, user_id: UserId) -> Result<Vec<AppPassword>> {
+        self.repos
+            .app_passwords
+            .list(user_id)
+            .await
+            .map_err(map_storage)
+    }
+
+    /// Revoke one application password. Returns `false` when it was not the caller's.
+    pub async fn revoke_app_password(&self, user_id: UserId, id: i64) -> Result<bool> {
+        let revoked = self
+            .repos
+            .app_passwords
+            .revoke(user_id, id)
+            .await
+            .map_err(map_storage)?;
+        if revoked {
+            tracing::info!(user_id = user_id.get(), app_password_id = id, "application password revoked");
+        }
+        Ok(revoked)
+    }
+
+    /// Resolve an address and secret against either credential a client may hold.
+    ///
+    /// This is the path an IMAP or SMTP client takes, and the reason it exists: a
+    /// client that cannot be asked for a TOTP code must be able to use an
+    /// application password instead, or enabling the second factor would lock every
+    /// mail client out of the account.
+    ///
+    /// Returns `Ok(None)` when neither credential matched.
+    pub async fn authenticate_client(&self, address: &str, secret: &str) -> Result<Option<UserId>> {
+        let address = address.trim().to_ascii_lowercase();
+        if address.is_empty() || secret.is_empty() {
+            return Ok(None);
+        }
+        let Some(user) = self
+            .repos
+            .users
+            .find_by_email(&address)
+            .await
+            .map_err(map_storage)?
+        else {
+            return Ok(None);
+        };
+        if !user.enabled {
+            return Ok(None);
+        }
+        let user_id = UserId::new(user.id);
+
+        if crate::totp::is_app_password(secret) {
+            let matched = self
+                .repos
+                .app_passwords
+                .verify(user_id, &crate::totp::hash_app_password(secret))
+                .await
+                .map_err(map_storage)?;
+            return Ok(matched.then_some(user_id));
+        }
+
+        if self.verify_password(secret, &user.password_hash).await {
+            // A correct password is not enough once a second factor is enforced: the
+            // account is protected against a stolen password, and a client that
+            // cannot present the code has to use an application password.
+            if self.totp_enabled(user_id).await? {
+                return Ok(None);
+            }
+            return Ok(Some(user_id));
+        }
+        Ok(None)
+    }
+
+    /// The name an authenticator app shows for this deployment.
+    fn issuer(&self) -> String {
+        self.tokens.issuer().to_string()
+    }
+
+    // -------------------------------------------------------------------------
     // Login
     // -------------------------------------------------------------------------
 
@@ -336,6 +612,31 @@ impl AuthService {
         &self,
         email: &str,
         password: &str,
+        kind: SessionKind,
+        ip: Option<IpAddr>,
+        user_agent: Option<&str>,
+        device: Option<DeviceInfo>,
+    ) -> Result<LoginOutcome> {
+        self.login_with_factor(email, password, None, kind, ip, user_agent, device)
+            .await
+    }
+
+    /// Authenticate with a password and, when the account enforces one, a second factor.
+    ///
+    /// `factor` is a TOTP code or a recovery code. When the account has a confirmed
+    /// enrollment and `factor` is `None`, this returns
+    /// [`FerromaError::TotpRequired`] — distinct from a wrong credential, because the
+    /// caller must ask for a code rather than the password again.
+    ///
+    /// A wrong code is counted as a failed login, the same way a wrong password is:
+    /// a six-digit code is guessable in a way a password is not, so the lockout has
+    /// to cover it.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn login_with_factor(
+        &self,
+        email: &str,
+        password: &str,
+        factor: Option<&str>,
         kind: SessionKind,
         ip: Option<IpAddr>,
         user_agent: Option<&str>,
@@ -389,7 +690,26 @@ impl AuthService {
             return Err(FerromaError::RateLimited);
         }
 
-        if !self.verify_password(password, &user.password_hash).await {
+        // An application password is a credential of the account in its own right.
+        // It is checked before the account password because its shape is
+        // unambiguous, and because it is what a client that cannot be asked for a
+        // TOTP code presents — so it satisfies the second factor by existing, which
+        // is exactly the trade the user made when they minted it.
+        let app_password_used = crate::totp::is_app_password(password);
+        let password_accepted = if app_password_used {
+            self.repos
+                .app_passwords
+                .verify(
+                    UserId::new(user.id),
+                    &crate::totp::hash_app_password(password),
+                )
+                .await
+                .map_err(map_storage)?
+        } else {
+            self.verify_password(password, &user.password_hash).await
+        };
+
+        if !password_accepted {
             let updated = self
                 .repos
                 .users
@@ -401,7 +721,8 @@ impl AuthService {
                 )
                 .await
                 .map_err(map_storage)?;
-            self.record_attempt(&email, ip_str.as_deref(), "password", false)
+            let method = if app_password_used { "app_password" } else { "password" };
+            self.record_attempt(&email, ip_str.as_deref(), method, false)
                 .await;
             if updated.locked_until.is_some() {
                 tracing::warn!(user_id = user.id, "account locked after repeated failures");
@@ -410,8 +731,9 @@ impl AuthService {
             return Err(invalid_credentials());
         }
 
-        // Verified. Upgrade a stale hash while we hold the plaintext.
-        if self.hasher.needs_rehash(&user.password_hash) {
+        // Verified. Upgrade a stale hash while we hold the plaintext — but only when
+        // the plaintext really was the account password.
+        if !app_password_used && self.hasher.needs_rehash(&user.password_hash) {
             match self.hash_password(password).await {
                 Ok(hash) => {
                     if let Err(e) = self
@@ -430,6 +752,38 @@ impl AuthService {
                     }
                 }
                 Err(e) => tracing::warn!(user_id = user.id, error = %e, "password rehash failed"),
+            }
+        }
+
+        if !app_password_used && self.totp_enabled(UserId::new(user.id)).await? {
+            let Some(factor) = factor.map(str::trim).filter(|code| !code.is_empty()) else {
+                // The password was right; the account is simply not finished with the
+                // caller yet. No failure is counted: nothing was guessed wrong.
+                tracing::info!(user_id = user.id, "login needs a second factor");
+                return Err(FerromaError::TotpRequired);
+            };
+            if !self
+                .verify_second_factor(UserId::new(user.id), factor)
+                .await?
+            {
+                let updated = self
+                    .repos
+                    .users
+                    .record_login_failure(
+                        UserId::new(user.id),
+                        now,
+                        self.limits.login_lockout_secs,
+                        self.limits.max_failed_logins,
+                    )
+                    .await
+                    .map_err(map_storage)?;
+                self.record_attempt(&email, ip_str.as_deref(), "totp", false)
+                    .await;
+                tracing::warn!(user_id = user.id, "login refused: wrong second factor");
+                if updated.locked_until.is_some() {
+                    return Err(FerromaError::RateLimited);
+                }
+                return Err(invalid_credentials());
             }
         }
 

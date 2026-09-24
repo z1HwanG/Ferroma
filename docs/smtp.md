@@ -354,6 +354,16 @@ re-deriving it from the TLS flags.
 
 ---
 
+### 8.1 A second factor means an application password
+
+SMTP `AUTH` carries one secret, so an account that has enabled a TOTP second factor
+authenticates on the submission port with an **application password**
+(`/api/v1/auth/app-passwords`) rather than its account password. The account
+password is refused for such an account: accepting it would make the factor
+decorative, and this protocol has no way to ask for a code.
+
+---
+
 ## 9. `STARTTLS`, SMTPS and the submission role
 
 | Port | What happens | Policy |

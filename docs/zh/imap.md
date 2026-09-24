@@ -38,6 +38,13 @@ Apple Mail、Outlook、iPhone Mail 与 Android 客户端都是一等公民，不
 `FERROMA__IMAP__REQUIRE_TLS_FOR_LOGIN` 设为 `'true'`；生产部署应当保持这一设置。
 `LOGIN` 以明文发送密码，而没有 `CRAM-MD5` 或 `SCRAM-*` 可以退而求其次（见 §8）。
 
+**第二因子意味着应用专用密码。** IMAP 无法携带 TOTP 验证码，因此已启用第二因子的
+账号在这里使用 `/api/v1/auth/app-passwords` 签发的应用专用密码认证——该密码就是凭据，
+而第二因子由「用户在已登录状态下亲手签发它」得到满足。这类账号的普通账号密码会被
+拒绝，而不是被悄悄接受：接受它会让这个因子形同虚设。这是邮件客户端保持可用的唯一
+方式，因此这是特性而非变通；运维者在启用该因子之前应理解的内容见
+[security.md](security.md) §15.3。
+
 **仅使用 rustls，不依赖 `LOGINDISABLED` 与 `AUTH=PLAIN` 的通告组合。** 当
 `require_tls_for_login` 开启时，不会通告 `LOGIN` 在明文连接上可用；客户端在
 `CAPABILITY` 中看到 `STARTTLS`，并应使用该命令。

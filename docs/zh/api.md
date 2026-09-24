@@ -201,7 +201,7 @@ UTC 下的 RFC 3339 / ISO 8601，例如`2026-09-16T12:00:00Z`。除
 ### `POST /api/v1/auth/login`
 
 ```json
-{ "email": "alice@example.com", "password": "…", "device_name": "Firefox on Linux" }
+{ "email": "alice@example.com", "password": "…", "device_name": "Firefox on Linux", "totp": "123456" }
 ```
 
 ```json
@@ -218,6 +218,15 @@ UTC 下的 RFC 3339 / ISO 8601，例如`2026-09-16T12:00:00Z`。除
 凭据错误返回`401 unauthorized`；失败达到
 `limits.max_failed_logins`次后返回`429 rate_limited`，账号被锁定
 `limits.login_lockout_secs`。
+
+`totp`是六位验证码或一次性恢复码，仅当账号启用了第二因子时才需要。此时省略它
+返回`401 totp_required`——刻意**不是**`unauthorized`：它表示「请把验证码发来」，
+而不是「密码错了」，把两者混为一谈的客户端会永远重试密码。验证码错误同样计入
+失败次数，因此锁定策略也覆盖验证码的暴力猜测。
+
+在任何登录入口（含客户端与 JMAP 入口），`password`都可以是**应用专用密码**
+（`ap_…`）。这正是让无法被索取验证码的邮件客户端，在第二因子启用后仍能继续工作
+的方式。
 
 ### `POST /api/v1/auth/refresh`
 
@@ -243,6 +252,23 @@ UTC 下的 RFC 3339 / ISO 8601，例如`2026-09-16T12:00:00Z`。除
   ]
 }
 ```
+
+### 第二因子与应用专用密码
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| `GET` | `/api/v1/auth/totp` | `{ "status": "disabled\|pending\|enabled", "recovery_codes_left": 0 }` |
+| `POST` | `/api/v1/auth/totp/enroll` | 签发`{ "secret", "uri" }`——处于`pending`，**尚未**强制执行 |
+| `POST` | `/api/v1/auth/totp/confirm` | `{ "code": "123456" }`证明验证器持有该密钥；返回`{ "enabled": true, "recovery_codes": ["…"] }` |
+| `POST` | `/api/v1/auth/totp/disable` | `{ "password": "…" }` |
+| `GET` | `/api/v1/auth/app-passwords` | 全部应用专用密码，含已吊销的 |
+| `POST` | `/api/v1/auth/app-passwords` | `{ "label": "Thunderbird" }` → 密钥**只返回一次** |
+| `DELETE` | `/api/v1/auth/app-passwords/:id` | 吊销一个；再次调用返回`404` |
+
+三条性质是刻意的：注册在确认之前**不强制执行**，因此扫错的二维码不会把账号锁在
+门外；`recovery_codes`以明文只返回一次（只存摘要），且每个只能使用一次；关闭第二
+因子**需要账号密码**，而不只是有效会话——被盗的会话恰恰是该因子存在的理由，它不
+应该能移除这个因子。
 
 ### `POST /api/v1/auth/password`
 
