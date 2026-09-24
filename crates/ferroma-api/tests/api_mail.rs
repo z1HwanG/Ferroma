@@ -1195,3 +1195,136 @@ async fn changing_a_flag_recounts_the_folder_it_lives_in() {
 
     app.cleanup().await;
 }
+
+/// A word that appears only inside a message body is findable by the search box.
+///
+/// The search box calls `GET /api/v1/messages?query=`, which matched the subject, the
+/// sender and the stored snippet. A word a few lines into a message found nothing,
+/// which is the single most common thing a user searches for.
+#[tokio::test]
+async fn the_search_box_finds_a_word_that_only_the_body_carries() {
+    require_database!();
+    let (app, admin, _mailbox_id, _token) = app_with_address().await;
+    // The search runs as the sender, against the copy the submission files in `Sent`.
+    // A recipient's copy would still be sitting in the outbound queue here: no queue
+    // worker runs in this harness, which is why every other test in this file asserts
+    // on the sender's side too.
+    let (_bob, _bob_mailbox, bob) =
+        seed_account(&app, &admin, "example.net", "bob@example.net", PASSWORD).await;
+    app.json(
+        "POST",
+        "/api/v1/messages",
+        Some(&bob),
+        json!({
+            "from": "bob@example.net",
+            "to": ["alice@example.net"],
+            "subject": "Quarterly report",
+            "text": format!(
+                "The appendix mentions a penguin colony near the coast. {}\
+                 Deep in the message, past any preview, the word is obsidian.",
+                "Filler that pushes the next sentence out of the stored snippet. ".repeat(6)
+            )
+        }),
+    )
+    .await
+    .expect(StatusCode::OK);
+    app.json(
+        "POST",
+        "/api/v1/messages",
+        Some(&bob),
+        json!({
+            "from": "bob@example.net",
+            "to": ["alice@example.net"],
+            "subject": "Unrelated note",
+            "text": "Nothing interesting here at all."
+        }),
+    )
+    .await
+    .expect(StatusCode::OK);
+
+    let page = app
+        .get(
+            &format!("/api/v1/messages?query={}", urlencode("penguin")),
+            Some(&bob),
+        )
+        .await
+        .expect(StatusCode::OK);
+    let items = page["items"].as_array().expect("items");
+    assert_eq!(items.len(), 1, "only the message whose body carries the word: {page}");
+    assert_eq!(items[0]["subject"], "Quarterly report");
+    assert!(
+        items[0]["snippet"].as_str().unwrap_or_default().contains("penguin"),
+        "the snippet proves we matched the body text we indexed: {page}"
+    );
+
+    // A word nobody wrote finds nobody — the search is not returning everything.
+    let none = app
+        .get(
+            &format!("/api/v1/messages?query={}", urlencode("narwhal")),
+            Some(&bob),
+        )
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(none["items"].as_array().map(Vec::len), Some(0));
+
+    // A word buried past the stored snippet is still found: the *whole* body is
+    // indexed, not just the preview the list already shows.
+    let deep = app
+        .get(
+            &format!("/api/v1/messages?query={}", urlencode("obsidian")),
+            Some(&bob),
+        )
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(
+        deep["items"].as_array().map(Vec::len),
+        Some(1),
+        "a word past the snippet must still be findable: {deep}"
+    );
+
+    // A prefix of a body word is not a word. It is found only if it happens to sit in
+    // the subject, the sender or the stored snippet — the substring half of the
+    // predicate, which is what keeps the prefix search a search box already had.
+    let prefix = app
+        .get(
+            &format!("/api/v1/messages?query={}", urlencode("obsid")),
+            Some(&bob),
+        )
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(
+        prefix["items"].as_array().map(Vec::len),
+        Some(0),
+        "a prefix of a word deep in the body is neither indexed nor in the snippet"
+    );
+    // `pen` is not a word of its own, but it *is* a substring of `appendix` in the
+    // snippet, so the substring half legitimately matches it. Asserting the positive
+    // here is what proves that half still works rather than having been replaced.
+    let in_snippet = app
+        .get(
+            &format!("/api/v1/messages?query={}", urlencode("pen")),
+            Some(&bob),
+        )
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(
+        in_snippet["items"].as_array().map(Vec::len),
+        Some(1),
+        "the substring fallback over the snippet must survive: {in_snippet}"
+    );
+
+    app.cleanup().await;
+}
+
+/// Hide characters a query string cannot carry raw.
+fn urlencode(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (byte as char).to_string()
+            }
+            other => format!("%{other:02X}"),
+        })
+        .collect()
+}

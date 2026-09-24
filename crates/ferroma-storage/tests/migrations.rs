@@ -148,7 +148,12 @@ async fn expected_indexes_exist() {
         "mailboxes_primary_key",
         "folders_name_key",
         "messages_folder_uid_key",
-        "messages_subject_fts_idx",
+        // Migration 0012 replaced the subject-only GIN index with one over a generated
+        // vector that also carries the body, so searching a word inside a message
+        // works. The old name must be gone: two indexes over one column would only be
+        // maintained twice.
+        "messages_search_vector_idx",
+        "messages_body_text_missing_idx",
         "mail_queue_due_idx",
         "sessions_token_key",
         "devices_uid_key",

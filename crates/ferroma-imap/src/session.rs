@@ -1690,6 +1690,9 @@ impl ImapSession {
             .as_ref()
             .map(|p| p.snippet(160))
             .filter(|s| !s.is_empty());
+        // An APPEND carries bytes a client built elsewhere, so the only text available
+        // is what this parse extracts — the same parse the fields above come from.
+        let body_text = parsed.as_ref().and_then(ParsedMessage::searchable_text);
 
         let inserted = self
             .context
@@ -1707,6 +1710,7 @@ impl ImapSession {
                 sender: sender.as_ref().map(|m| m.address.to_string()),
                 sender_name: sender.as_ref().and_then(|m| m.name.clone()),
                 snippet,
+                body_text,
                 size_bytes: message.len() as i64,
                 storage_path: stored.path.clone(),
                 checksum_sha256: Some(stored.sha256.clone()),

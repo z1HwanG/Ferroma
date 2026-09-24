@@ -13,6 +13,13 @@ Ferroma 的重要变更，新的在前。
 
 ### 新增
 
+- **搜索会进入邮件正文。** 搜索框此前只匹配主题、发件人与已存预览，因此出现在正文几行
+  之后的词找不到任何东西。正文在邮件到达时被提取（遍历 MIME、解码字符集、把 HTML 归约为
+  文本），写入带 GIN 索引的生成列 `tsvector`，供 `?query=` 使用。词匹配旁保留了子串匹配，
+  因此前缀搜索仍然可用，而在正文索引之前存储的邮件在
+  `ferroma storage reindex-search` 补齐正文之前，仍可按主题、发件人与摘要找到。
+  见 `docs/deployment.md` §6.7。
+
 - **管理员可以看到账号的第二因子，但无法清除它。**
   `GET /api/v1/users/:id/security` 报告注册状态、剩余恢复码与应用专用密码；
   `DELETE /api/v1/users/:id/app-passwords/:app_id` 吊销其中之一。Admin 的用户抽屉会

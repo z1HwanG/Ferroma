@@ -399,6 +399,16 @@ pub enum StorageCommand {
         #[arg(long)]
         details: bool,
     },
+    /// Extract the searchable text of messages stored before body indexing existed.
+    ///
+    /// New mail is indexed as it arrives; this fills in the rows that predate the
+    /// `body_text` column, which are otherwise findable by subject and snippet but not
+    /// by anything further into the body.
+    ReindexSearch {
+        /// Stop after this many messages (the whole store is walked by default).
+        #[arg(long)]
+        limit: Option<i64>,
+    },
     /// Delete unreferenced attachment blobs and abandoned `tmp/` files.
     Gc {
         /// Report what would be removed without removing it.

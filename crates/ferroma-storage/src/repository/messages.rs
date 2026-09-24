@@ -44,6 +44,13 @@ pub struct NewMessage {
     pub sender_name: Option<String>,
     /// Short plain-text preview for list views.
     pub snippet: Option<String>,
+    /// Everything in the message worth searching, extracted from the MIME tree.
+    ///
+    /// The body lives in the Maildir, so it cannot be indexed from SQL. `None` means
+    /// "not extracted", which is different from "no text": a message stored by an
+    /// older build, or by a path that never parsed the bytes, is simply not findable
+    /// by body until `ferroma storage reindex-search` fills it in.
+    pub body_text: Option<String>,
     /// Size of the stored bytes.
     pub size_bytes: i64,
     /// Path relative to the Maildir root.
@@ -126,6 +133,16 @@ pub struct MessageSearch {
     pub sender: Option<String>,
     /// Substring of subject, sender or snippet, case-insensitive.
     pub text: Option<String>,
+    /// Full-text query over the subject, the sender and the **body**, as
+    /// `websearch_to_tsquery` parses it (`"quoted phrases"`, `or`, `-excluded`).
+    ///
+    /// A strict superset of [`MessageSearch::text`]: the body is matched through the
+    /// `search_vector` index, and the same substring match `text` performs is kept
+    /// beside it. That combination is deliberate. Word matching alone would break the
+    /// prefix search a search box gets for free today — `invoi` finds an `invoice` by
+    /// substring and would find nothing as a whole word — and a row stored before
+    /// bodies were indexed has no `body_text` to match against.
+    pub full_text: Option<String>,
     /// Only messages without the `seen` flag.
     pub unread_only: bool,
     /// Only messages with the `flagged` flag.
@@ -1055,6 +1072,39 @@ impl MessagesRepository {
         touched(done.rows_affected(), id)
     }
 
+    /// Message rows that still have no searchable body text.
+    ///
+    /// Used by `ferroma storage reindex-search` to find the mail that predates body
+    /// indexing. Only live rows are returned: an expunged message has nothing left to
+    /// find, and reading its file would be wasted work.
+    pub async fn missing_body_text(&self, limit: i64) -> Result<Vec<Message>> {
+        Ok(sqlx::query_as::<_, Message>(
+            "SELECT * FROM messages
+              WHERE body_text IS NULL AND expunged_at IS NULL
+              ORDER BY internal_date DESC, id DESC
+              LIMIT $1",
+        )
+        .bind(limit.clamp(1, 1000))
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    /// Store the extracted text of one message and regenerate its search vector.
+    ///
+    /// Returns whether a row changed. The `body_text IS NULL` guard makes a second
+    /// run a no-op, so an interrupted reindex can simply be started again.
+    pub async fn set_body_text(&self, id: MessageId, text: Option<&str>) -> Result<bool> {
+        let done = sqlx::query(
+            "UPDATE messages SET body_text = $2, updated_at = NOW()
+              WHERE id = $1 AND body_text IS NULL",
+        )
+        .bind(id.get())
+        .bind(text)
+        .execute(&self.pool)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
     /// Server-side search over the live messages.
     ///
     /// All predicates are bound parameters; the only SQL that varies is which fixed
@@ -1091,6 +1141,26 @@ impl MessagesRepository {
                 .push(" AND (subject ILIKE ")
                 .push_bind(pattern.clone())
                 .push(" OR sender ILIKE ")
+                .push_bind(pattern.clone())
+                .push(" OR snippet ILIKE ")
+                .push_bind(pattern)
+                .push(")");
+        }
+        if let Some(query_text) = query.full_text.as_deref().filter(|s| !s.is_empty()) {
+            // `websearch_to_tsquery` never raises on input a user typed — unlike
+            // `to_tsquery`, which errors on a stray `&` and would turn a search box
+            // into a 500. The `simple` configuration matches the generated column: no
+            // stemming, so the vector and the query agree on what a word is.
+            let pattern = like_pattern(query_text);
+            builder
+                .push(" AND (search_vector @@ websearch_to_tsquery('simple', ")
+                .push_bind(query_text)
+                .push(")")
+                .push(" OR subject ILIKE ")
+                .push_bind(pattern.clone())
+                .push(" OR sender ILIKE ")
+                .push_bind(pattern.clone())
+                .push(" OR sender_name ILIKE ")
                 .push_bind(pattern.clone())
                 .push(" OR snippet ILIKE ")
                 .push_bind(pattern)
@@ -1278,11 +1348,11 @@ pub(crate) async fn insert_message_tx(
     Ok(sqlx::query_as::<_, Message>(
         "INSERT INTO messages (
              folder_id, mailbox_id, uid, rfc_message_id, thread_id, subject, sender,
-             sender_name, snippet, size_bytes, storage_path, checksum_sha256, flags,
+             sender_name, snippet, body_text, size_bytes, storage_path, checksum_sha256, flags,
              internal_date, sent_at, has_attachments, attachment_count, is_draft
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-                 COALESCE($14::TIMESTAMPTZ, NOW()), $15, $16, $17, $18)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+                 COALESCE($15::TIMESTAMPTZ, NOW()), $16, $17, $18, $19)
          RETURNING *",
     )
     .bind(new.folder_id.get())
@@ -1294,6 +1364,7 @@ pub(crate) async fn insert_message_tx(
     .bind(new.sender.as_deref())
     .bind(new.sender_name.as_deref())
     .bind(new.snippet.as_deref())
+    .bind(new.body_text.as_deref())
     .bind(new.size_bytes)
     .bind(&new.storage_path)
     .bind(new.checksum_sha256.as_deref())

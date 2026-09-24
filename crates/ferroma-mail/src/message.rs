@@ -188,6 +188,35 @@ impl ParsedMessage {
         truncate_chars(&collapsed, max_chars)
     }
 
+    /// Every part of the message worth indexing, as one block of text.
+    ///
+    /// Both a text part and an HTML part are included when both exist: a
+    /// `multipart/alternative` message carries the same words twice, which costs a
+    /// little index space and is the only way a word that appears in just one of the
+    /// two branches is findable at all.
+    ///
+    /// Unlike [`Message::snippet`], nothing is collapsed or cut: this feeds a search
+    /// index, where a truncated needle is a miss. Returns `None` for a message with
+    /// no textual body — an attachment-only mail has nothing to find.
+    pub fn searchable_text(&self) -> Option<String> {
+        let mut out = String::new();
+        if let Some(text) = self.text_body() {
+            out.push_str(&text);
+        }
+        if let Some(html) = self.html_body() {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&strip_html_tags(&html));
+        }
+        let trimmed = out.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    }
+
     /// Find the first non-attachment `text/<subtype>` part, preferring the
     /// `multipart/alternative` branch and never descending into an attached
     /// `message/rfc822`.
@@ -1052,6 +1081,68 @@ mod tests {
         let msg = ParsedMessage::parse(cn.as_bytes()).unwrap();
         assert_eq!(msg.snippet(5), "你好世界…");
         assert_eq!(msg.snippet(8), "你好世界你好世界");
+    }
+
+    #[test]
+    fn searchable_text_keeps_both_alternative_branches() {
+        // A multipart/alternative carries the same words twice; a word present in
+        // only one branch still has to be findable, so both are indexed.
+        let raw = concat!(
+            "Content-Type: multipart/alternative; boundary=X\r\n",
+            "\r\n",
+            "--X\r\n",
+            "Content-Type: text/plain\r\n",
+            "\r\n",
+            "Plain wording here.\r\n",
+            "--X\r\n",
+            "Content-Type: text/html\r\n",
+            "\r\n",
+            "<html><body><p>Fancy <b>wording</b> here.</p></body></html>\r\n",
+            "--X--\r\n",
+        );
+        let msg = ParsedMessage::parse(raw.as_bytes()).unwrap();
+        let text = msg.searchable_text().expect("both branches carry text");
+        assert!(text.contains("Plain wording here."), "{text:?}");
+        assert!(text.contains("Fancy"), "the HTML branch is indexed too: {text:?}");
+        assert!(!text.contains('<'), "markup is stripped: {text:?}");
+    }
+
+    #[test]
+    fn searchable_text_is_not_truncated_and_skips_stylesheets() {
+        let long = "needle ".repeat(400);
+        let raw = format!(
+            "Content-Type: text/html\r\n\r\n<html><head><style>.x{{color:red}}</style></head>\
+             <body><p>{long}</p></body></html>\r\n"
+        );
+        let msg = ParsedMessage::parse(raw.as_bytes()).unwrap();
+        let text = msg.searchable_text().expect("a body");
+        assert!(text.len() > 2000, "nothing is cut for an index: {}", text.len());
+        assert!(text.contains("needle"));
+        assert!(!text.contains("color:red"), "the stylesheet leaked in: {text:.80?}");
+    }
+
+    #[test]
+    fn searchable_text_is_none_without_a_textual_body() {
+        // An attachment-only message has nothing to find, and `Some("")` would put an
+        // empty document in the index rather than none.
+        let raw = concat!(
+            "Content-Type: multipart/mixed; boundary=X\r\n",
+            "\r\n",
+            "--X\r\n",
+            "Content-Type: application/pdf\r\n",
+            "Content-Disposition: attachment; filename=a.pdf\r\n",
+            "\r\n",
+            "%PDF-1.4\r\n",
+            "--X--\r\n",
+        );
+        let msg = ParsedMessage::parse(raw.as_bytes()).unwrap();
+        assert_eq!(msg.searchable_text(), None);
+
+        let html_only = ParsedMessage::parse(
+            b"Content-Type: text/html\r\n\r\n<html><head><style>a{}</style></head><body></body></html>\r\n",
+        )
+        .unwrap();
+        assert_eq!(html_only.searchable_text(), None, "strip to nothing, index nothing");
     }
 
     #[test]

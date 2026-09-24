@@ -124,6 +124,7 @@ async fn fixture(t: &TestDatabase) -> Fixture {
 /// A `NewMessage` with sensible defaults.
 fn message_in(f: &Fixture, folder: MailboxId, subject: &str, offset_secs: i64) -> NewMessage {
     NewMessage {
+        body_text: None,
         folder_id: folder,
         mailbox_id: f.mailbox_id,
         rfc_message_id: Some(format!("<{subject}@example.net>")),
@@ -2661,6 +2662,7 @@ async fn message_search_filters_and_pages() {
     let in_sent = repos.messages.insert(in_sent).await.unwrap();
 
     let base = || MessageSearch {
+        full_text: None,
         folder_id: None,
         mailbox_id: None,
         subject: None,
@@ -3179,6 +3181,188 @@ async fn expunging_a_message_takes_it_out_of_the_counters() {
         kept.message_id(),
         repos.messages.find_by_id(kept.message_id()).await.unwrap().unwrap().message_id()
     );
+
+    t.cleanup().await;
+}
+
+// ===========================================================================
+// body search
+// ===========================================================================
+
+#[tokio::test]
+async fn full_text_finds_a_word_that_only_the_body_carries() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+
+    // Two messages whose subject and snippet say nothing about "penguin"; only the
+    // indexed body does. This is the case the whole feature exists for: before body
+    // indexing, a search for a word inside a message found nothing at all.
+    let mut with_body = message_in(&f, f.inbox_id, "Quarterly report", 10);
+    with_body.body_text = Some("The migration plan mentions a penguin colony.".into());
+    repos.messages.insert(with_body).await.unwrap();
+    let mut without = message_in(&f, f.inbox_id, "Another subject", 20);
+    without.body_text = Some("Nothing of interest in here.".into());
+    repos.messages.insert(without).await.unwrap();
+
+    let base = || MessageSearch {
+        full_text: None,
+        folder_id: None,
+        mailbox_id: Some(f.mailbox_id),
+        subject: None,
+        sender: None,
+        text: None,
+        unread_only: false,
+        flagged_only: false,
+        with_attachments_only: false,
+        since: None,
+        before: None,
+        limit: 100,
+        offset: 0,
+    };
+
+    let hits = repos
+        .messages
+        .search(MessageSearch {
+            full_text: Some("penguin".into()),
+            ..base()
+        })
+        .await
+        .unwrap();
+    assert_eq!(hits.len(), 1, "only the message whose body carries the word");
+    assert_eq!(hits[0].subject.as_deref(), Some("Quarterly report"));
+
+    // A word nobody has finds nobody, and a two-word query requires both.
+    assert!(repos
+        .messages
+        .search(MessageSearch { full_text: Some("narwhal".into()), ..base() })
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        repos
+            .messages
+            .search(MessageSearch { full_text: Some("penguin colony".into()), ..base() })
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(repos
+        .messages
+        .search(MessageSearch { full_text: Some("penguin narwhal".into()), ..base() })
+        .await
+        .unwrap()
+        .is_empty());
+
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn full_text_keeps_the_substring_match_beside_it() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+
+    let mut row = message_in(&f, f.inbox_id, "Invoice 2026-09", 10);
+    row.body_text = Some("Attached is the invoice for September.".into());
+    repos.messages.insert(row).await.unwrap();
+
+    let query = |q: &str| MessageSearch {
+        full_text: Some(q.to_string()),
+        folder_id: None,
+        mailbox_id: Some(f.mailbox_id),
+        subject: None,
+        sender: None,
+        text: None,
+        unread_only: false,
+        flagged_only: false,
+        with_attachments_only: false,
+        since: None,
+        before: None,
+        limit: 100,
+        offset: 0,
+    };
+
+    // A whole word matches through the index.
+    assert_eq!(repos.messages.search(query("invoice")).await.unwrap().len(), 1);
+    // A prefix does not, and is caught by the substring half of the predicate — the
+    // behaviour a search box had before and must not lose.
+    assert_eq!(repos.messages.search(query("invoi")).await.unwrap().len(), 1);
+    // Punctuation a user might type must not turn into a SQL or tsquery error.
+    for hostile in ["invoice &", "|", "!!", "a & b | c", "'quote'", "100%"] {
+        repos
+            .messages
+            .search(query(hostile))
+            .await
+            .unwrap_or_else(|error| panic!("{hostile:?} broke the search: {error}"));
+    }
+
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_body_less_message_is_offered_for_reindexing_once() {
+    let t = setup!();
+    let f = fixture(&t).await;
+    let repos = t.repos();
+
+    let row = repos
+        .messages
+        .insert(message_in(&f, f.inbox_id, "Unindexed", 10))
+        .await
+        .unwrap();
+    let indexed = repos
+        .messages
+        .insert({
+            let mut row = message_in(&f, f.inbox_id, "Indexed", 20);
+            row.body_text = Some("already done".into());
+            row
+        })
+        .await
+        .unwrap();
+
+    // Only the row without text is offered, so an interrupted run resumes cleanly.
+    let missing = repos.messages.missing_body_text(100).await.unwrap();
+    assert_eq!(missing.len(), 1);
+    assert_eq!(missing[0].id, row.id);
+
+    assert!(repos
+        .messages
+        .set_body_text(row.message_id(), Some("the kingfisher dives"))
+        .await
+        .unwrap());
+    // The second call is a no-op: the guard is `body_text IS NULL`.
+    assert!(!repos
+        .messages
+        .set_body_text(row.message_id(), Some("something else"))
+        .await
+        .unwrap());
+    assert!(repos.messages.missing_body_text(100).await.unwrap().is_empty());
+
+    // And the text it stored is searchable.
+    let hits = repos
+        .messages
+        .search(MessageSearch {
+            full_text: Some("kingfisher".into()),
+            folder_id: None,
+            mailbox_id: Some(f.mailbox_id),
+            subject: None,
+            sender: None,
+            text: None,
+            unread_only: false,
+            flagged_only: false,
+            with_attachments_only: false,
+            since: None,
+            before: None,
+            limit: 100,
+            offset: 0,
+        })
+        .await
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, row.id);
+    let _ = indexed;
 
     t.cleanup().await;
 }

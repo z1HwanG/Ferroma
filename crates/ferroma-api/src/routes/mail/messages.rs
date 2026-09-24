@@ -181,7 +181,11 @@ pub async fn list_messages(
         mailbox_id: mailbox_scope,
         subject: None,
         sender: None,
-        text: query.query.clone().filter(|q| !q.trim().is_empty()),
+        // The search box searches the body as well as the fields `text` covers. A
+        // word that appears only in a message's body is what a user is usually
+        // looking for, and it found nothing before.
+        text: None,
+        full_text: query.query.clone().filter(|q| !q.trim().is_empty()),
         unread_only: query.unread.unwrap_or(false),
         flagged_only: query.flagged.unwrap_or(false),
         with_attachments_only: query.has_attachments.unwrap_or(false),

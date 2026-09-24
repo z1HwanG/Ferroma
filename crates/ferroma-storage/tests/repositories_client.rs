@@ -97,6 +97,7 @@ async fn fixture(t: &TestDatabase) -> Fixture {
     let message = repos
         .messages
         .insert(NewMessage {
+            body_text: None,
             folder_id: inbox_id,
             mailbox_id: mailbox.mailbox_id(),
             rfc_message_id: Some("<queued@example.com>".into()),

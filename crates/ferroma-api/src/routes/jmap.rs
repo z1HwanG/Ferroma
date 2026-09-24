@@ -325,7 +325,10 @@ async fn email_query(
             mailbox_id: None,
             subject: None,
             sender: None,
-            text,
+            // JMAP's `filter.text` is defined to match the from, to, subject or body,
+            // so it needs the body index rather than the snippet.
+            text: None,
+            full_text: text,
             unread_only: unread,
             flagged_only: false,
             with_attachments_only: false,

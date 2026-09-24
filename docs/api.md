@@ -607,6 +607,15 @@ that will fail its TLS handshakes while the configuration looks correct.
 | `DELETE` | `/api/v1/messages/:id` | move to Trash; `?permanent=true` removes it |
 | `POST` | `/api/v1/messages/batch` | `{operation: "read"\|"unread"\|"flag"\|"unflag"\|"move"\|"delete", ids: [ … ], folder_id?}` |
 
+`query=` is a **word** search over the subject, the sender and the whole body, with
+the same substring match over the subject, sender and snippet kept beside it — so
+`invoi` still finds an `invoice`, and a word buried past the stored preview finds the
+message it is in. Quotes and `or`/`-` are accepted as `websearch_to_tsquery` reads
+them, and nothing a user can type makes the query fail. Bodies are indexed as mail
+arrives; a message stored before body indexing existed is matched by its subject,
+sender and snippet until `ferroma storage reindex-search` fills in its text
+([deployment.md](deployment.md) §6.7).
+
 Sending queues one `mail_queue` row per recipient and returns immediately:
 
 ```json

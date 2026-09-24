@@ -299,6 +299,7 @@ impl Harness {
         self.repos
             .messages
             .insert(NewMessage {
+                body_text: None,
                 folder_id: folder_row.folder_id(),
                 mailbox_id: self.mailbox,
                 rfc_message_id: parsed

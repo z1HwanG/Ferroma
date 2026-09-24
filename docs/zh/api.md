@@ -580,6 +580,13 @@ PEM 文件，以及哪些端口提供 TLS。
 | `DELETE` | `/api/v1/messages/:id` | 移入 Trash；带`?permanent=true`则彻底删除 |
 | `POST` | `/api/v1/messages/batch` | `{operation: "read"\|"unread"\|"flag"\|"unflag"\|"move"\|"delete", ids: [ … ], folder_id?}` |
 
+`query=`是对主题、发件人以及**整封正文**的**词**搜索，同时保留对主题、发件人与摘要的
+子串匹配——因此`invoi`仍能找到`invoice`，而埋在已存预览之外的词也能找到它所在的邮件。
+引号以及`or`/`-`按`websearch_to_tsquery`的读法接受，用户输入任何内容都不会让查询失败。
+正文在邮件到达时建立索引；在正文索引存在之前存储的邮件，在
+`ferroma storage reindex-search` 补齐其正文之前，按主题、发件人与摘要匹配
+（见 [deployment.md](deployment.md) §6.7）。
+
 发送会为每个收件人排队一条`mail_queue`行，并立即返回：
 
 ```json

@@ -74,6 +74,7 @@ impl Harness {
             .repos
             .messages
             .insert(NewMessage {
+                body_text: None,
                 folder_id: sent.folder_id(),
                 mailbox_id,
                 rfc_message_id: Some("<outbound@mx.test>".to_string()),

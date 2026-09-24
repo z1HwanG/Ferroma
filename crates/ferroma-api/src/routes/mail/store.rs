@@ -207,6 +207,7 @@ pub async fn store_message(
             sender: Some(outgoing.from.clone()),
             sender_name: outgoing.from_name.clone(),
             snippet: body.snippet.clone(),
+            body_text: body.body_text.clone(),
             size_bytes: stored.size as i64,
             storage_path: stored.path,
             checksum_sha256: Some(stored.sha256),
@@ -297,6 +298,10 @@ pub struct ParsedBody {
     pub sent_at: Option<chrono::DateTime<chrono::Utc>>,
     /// A short, body-free preview.
     pub snippet: Option<String>,
+    /// The full searchable text of the message, extracted from the bytes this parse
+    /// already walked. Taken from the same parse as `snippet` so the preview and the
+    /// index can never describe different bytes.
+    pub body_text: Option<String>,
     /// The stored recipients.
     pub recipients: Vec<Recipient>,
 }
@@ -319,6 +324,7 @@ pub fn describe_built_message(bytes: &[u8], outgoing: &OutgoingMessage) -> Parse
         .as_ref()
         .map(|message| message.snippet(180))
         .filter(|snippet| !snippet.trim().is_empty());
+    let body_text = parsed.as_ref().and_then(ferroma_mail::ParsedMessage::searchable_text);
 
     let mut recipients: Vec<Recipient> = Vec::new();
     let mut push = |kind: &str, values: &[String]| {
@@ -343,6 +349,7 @@ pub fn describe_built_message(bytes: &[u8], outgoing: &OutgoingMessage) -> Parse
         message_id,
         thread_id,
         sent_at,
+        body_text,
         snippet,
         recipients,
     }

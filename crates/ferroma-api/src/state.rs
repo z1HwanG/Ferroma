@@ -473,6 +473,9 @@ impl MessageStub {
                 subject: Some(STUB_SUBJECT.to_string()),
                 sender: None,
                 sender_name: None,
+                // A draft stub holds a subject and nothing else: there is no body to
+                // index until the draft is sent.
+                body_text: None,
                 snippet: None,
                 size_bytes: 0,
                 storage_path: String::new(),

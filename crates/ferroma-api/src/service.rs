@@ -298,6 +298,7 @@ impl MessageService {
                 sender: Some(outgoing.from.clone()),
                 sender_name: outgoing.from_name.clone(),
                 snippet: body.snippet.clone(),
+                body_text: body.body_text.clone(),
                 size_bytes: staged.size as i64,
                 storage_path: staged.path.clone(),
                 checksum_sha256: Some(staged.sha256.clone()),
@@ -545,6 +546,7 @@ impl MessageService {
                     .first()
                     .and_then(|address| address.name.clone()),
                 snippet: parsed.snippet(180).trim().to_owned().into(),
+                body_text: parsed.searchable_text(),
                 size_bytes: stored.size as i64,
                 storage_path: stored.path.clone(),
                 checksum_sha256: Some(stored.sha256),

@@ -1036,6 +1036,30 @@ The Admin console shows an account's factor state and lets an administrator revo
 application password (`GET /users/:id/security`,
 `DELETE /users/:id/app-passwords/:app_id`). It cannot clear the factor.
 
+### 6.7 Indexing the bodies of mail that predates body search
+
+Search matches the whole body of a message. Bodies are extracted and indexed as mail
+arrives, which leaves everything already in the store unindexed: those messages are
+still found by subject, sender and snippet, but a word further into the body finds
+nothing until their text is extracted.
+
+```bash
+# Walks the mail store and fills in the text of every row that has none.
+# Safe to interrupt and re-run: a row leaves the queue as soon as it is filled.
+docker compose -f docker-compose.yml exec ferroma ferroma storage reindex-search
+
+# A bounded run, for a store too large to finish in one window.
+docker compose -f docker-compose.yml exec ferroma ferroma storage reindex-search --limit 5000
+```
+
+Each message is read from the Maildir and parsed once. A message whose file is missing
+is reported and skipped — `ferroma storage verify` is the command that lists those —
+and an attachment-only message is recorded as having no body text so the walk
+terminates rather than finding it again.
+
+Run it after an upgrade that introduces body search; it needs no downtime and no
+restart.
+
 ---
 
 ## 7. DKIM: generating and publishing a key

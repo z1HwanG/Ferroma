@@ -980,6 +980,77 @@ pub fn storage(config: &Config, command: &StorageCommand) -> Result<ExitCode> {
                     Ok(ExitCode::FAILURE)
                 }
             }
+            StorageCommand::ReindexSearch { limit } => {
+                let maildir = Maildir::new(
+                    config.maildir_root(),
+                    config.storage.fsync_on_write,
+                    config.storage.layout,
+                );
+                // One page at a time, always re-querying: the guard is `body_text IS
+                // NULL`, so a row leaves the page as soon as it is filled and an
+                // interrupted run resumes where it stopped.
+                let page = 200i64;
+                let total_cap = limit.unwrap_or(i64::MAX).max(1);
+                let mut indexed = 0i64;
+                let mut unreadable = 0i64;
+                let mut empty = 0i64;
+                loop {
+                    if indexed + unreadable + empty >= total_cap {
+                        break;
+                    }
+                    let rows = repos.messages.missing_body_text(page).await?;
+                    if rows.is_empty() {
+                        break;
+                    }
+                    for row in &rows {
+                        if indexed + unreadable + empty >= total_cap {
+                            break;
+                        }
+                        let bytes = match maildir.read(&row.storage_path) {
+                            Ok(bytes) => bytes,
+                            Err(error) => {
+                                // A message whose file is gone is reported, not fatal:
+                                // the rest of the store still deserves indexing, and
+                                // `storage verify` is the command that lists them.
+                                unreadable += 1;
+                                tracing::warn!(
+                                    message_id = row.id,
+                                    path = %row.storage_path,
+                                    %error,
+                                    "could not read a message while reindexing"
+                                );
+                                continue;
+                            }
+                        };
+                        let text = ferroma_mail::ParsedMessage::parse(&bytes)
+                            .ok()
+                            .and_then(|parsed| parsed.searchable_text());
+                        match text {
+                            Some(text) => {
+                                if repos.messages.set_body_text(row.message_id(), Some(&text)).await? {
+                                    indexed += 1;
+                                }
+                            }
+                            None => {
+                                // An attachment-only message has no body. Store an
+                                // empty string so it stops showing up as "not yet
+                                // indexed" and the walk terminates.
+                                repos.messages.set_body_text(row.message_id(), Some("")).await?;
+                                empty += 1;
+                            }
+                        }
+                    }
+                    println!("  … {indexed} indexed so far");
+                }
+                println!("search text extracted for {indexed} message(s)");
+                if empty > 0 {
+                    println!("{empty} message(s) have no body text to index");
+                }
+                if unreadable > 0 {
+                    println!("{unreadable} message(s) could not be read; run `storage verify`");
+                }
+                Ok(ExitCode::SUCCESS)
+            }
             StorageCommand::Gc { dry_run } => {
                 let keep: std::collections::HashSet<String> =
                     repos.attachments.referenced_paths().await?.into_iter().collect();

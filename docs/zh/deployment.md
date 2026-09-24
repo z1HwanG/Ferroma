@@ -948,6 +948,27 @@ Admin 控制台会显示账号的第二因子状态，并允许管理员吊销�
 （`GET /users/:id/security`、`DELETE /users/:id/app-passwords/:app_id`）。它无法清除
 第二因子。
 
+### 6.7 为正文搜索之前存储的邮件建立索引
+
+搜索匹配整封正文。正文在邮件到达时提取并建立索引，因此库中已有的邮件都未建立索引：这些
+邮件仍可按主题、发件人与摘要找到，但在它们的正文被提取之前，正文更深处出现的词找不到
+任何东西。
+
+```bash
+# 遍历邮件存储，为每一行尚无正文文本的邮件补齐正文。
+# 可以安全地中断并重跑：一行被填好后就会离开队列。
+docker compose -f docker-compose.yml exec ferroma ferroma storage reindex-search
+
+# 有界运行，适用于一次窗口内跑不完的大存储。
+docker compose -f docker-compose.yml exec ferroma ferroma storage reindex-search --limit 5000
+```
+
+每封邮件只从 Maildir 读取并解析一次。文件缺失的邮件会被报告并跳过——列出这些邮件的命令是
+`ferroma storage verify`——只有附件的邮件会被记录为「无正文文本」，这样遍历会终止而不是
+反复找到它。
+
+在引入正文搜索的升级之后运行它；无需停机，也无需重启。
+
 ---
 
 ## 7. DKIM：生成并发布密钥

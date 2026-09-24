@@ -16,6 +16,14 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ### Added
 
+- **Search looks inside message bodies.** The search box matched the subject, the
+  sender and the stored preview, so a word a few lines into a message found nothing.
+  Bodies are extracted as mail arrives (MIME walk, charset decode, HTML reduced to
+  text) into a generated `tsvector` with a GIN index, and `?query=` uses it. The
+  substring match is kept beside the word match, so a prefix search still works and
+  mail stored before body indexing stays findable by subject, sender and snippet until
+  `ferroma storage reindex-search` fills in its text. `docs/deployment.md` §6.7.
+
 - **An administrator can see an account's second factor, and cannot clear it.**
   `GET /api/v1/users/:id/security` reports the enrollment state, the recovery codes
   left and the application passwords; `DELETE /api/v1/users/:id/app-passwords/:app_id`
