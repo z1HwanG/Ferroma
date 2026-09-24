@@ -13,6 +13,7 @@ import { LOCALES, currentLocale, setLocale, t, tn } from '../shared/i18n.js';
 import { openModal } from '../shared/modal.js';
 import { MESSAGES_PER_PAGE_CHOICES, PREF_DEFAULTS, getPrefs, savePrefs } from './store.js';
 import { THEME_MODES, currentTheme, setTheme } from '../shared/theme.js';
+import { relativeStamp } from '../shared/format.js';
 import { toastError, toastSuccess } from '../shared/toast.js';
 
 /** Save a value and keep the theme module in step. */
@@ -34,6 +35,23 @@ const FIELDS = {
   passwordNew: 'settings-password-new',
   passwordConfirm: 'settings-password-confirm',
   passwordStatus: 'settings-password-status',
+  totpStatus: 'settings-totp-status',
+  totpEnroll: 'settings-totp-enroll',
+  totpPane: 'settings-totp-pane',
+  totpSecret: 'settings-totp-secret',
+  totpUri: 'settings-totp-uri',
+  totpCode: 'settings-totp-code',
+  totpConfirm: 'settings-totp-confirm',
+  totpRecovery: 'settings-totp-recovery',
+  totpDisable: 'settings-totp-disable',
+  totpDisablePane: 'settings-totp-disable-pane',
+  totpPassword: 'settings-totp-password',
+  totpOff: 'settings-totp-off',
+  totpError: 'settings-totp-error',
+  appPasswordLabel: 'settings-app-password-label',
+  appPasswordCreate: 'settings-app-password-create',
+  appPasswordNew: 'settings-app-password-new',
+  appPasswordList: 'settings-app-password-list',
 };
 
 /** The label for one theme mode. */
@@ -97,6 +115,341 @@ function themeControl() {
     selected: () => node.dataset.mode || currentTheme(),
     select,
   };
+}
+
+
+/**
+ * The security section: the second factor and the application passwords.
+ *
+ * Three things about it are deliberate.
+ *
+ * There is no QR image. Rendering one would mean either a QR library or a request to
+ * somebody else's service, and shipping the second is out of the question for a page
+ * that is holding a shared secret. The secret is shown in groups an authenticator can
+ * accept by hand, with the `otpauth://` URI beside it for an app that takes one.
+ *
+ * The recovery codes and a new application password are shown **once**, because only
+ * digests are stored on the server. The panel says so rather than leaving the user to
+ * discover it.
+ *
+ * Turning the factor off asks for the account password. A stolen session is the case
+ * the factor exists for, so the session alone must not be able to remove it.
+ *
+ * @returns {{node: HTMLElement, reload: () => Promise<void>}}
+ */
+function securitySection() {
+  const status = el('p', { class: 'modal-message', id: FIELDS.totpStatus, text: t('Loading…') });
+  const error = el('p', { class: 'field-error', id: FIELDS.totpError, role: 'alert', hidden: true });
+  const showError = (message) => {
+    setText(error, message);
+    setHidden(error, message === '');
+  };
+
+  /* ------------------------------------------------------------ enrollment */
+
+  const secret = el('code', { class: 'secret-value', id: FIELDS.totpSecret });
+  const uri = el('code', { class: 'secret-value', id: FIELDS.totpUri });
+  const code = el('input', {
+    class: 'input',
+    id: FIELDS.totpCode,
+    type: 'text',
+    inputmode: 'numeric',
+    autocomplete: 'one-time-code',
+    maxlength: '7',
+  });
+  const confirm = el('button', { type: 'button', class: 'btn btn-primary', id: FIELDS.totpConfirm, text: t('Confirm') });
+  const recovery = el('ul', { class: 'secret-list', id: FIELDS.totpRecovery, hidden: true });
+  const pane = el('div', { class: 'settings-grid', id: FIELDS.totpPane, hidden: true }, [
+    el('div', { class: 'field' }, [
+      el('p', { class: 'modal-message', text: t('Enter this secret in your authenticator app.') }),
+      secret,
+      el('p', { class: 'modal-message', text: t('Or use this URI if your app accepts one:') }),
+      uri,
+    ]),
+    el('div', { class: 'field' }, [
+      el('label', { class: 'field-label', for: FIELDS.totpCode, text: t('Code from the app') }),
+      code,
+      confirm,
+    ]),
+    el('div', { class: 'field' }, [
+      el('p', { class: 'modal-message', text: t('Save these recovery codes now. Each one works once, and they are not shown again.') }),
+      recovery,
+    ]),
+  ]);
+
+  /* --------------------------------------------------------------- disable */
+
+  const disablePassword = el('input', {
+    class: 'input',
+    id: FIELDS.totpPassword,
+    type: 'password',
+    autocomplete: 'current-password',
+  });
+  const disable = el('button', { type: 'button', class: 'btn btn-danger', id: FIELDS.totpOff, text: t('Turn off') });
+  const disablePane = el('div', { class: 'settings-grid', id: FIELDS.totpDisablePane, hidden: true }, [
+    el('div', { class: 'field' }, [
+      el('label', { class: 'field-label', for: FIELDS.totpPassword, text: t('Confirm with your account password.') }),
+      disablePassword,
+      disable,
+    ]),
+  ]);
+
+  const enroll = el('button', { type: 'button', class: 'btn', id: FIELDS.totpEnroll, text: t('Set up two-factor authentication') });
+
+  /* ---------------------------------------------------- application passwords */
+
+  const label = el('input', {
+    class: 'input',
+    id: FIELDS.appPasswordLabel,
+    type: 'text',
+    autocomplete: 'off',
+    placeholder: t('What is it for?'),
+  });
+  const create = el('button', { type: 'button', class: 'btn', id: FIELDS.appPasswordCreate, text: t('Create') });
+  const fresh = el('p', { class: 'modal-message', id: FIELDS.appPasswordNew, hidden: true });
+  const list = el('ul', { class: 'secret-list', id: FIELDS.appPasswordList });
+
+  /**
+   * One application password row, with its own revoke button.
+   *
+   * @param {{id: number, label: string, last_used_at: string|null, revoked_at: string|null}} entry
+   */
+  const appPasswordRow = (entry) => {
+    const when = entry.last_used_at
+      ? t('Last used {when}', { when: relativeStamp(entry.last_used_at) })
+      : t('Never used');
+    const trailing = entry.revoked_at
+      ? el('span', { class: 'modal-message', text: t('Revoked') })
+      : el('button', { type: 'button', class: 'btn btn-small', text: t('Revoke') });
+    const row = el('li', { class: 'secret-row' }, [
+      el('span', { class: 'secret-name', text: entry.label }),
+      el('span', { class: 'modal-message', text: when }),
+      trailing,
+    ]);
+    if (!entry.revoked_at) {
+      trailing.addEventListener('click', async () => {
+        trailing.disabled = true;
+        await revoke(entry.id);
+      });
+    }
+    return row;
+  };
+
+  /**
+   * Whether the enrollment pane must stay on screen.
+   *
+   * It is set while a secret we just issued is displayed, and it stays set after a
+   * successful confirmation, because the recovery codes are shown exactly once —
+   * hiding the pane there would throw them away in the same breath as showing them.
+   */
+  let paneSticky = false;
+
+  /** Refresh the status line, the buttons and the application-password list. */
+  const reload = async () => {
+    showError('');
+    try {
+      const state = await request(`${API_BASE}/auth/totp`, { toast: false });
+      const enabled = state.status === 'enabled';
+      const pending = state.status === 'pending';
+      setText(status, securityStatusLine(state.status));
+      // Starting a new enrollment replaces an unconfirmed one, so the button is
+      // offered whenever the factor is not already in force.
+      setHidden(enroll, enabled);
+      // The server never returns a secret it has stored, so a `pending` enrollment
+      // from an earlier visit cannot be resumed: the pane only opens for a secret
+      // this dialog just issued.
+      setHidden(pane, !paneSticky);
+      setHidden(disablePane, !enabled);
+    } catch (failure) {
+      setText(status, t('The security settings could not be loaded.'));
+      showError(failure instanceof ApiError ? failure.message : t('The security settings could not be loaded.'));
+    }
+
+    try {
+      const payload = await request(`${API_BASE}/auth/app-passwords`, { toast: false });
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      list.replaceChildren();
+      if (items.length === 0) {
+        list.append(el('li', { class: 'modal-message', text: t('No application passwords yet.') }));
+      }
+      for (const entry of items) list.append(appPasswordRow(entry));
+    } catch {
+      list.replaceChildren();
+    }
+  };
+
+  /** Create one application password and show its secret once. */
+  const createPassword = async () => {
+    const name = label.value.trim();
+    if (name === '') {
+      showError(t('Give the application password a name.'));
+      return;
+    }
+    create.disabled = true;
+    try {
+      const payload = await request(`${API_BASE}/auth/app-passwords`, {
+        method: 'POST',
+        body: { label: name },
+        toast: false,
+      });
+      setText(fresh, t('Copy this password now. It is not shown again: {secret}', { secret: payload.secret }));
+      setHidden(fresh, false);
+      label.value = '';
+      showError('');
+      await reload();
+    } catch (failure) {
+      showError(
+        failure instanceof ApiError ? failure.message : t('The application password could not be created.'),
+      );
+    } finally {
+      create.disabled = false;
+    }
+  };
+
+  /** Revoke one application password by id. */
+  const revoke = async (id) => {
+    try {
+      await request(`${API_BASE}/auth/app-passwords/${id}`, { method: 'DELETE', toast: false });
+      await reload();
+    } catch (failure) {
+      showError(
+        failure instanceof ApiError ? failure.message : t('The application password could not be revoked.'),
+      );
+    }
+  };
+
+  enroll.addEventListener('click', async () => {
+    enroll.disabled = true;
+    showError('');
+    try {
+      const payload = await request(`${API_BASE}/auth/totp/enroll`, { method: 'POST', toast: false });
+      setText(secret, groupSecret(payload.secret));
+      setText(uri, payload.uri);
+      recovery.replaceChildren();
+      setHidden(pane, false);
+      setHidden(recovery, true);
+      paneSticky = true;
+      code.value = '';
+      code.focus();
+    } catch (failure) {
+      showError(
+        failure instanceof ApiError
+          ? failure.message
+          : t('Two-factor authentication could not be set up.'),
+      );
+    } finally {
+      enroll.disabled = false;
+    }
+  });
+
+  confirm.addEventListener('click', async () => {
+    const entered = code.value.trim();
+    if (entered === '') {
+      showError(t('Enter the code your app is showing.'));
+      return;
+    }
+    confirm.disabled = true;
+    showError('');
+    try {
+      const payload = await request(`${API_BASE}/auth/totp/confirm`, {
+        method: 'POST',
+        body: { code: entered },
+        toast: false,
+      });
+      const codes = Array.isArray(payload.recovery_codes) ? payload.recovery_codes : [];
+      recovery.replaceChildren();
+      for (const one of codes) recovery.append(el('li', { class: 'secret-row', text: one }));
+      setHidden(recovery, false);
+      // The codes stay on screen until the dialog closes; `reload` must not clear it.
+      paneSticky = true;
+      code.value = '';
+      toastSuccess(t('Two-factor authentication is on.'));
+      await reload();
+    } catch (failure) {
+      showError(
+        failure instanceof ApiError ? failure.message : t('That code did not match.'),
+      );
+    } finally {
+      confirm.disabled = false;
+    }
+  });
+
+  disable.addEventListener('click', async () => {
+    const password = disablePassword.value;
+    if (password === '') {
+      showError(t('Enter your account password.'));
+      return;
+    }
+    disable.disabled = true;
+    showError('');
+    try {
+      await request(`${API_BASE}/auth/totp/disable`, {
+        method: 'POST',
+        body: { password },
+        toast: false,
+        // A wrong password is a `401` here, exactly like an expired session; the
+        // request must not be replayed through the refresh path.
+        retryOn401: false,
+      });
+      disablePassword.value = '';
+      paneSticky = false;
+      toastSuccess(t('Two-factor authentication is off.'));
+      await reload();
+    } catch (failure) {
+      showError(
+        failure instanceof ApiError
+          ? failure.message
+          : t('Two-factor authentication could not be turned off.'),
+      );
+    } finally {
+      disable.disabled = false;
+    }
+  });
+
+  create.addEventListener('click', createPassword);
+
+  const node = el('div', { class: 'settings-grid' }, [
+    el('h3', { class: 'card-title', text: t('Two-factor authentication') }),
+    el('div', { class: 'field' }, [status, enroll, pane, disablePane, error]),
+    el('h3', { class: 'card-title', text: t('Application passwords') }),
+    el('p', {
+      class: 'modal-message',
+      text: t('For mail clients that cannot ask for a code. Each one is a full credential for this account.'),
+    }),
+    el('div', { class: 'field' }, [label, create, fresh]),
+    list,
+  ]);
+
+  return { node, reload };
+}
+
+/**
+ * The one-line description of an enrollment state.
+ *
+ * Pure and exported so the wording rules — in particular that a `pending`
+ * enrollment is *not* protection — can be asserted without a browser.
+ *
+ * @param {string} state
+ * @returns {string}
+ */
+export function securityStatusLine(state) {
+  if (state === 'enabled') return t('On. Mail clients sign in with an application password.');
+  if (state === 'pending') return t('Waiting for a code to confirm the new secret.');
+  return t('Off. A password is the only thing protecting this account.');
+}
+
+/**
+ * Group a base32 secret in fours, which is how an authenticator app's manual entry
+ * field is usually laid out and how a person reads a secret off a screen without
+ * losing their place.
+ *
+ * @param {string} value
+ */
+export function groupSecret(value) {
+  return String(value || '')
+    .replace(/\s+/g, '')
+    .replace(/(.{4})/g, '$1 ')
+    .trim();
 }
 
 export function openSettings() {
@@ -231,6 +584,8 @@ export function openSettings() {
     }
   });
 
+  const security = securitySection();
+
   const body = el('div', { class: 'settings-grid' }, [
     el('div', { class: 'field' }, [
       el('label', { class: 'field-label', for: FIELDS.displayName, text: t('Display name') }),
@@ -260,6 +615,7 @@ export function openSettings() {
     ]),
     el('h3', { class: 'card-title', text: t('Password') }),
     passwordForm,
+    security.node,
   ]);
 
   const close = el('button', { type: 'button', class: 'btn', text: t('Close') });
@@ -271,6 +627,7 @@ export function openSettings() {
     body,
     footer: [reset, el('span', { class: 'spacer' }), close, save],
     onMount: () => {
+      security.reload();
       close.addEventListener('click', () => modal.close('close'));
       save.addEventListener('click', () => {
         const perPageValue = Number.parseInt(perPage.value, 10);

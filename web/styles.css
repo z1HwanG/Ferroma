@@ -2705,6 +2705,50 @@ html.theme-switching .theme-toggle .icon {
   }
 }
 
+/* Second-factor enrollment and application passwords. A secret is read off the
+   screen and typed into another device, so it is monospaced, wrapped and spaced
+   rather than set as prose that a reader has to keep their place in. */
+.secret-value {
+  display: block;
+  margin: 4px 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2, rgba(127, 127, 127, 0.08));
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.secret-list {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.secret-list .secret-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+
+.secret-list .secret-name {
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.btn-small {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
 @media (min-width: 1800px) {
   :root {
     --pane-folders: 268px;

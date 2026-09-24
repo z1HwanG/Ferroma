@@ -16,6 +16,13 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ### Added
 
+- **The Webmail can set up a second factor.** Settings grew a Security section:
+  enroll an authenticator (the secret and its `otpauth://` URI are shown for manual
+  entry — no QR image, because rendering one would mean a QR library or a request to
+  somebody else's service from a page holding the secret), confirm with a code,
+  save the one-time recovery codes, and manage application passwords. Turning the
+  factor off asks for the account password.
+
 - **TOTP second factors and application passwords.** An account can enroll a TOTP
   authenticator (`/api/v1/auth/totp/enroll`, confirmed with a code) and receives ten
   single-use recovery codes. Every password login then answers

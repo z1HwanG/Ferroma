@@ -23,6 +23,7 @@ node tools/check-zh.mjs               # the Chinese set: terminology, pairing, r
 node tools/check-deploy.mjs           # the deployment artefacts, Dockerfile included
 (cd web && node tools/check.mjs)      # module graph, ids, i18n coverage
 (cd admin && node tools/check.mjs)
+node tools/check-web.mjs              # cross-module link errors, and the app-local suites
 ```
 
 The front-end checks are strict on purpose. They fail on an element id that no view defines, on a

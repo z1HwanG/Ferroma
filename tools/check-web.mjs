@@ -21,10 +21,21 @@
  *   * an `import { x } from './y.js'` where `y.js` does not export `x` — a
  *     `SyntaxError` at link time, which stops the module graph from evaluating at all.
  *
+ * This script also runs the app-local regression suites under `web/tools/`. They
+ * carry rules the per-app check has no place for — they assert *behaviour* of pure
+ * helpers, which is what a static id/import sweep cannot do. Nothing ran them
+ * before, so a regression they were written to catch would have reached a release
+ * with every documented check still green.
+ *
  *   node tools/check-web.mjs
  */
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+/** The repository root, so the app-local suites run from anywhere. */
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const ROOTS = ['web', 'admin'];
 
@@ -250,12 +261,36 @@ for (const root of ROOTS) {
   }
 }
 
+/* ------------------------------------------------- the app-local suites */
+
+const LOCAL_SUITES = [
+  ['web', 'tools/mfa-ui.mjs'],
+  ['web', 'tools/list-race.mjs'],
+  ['web', 'tools/security-regressions.mjs'],
+];
+
+const suiteProblems = [];
+for (const [app, script] of LOCAL_SUITES) {
+  const run = spawnSync(process.execPath, [script], {
+    cwd: path.join(REPO_ROOT, app),
+    encoding: 'utf8',
+  });
+  if (run.status !== 0) {
+    const detail = `${run.stdout || ''}${run.stderr || ''}`.trim().split('\n').slice(0, 4).join('; ');
+    suiteProblems.push(`${app}/${script} failed: ${detail || `exit ${run.status}`}`);
+  } else {
+    console.log(`  suite  ${app}/${script} — ${(run.stdout || '').trim()}`);
+  }
+}
+
 console.log('frontend check');
 console.log(`  note   modules scanned: ${modules}`);
-if (problems.length === 0) {
+if (problems.length === 0 && suiteProblems.length === 0) {
   console.log('  result PASS — no link errors');
   process.exit(0);
 }
 for (const problem of problems) console.log(`  FAIL   ${problem}`);
-console.log(`  result FAIL — ${problems.length} problem(s)`);
+for (const problem of suiteProblems) console.log(`  FAIL   ${problem}`);
+const total = problems.length + suiteProblems.length;
+console.log(`  result FAIL — ${total} problem(s)`);
 process.exit(1);
