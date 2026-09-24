@@ -13,6 +13,7 @@ use ferroma_storage::repository::{
     AuditFilter, DeviceUpsert, DraftUpdate, NewAuditLog, NewChange, NewDraft, NewMailbox, NewMessage,
     NewQueueEntry, NewSession, NewUser,
 };
+use ferroma_storage::repository::GreylistDecision;
 use ferroma_storage::StorageError;
 
 use common::{fresh_database, TestDatabase};
@@ -2191,5 +2192,98 @@ async fn queue_entries_disappear_with_their_message() {
     repos.messages.hard_delete(f.message_id).await.unwrap();
     assert_eq!(t.count("mail_queue").await, 0, "the queue cascades with the message");
 
+    t.cleanup().await;
+}
+
+// ===========================================================================
+// greylist
+// ===========================================================================
+
+#[tokio::test]
+async fn a_first_sighting_defers_and_the_same_triplet_is_remembered() {
+    let t = setup!();
+    let repos = t.repos();
+    let delay = chrono::Duration::minutes(5);
+
+    assert_eq!(
+        repos.greylist.check_and_record("203.0.113.9", "a@remote.test", "b@example.com", delay).await.unwrap(),
+        GreylistDecision::Defer,
+        "a triplet nobody has seen must be deferred once"
+    );
+    assert_eq!(
+        repos.greylist.check_and_record("203.0.113.9", "a@remote.test", "b@example.com", delay).await.unwrap(),
+        GreylistDecision::Defer,
+        "a retry inside the delay is still inside the delay"
+    );
+    assert_eq!(t.count("greylist").await, 1, "one row per triplet, not per attempt");
+
+    // The delay is measured from the first sighting, so an early retry cannot push
+    // its own deadline forward and wait forever.
+    let first = repos.greylist.first_seen("203.0.113.9", "a@remote.test", "b@example.com").await.unwrap();
+    assert!(first.is_some());
+
+    assert_eq!(
+        repos.greylist.check_and_record("203.0.113.9", "a@remote.test", "b@example.com",
+            chrono::Duration::zero()).await.unwrap(),
+        GreylistDecision::Accept,
+        "once the delay has elapsed the triplet is known"
+    );
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn each_part_of_the_triplet_is_its_own_key() {
+    let t = setup!();
+    let repos = t.repos();
+    let delay = chrono::Duration::minutes(5);
+
+    repos.greylist.check_and_record("203.0.113.9", "a@remote.test", "b@example.com", delay).await.unwrap();
+    assert_eq!(t.count("greylist").await, 1);
+
+    // A different peer, sender or recipient is a different conversation.
+    repos.greylist.check_and_record("203.0.113.10", "a@remote.test", "b@example.com", delay).await.unwrap();
+    repos.greylist.check_and_record("203.0.113.9", "other@remote.test", "b@example.com", delay).await.unwrap();
+    repos.greylist.check_and_record("203.0.113.9", "a@remote.test", "c@example.com", delay).await.unwrap();
+    assert_eq!(t.count("greylist").await, 4);
+
+    let known = repos.greylist.first_seen("203.0.113.9", "a@remote.test", "b@example.com").await.unwrap();
+    assert!(known.is_some());
+    assert!(repos.greylist.first_seen("203.0.113.11", "a@remote.test", "b@example.com").await.unwrap().is_none());
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn pruning_forgets_only_what_has_gone_quiet() {
+    let t = setup!();
+    let repos = t.repos();
+    let delay = chrono::Duration::minutes(5);
+
+    repos.greylist.check_and_record("203.0.113.9", "a@remote.test", "b@example.com", delay).await.unwrap();
+    repos.greylist.check_and_record("203.0.113.10", "a@remote.test", "b@example.com", delay).await.unwrap();
+    sqlx::query("UPDATE greylist SET last_seen_at = NOW() - INTERVAL '90 days' WHERE peer_ip = '203.0.113.9'")
+        .execute(t.pool())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        repos.greylist.prune_older_than(chrono::Utc::now() - chrono::Duration::days(30)).await.unwrap(),
+        1
+    );
+    assert_eq!(t.count("greylist").await, 1);
+    assert!(repos.greylist.first_seen("203.0.113.9", "a@remote.test", "b@example.com").await.unwrap().is_none());
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_greylist_triplet_needs_a_peer_and_a_recipient() {
+    let t = setup!();
+    let repos = t.repos();
+    let delay = chrono::Duration::minutes(5);
+
+    // The CHECK constraints reject an empty peer or recipient rather than storing a
+    // row that would match nothing.
+    assert!(repos.greylist.check_and_record("  ", "a@remote.test", "b@example.com", delay).await.is_err());
+    assert!(repos.greylist.check_and_record("203.0.113.9", "a@remote.test", "  ", delay).await.is_err());
+    assert_eq!(t.count("greylist").await, 0);
     t.cleanup().await;
 }

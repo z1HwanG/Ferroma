@@ -1652,6 +1652,12 @@ async fn handle_rcpt_to(
 
     match context.config.delivery.resolve_recipient(&params.to).await {
         Ok(crate::delivery::ResolvedRecipient::Mailbox(_)) => {
+            // An unknown address is refused outright, so greylisting only ever sees
+            // recipients that exist. Deferring mail to a mailbox that does not is a
+            // delay with nothing behind it.
+            if let Some(reply) = greet_or_defer(session, params, context, connection_id).await {
+                return reply;
+            }
             session.add_recipient(params.to.clone());
             Reply::ok()
         }
@@ -1659,6 +1665,85 @@ async fn handle_rcpt_to(
             Reply::user_unknown(&params.to.to_string())
         }
         Err(e) => Reply::from_error(&e),
+    }
+}
+
+/// Defer an unknown peer once, or return `None` to accept the recipient.
+///
+/// Fails open: a database error accepts. Greylisting exists to filter bulk senders,
+/// never to become the reason a peer cannot deliver mail.
+async fn greet_or_defer(
+    session: &SmtpSession,
+    params: &parser::RcptParams,
+    context: &SessionContext,
+    connection_id: &str,
+) -> Option<Reply> {
+    let config = &context.config.config.policy.greylist;
+    let peer = session.remote_addr.ip();
+    let sender = session
+        .transaction
+        .sender
+        .as_ref()
+        .map(ToString::to_string);
+    if let Some(reason) = crate::greylist::skip_reason(
+        config,
+        session.is_authenticated(),
+        sender.as_deref(),
+        peer,
+    ) {
+        tracing::trace!(
+            connection_id = %connection_id,
+            remote_ip = %peer,
+            ?reason,
+            "greylist skipped"
+        );
+        return None;
+    }
+
+    let recipient = params.to.to_string();
+    let key = sender.unwrap_or_default();
+    match context
+        .config
+        .delivery
+        .repositories()
+        .greylist
+        .check_and_record(&peer.to_string(), &key, &recipient, crate::greylist::delay(config))
+        .await
+    {
+        Ok(decision) if crate::greylist::is_accept(decision) => {
+            tracing::debug!(
+                connection_id = %connection_id,
+                remote_ip = %peer,
+                recipient = %recipient,
+                result = "greylist_accepted",
+                "peer known"
+            );
+            None
+        }
+        Ok(_) => {
+            tracing::info!(
+                connection_id = %connection_id,
+                remote_ip = %peer,
+                recipient = %recipient,
+                delay_secs = config.delay_secs,
+                result = "greylisted",
+                "unknown peer deferred"
+            );
+            Some(Reply::try_again_later(
+                "greylisting: this sender and recipient pair has not been seen before, please retry shortly",
+            ))
+        }
+        Err(error) => {
+            // Fail open, loudly: the peer keeps its mail, and the operator learns
+            // that the greylist is not doing its job.
+            tracing::warn!(
+                connection_id = %connection_id,
+                remote_ip = %peer,
+                %error,
+                "greylist check failed; accepting without deferral"
+            );
+            None
+        }
     }
 }
 

@@ -804,6 +804,32 @@ does not support them.
 | `554` | `5.5.1 Pipelining violated` | command pipelined across `STARTTLS` |
 | `554` | `5.7.1 <reason>` (`Forbidden`) | delivery policy refusal |
 
+### 12.6 Greylisting
+
+`[policy.greylist]` is **off by default**. When it is on, an unauthenticated peer
+whose `(address, sender, recipient)` triplet has never been seen is deferred once
+with `451 4.7.1`. A real MTA queues the message and comes back; most bulk senders
+do not, which is the whole value. The delay is measured from the **first**
+sighting and that timestamp is never moved, so a peer that retries early cannot
+push its own deadline forward and wait forever.
+
+What is never deferred:
+
+| Peer | Why |
+|---|---|
+| an authenticated session | it is a known user, not an unknown peer |
+| a null reverse-path (`<>`) | a bounce has no address to retry from, so deferring it discards the report |
+| an address or block in `whitelist` | a relay or partner that queues nothing would otherwise eat one deferral per new triplet |
+
+The check runs at `RCPT TO`, and only after the address resolves to a real
+mailbox: deferring mail to an address that does not exist is a delay with nothing
+behind it. It **fails open** — a database error accepts the message and logs a
+warning. Greylisting exists to filter bulk senders, never to become the reason a
+peer cannot deliver mail.
+
+Triplets are pruned by `ferroma storage gc` after `retention_days` (default 30).
+Forgetting one costs a single extra deferral, never a message.
+
 ---
 
 ## 13. Bounce generation

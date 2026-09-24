@@ -16,6 +16,12 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ### Added
 
+- **Greylisting.** `[policy.greylist]` defers an unauthenticated peer whose
+  `(address, sender, recipient)` triplet has never been seen, once, with
+  `451 4.7.1`. Off by default. Authenticated sessions, a null reverse-path and
+  peers listed in `whitelist` are never deferred, and a database error accepts the
+  message rather than refusing it. Triplets are pruned by `ferroma storage gc`.
+
 - **Delivery-report tasks are visible.** `GET /api/v1/health` and
   `GET /api/v1/queue/stats` now count bounce tasks by state. A failed delivery whose
   report has not reached the sender was previously indistinguishable from an ordinary

@@ -199,6 +199,23 @@ add_auth_results = true
 # Maximum DNS lookups while evaluating one SPF record (RFC 7208 §4.6.4).
 spf_max_lookups = 10
 
+# Greylisting: defer a peer whose (address, sender, recipient) triplet has never
+# been seen. A real MTA queues the message and retries; most bulk senders do not.
+# Off by default: turning it on delays legitimate first-time senders by
+# `delay_secs`, which an operator should choose deliberately.
+[policy.greylist]
+enabled = false
+# How long a newly seen triplet waits before it is let through.
+delay_secs = 300
+# How long a triplet stays remembered after its last sighting. Forgetting one
+# costs a single extra deferral, never a message.
+retention_days = 30
+# Peers exempted from greylisting: one address (203.0.113.7) or a block
+# (203.0.113.0/24, 2001:db8::/32). List a relay or a partner MTA here, or it eats
+# one deferral per new triplet forever. An entry that parses as neither is
+# ignored rather than treated as a match.
+whitelist = []
+
 [api]
 enabled = true
 host = "0.0.0.0"

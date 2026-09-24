@@ -16,6 +16,7 @@ mod audit;
 mod contacts;
 mod auth;
 mod domains;
+mod greylist;
 mod mailboxes;
 mod messages;
 mod misc;
@@ -27,6 +28,7 @@ pub use audit::{AuditFilter, AuditRepository, NewAuditLog};
 pub use contacts::ContactsRepository;
 pub use auth::{DeviceUpsert, DevicesRepository, NewSession, SessionsRepository};
 pub use domains::{AliasesRepository, DomainsRepository};
+pub use greylist::{GreylistDecision, GreylistRepository};
 pub use mailboxes::{FoldersRepository, MailboxWithDomain, MailboxesRepository, NewMailbox};
 pub use messages::{
     AttachmentsRepository, BatchMessage, MessageSearch, MessagesRepository, NewAttachment, NewMessage, Recipient,
@@ -86,6 +88,8 @@ pub struct Repositories {
     pub settings: SettingsRepository,
     /// Addresses the account has sent to or received from.
     pub contacts: ContactsRepository,
+    /// Peer triplets already seen, for greylisting.
+    pub greylist: GreylistRepository,
 }
 
 impl Repositories {
@@ -111,6 +115,7 @@ impl Repositories {
             login_attempts: LoginAttemptsRepository::new(pool.clone()),
             settings: SettingsRepository::new(pool.clone()),
             contacts: ContactsRepository::new(pool.clone()),
+            greylist: GreylistRepository::new(pool.clone()),
             pool,
         }
     }

@@ -979,6 +979,132 @@ async fn a_permanent_refusal_from_our_own_listener_is_reported_as_permanent() {
 }
 
 // ---------------------------------------------------------------------------
+// Greylisting
+// ---------------------------------------------------------------------------
+
+/// A peer nobody has seen before is deferred once, then let through.
+#[tokio::test]
+async fn an_unknown_peer_is_deferred_once_and_then_accepted() {
+    crate::require_database!();
+    let harness = Harness::start(|config| {
+        config.policy.greylist.enabled = true;
+        config.policy.greylist.delay_secs = 300;
+    })
+    .await;
+
+    let (mut client, _banner) = TestClient::connect(harness.address).await;
+    let _ = client.command("EHLO client.example.net").await;
+    let _ = client.command("MAIL FROM:<sender@example.net>").await;
+    let deferred = first_line(&client.command("RCPT TO:<alice@mx.test>").await);
+    assert!(
+        deferred.starts_with("451 4.7.1"),
+        "an unseen triplet must be told to come back: {deferred}"
+    );
+
+    // It is remembered, once, keyed by the whole triplet.
+    let remembered: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM greylist")
+        .fetch_one(harness.db.db().pool())
+        .await
+        .unwrap();
+    assert_eq!(remembered, 1);
+
+    // A retry inside the delay is still deferred.
+    let _ = client.command("RSET").await;
+    let _ = client.command("MAIL FROM:<sender@example.net>").await;
+    let again = first_line(&client.command("RCPT TO:<alice@mx.test>").await);
+    assert!(again.starts_with("451 4.7.1"), "{again}");
+
+    // Once the delay has elapsed the same triplet is accepted. Time is moved in the
+    // row rather than waited out, so the assertion does not depend on the clock.
+    sqlx::query("UPDATE greylist SET first_seen_at = NOW() - INTERVAL '10 minutes'")
+        .execute(harness.db.db().pool())
+        .await
+        .unwrap();
+    let _ = client.command("RSET").await;
+    let _ = client.command("MAIL FROM:<sender@example.net>").await;
+    let accepted = first_line(&client.command("RCPT TO:<alice@mx.test>").await);
+    assert_eq!(accepted, "250 2.1.0 Ok", "{accepted}");
+
+    harness.finish().await;
+}
+
+/// Only a peer whose triplet is unknown is deferred: the exemptions are explicit.
+#[tokio::test]
+async fn greylisting_exempts_authenticated_null_sender_and_whitelisted_peers() {
+    crate::require_database!();
+    let harness = Harness::start(|config| {
+        config.policy.greylist.enabled = true;
+        config.policy.greylist.delay_secs = 300;
+        config.policy.greylist.whitelist = vec!["127.0.0.1".to_string()];
+    })
+    .await;
+
+    // A whitelisted peer is never deferred.
+    let (mut listed, _banner) = TestClient::connect(harness.address).await;
+    let _ = listed.command("EHLO client.example.net").await;
+    let _ = listed.command("MAIL FROM:<sender@example.net>").await;
+    assert_eq!(
+        first_line(&listed.command("RCPT TO:<alice@mx.test>").await),
+        "250 2.1.0 Ok"
+    );
+
+    // An authenticated session is a known user, not an unknown peer. Greylisting is
+    // unset for this server so the whitelist cannot be what accepts it.
+    let unlisted = Harness::start(|config| {
+        config.policy.greylist.enabled = true;
+        config.policy.greylist.delay_secs = 300;
+    })
+    .await;
+    let (mut authed, _banner) = TestClient::connect(unlisted.address).await;
+    let _ = authed.command("EHLO client.example.net").await;
+    let payload = sasl("\0alice@mx.test\0correct horse battery staple");
+    assert!(first_line(&authed.command(&format!("AUTH PLAIN {payload}")).await).starts_with("235"));
+    let _ = authed.command("MAIL FROM:<alice@mx.test>").await;
+    let relay = first_line(&authed.command("RCPT TO:<friend@external.example.net>").await);
+    assert_eq!(relay, "250 2.1.0 Ok", "{relay}");
+
+    // A null reverse-path is a bounce: it has nowhere to retry from, so it must not
+    // be deferred.
+    let (mut bounce, _banner) = TestClient::connect(unlisted.address).await;
+    let _ = bounce.command("EHLO client.example.net").await;
+    let _ = bounce.command("MAIL FROM:<>").await;
+    let null_sender = first_line(&bounce.command("RCPT TO:<alice@mx.test>").await);
+    assert_eq!(null_sender, "250 2.1.0 Ok", "{null_sender}");
+
+    // Nothing was written for either exemption.
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM greylist")
+        .fetch_one(unlisted.db.db().pool())
+        .await
+        .unwrap();
+    assert_eq!(rows, 0, "an exempt peer must not consume a greylist row");
+
+    harness.finish().await;
+    unlisted.finish().await;
+}
+
+/// With greylisting off — the default — nothing is deferred and nothing is stored.
+#[tokio::test]
+async fn greylisting_is_off_by_default() {
+    crate::require_database!();
+    let harness = Harness::start(|_| {}).await;
+
+    let (mut client, _banner) = TestClient::connect(harness.address).await;
+    let _ = client.command("EHLO client.example.net").await;
+    let _ = client.command("MAIL FROM:<sender@example.net>").await;
+    assert_eq!(
+        first_line(&client.command("RCPT TO:<alice@mx.test>").await),
+        "250 2.1.0 Ok"
+    );
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM greylist")
+        .fetch_one(harness.db.db().pool())
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+
+    harness.finish().await;
+}
+
+// ---------------------------------------------------------------------------
 // Per-recipient quota
 // ---------------------------------------------------------------------------
 

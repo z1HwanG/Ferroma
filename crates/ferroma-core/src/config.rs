@@ -467,6 +467,41 @@ pub struct PolicyConfig {
     pub add_auth_results: bool,
     /// Maximum DNS lookups allowed while evaluating one SPF record (RFC 7208 §4.6.4).
     pub spf_max_lookups: usize,
+    /// Greylisting: defer a peer whose triplet has never been seen.
+    pub greylist: GreylistConfig,
+}
+
+/// `[policy.greylist]` — defer unknown peers once, at `RCPT TO`.
+///
+/// Off by default. Turning it on makes every peer that has never sent from its
+/// address to that recipient wait `delay_secs` and try again, which costs a real
+/// MTA nothing (it queues the message) and costs most bulk senders the delivery.
+/// It is the cheapest filter that costs no mail.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GreylistConfig {
+    /// Defer a triplet that has never been seen.
+    pub enabled: bool,
+    /// How long a newly seen triplet must wait before it is let through.
+    pub delay_secs: u64,
+    /// How long a triplet is remembered after its last sighting.
+    pub retention_days: u64,
+    /// Peers exempted from greylisting, as addresses or `address/length` blocks.
+    ///
+    /// A relay or a partner MTA that queues nothing should be listed here: it would
+    /// otherwise eat one deferral per new triplet, forever.
+    pub whitelist: Vec<String>,
+}
+
+impl Default for GreylistConfig {
+    fn default() -> Self {
+        GreylistConfig {
+            enabled: false,
+            delay_secs: 300,
+            retention_days: 30,
+            whitelist: Vec::new(),
+        }
+    }
 }
 
 impl Default for PolicyConfig {
@@ -477,6 +512,7 @@ impl Default for PolicyConfig {
             dmarc_failure_action: "quarantine".into(),
             add_auth_results: true,
             spf_max_lookups: 10,
+            greylist: GreylistConfig::default(),
         }
     }
 }

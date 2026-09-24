@@ -941,8 +941,18 @@ pub fn storage(config: &Config, command: &StorageCommand) -> Result<ExitCode> {
 
                 let removed = attachments.gc(&keep)?;
                 let swept = maildir.sweep_tmp(3600)?;
+                // Greylist triplets that have gone quiet: forgetting one costs a
+                // single extra `451`, never a message.
+                let retention = chrono::Duration::days(
+                    i64::try_from(config.policy.greylist.retention_days).unwrap_or(i64::MAX),
+                );
+                let forgotten = repos
+                    .greylist
+                    .prune_older_than(chrono::Utc::now() - retention)
+                    .await?;
                 println!("removed {removed} unreferenced attachment blob(s)");
                 println!("swept   {swept} abandoned tmp/ file(s)");
+                println!("forgot  {forgotten} greylist triplet(s)");
                 Ok(ExitCode::SUCCESS)
             }
         }

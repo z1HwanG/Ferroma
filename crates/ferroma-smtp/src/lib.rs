@@ -47,6 +47,7 @@ pub mod delivery;
 pub mod dkim;
 pub mod dmarc;
 pub mod inbound;
+pub mod greylist;
 pub mod mx;
 pub mod parser;
 pub mod queue;
