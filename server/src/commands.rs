@@ -17,6 +17,7 @@ use ferroma_storage::repository::NewMailbox;
 use ferroma_storage::{AttachmentStore, Database, Maildir, Repositories};
 use ferroma_sync::SyncService;
 
+use crate::cli::TlsCommand;
 use crate::cli::{
     DkimCommand, DomainCommand, HealthcheckArgs, StorageCommand, SyncCommand, UserCommand,
     UserCreateArgs,
@@ -890,6 +891,56 @@ async fn storage_verify(
 }
 
 /// `ferroma storage …`
+/// `ferroma tls …`
+///
+/// Certificate work runs on a tokio runtime because the ACME exchange is HTTP, and it
+/// needs no database: what it does depends only on the configuration and the files.
+pub fn tls(config: &Config, command: &TlsCommand) -> Result<ExitCode> {
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async {
+        match command {
+            TlsCommand::AcmeRenew { dry_run } => acme_renew(config, *dry_run).await,
+        }
+    })
+}
+
+/// Obtain or renew the ACME certificate, and install it.
+async fn acme_renew(config: &Config, dry_run: bool) -> Result<ExitCode> {
+    let acme = &config.tls.acme;
+    if !acme.enabled {
+        println!("tls.acme is not enabled; nothing to do");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let domains = acme.effective_domains(&config.server.hostname);
+    let decision = crate::acme::renewal_decision(config);
+    println!("domains   {}", domains.join(", "));
+    println!("directory {}", acme.directory_url);
+    println!("renewal   {}", decision.describe());
+
+    if !decision.should_renew() {
+        println!("the certificate is valid for long enough; nothing to do");
+        return Ok(ExitCode::SUCCESS);
+    }
+    if dry_run {
+        println!("would renew (dry run)");
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let issued = crate::acme::obtain(config).await?;
+    println!(
+        "issued    {} certificate(s) for {}",
+        issued.certificate_pem.matches("BEGIN CERTIFICATE").count(),
+        issued.domains.join(", ")
+    );
+    let (cert_path, key_path) = crate::acme::install(config, &issued)?;
+    println!("wrote     {}", cert_path.display());
+    println!("wrote     {}", key_path.display());
+    println!(
+        "restart the server to serve the new certificate: the listener loads it at startup"
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
 pub fn storage(config: &Config, command: &StorageCommand) -> Result<ExitCode> {
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {

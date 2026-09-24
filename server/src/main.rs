@@ -10,6 +10,7 @@
 //! The command surface is defined in [`cli`]; the implementations are in
 //! [`commands`].
 
+mod acme;
 mod backup;
 mod bootstrap;
 mod cli;
@@ -113,6 +114,7 @@ fn run(cli: &Cli) -> anyhow::Result<ExitCode> {
         cli::Command::User(command) => commands::user(&config, command),
         cli::Command::Domain(command) => commands::domain(&config, command),
         cli::Command::Dkim(command) => commands::dkim(&config, command),
+        cli::Command::Tls(command) => commands::tls(&config, command),
         cli::Command::Storage(command) => commands::storage(&config, command),
         cli::Command::Sync(command) => commands::sync(&config, command),
         cli::Command::Healthcheck(args) => commands::healthcheck(args),

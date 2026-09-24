@@ -532,6 +532,44 @@ async fn serve(config: &Config, args: &ServeArgs, log_sink: ferroma_api::LogSink
     ));
 
     // --- TLS ----------------------------------------------------------------
+    // ACME runs before the listener is built: the certificate it installs is the one
+    // this process is about to serve, and a server that started with the old one and
+    // renewed ten minutes later would need a second restart nobody asked for.
+    if config.tls.acme.enabled {
+        match crate::acme::renewal_decision(&config) {
+            decision if decision.should_renew() => {
+                println!("certificate: {}", decision.describe());
+                match crate::acme::obtain(&config).await {
+                    Ok(issued) => match crate::acme::install(&config, &issued) {
+                        Ok((cert, key)) => {
+                            tracing::info!(
+                                certificate = %cert.display(),
+                                key = %key.display(),
+                                domains = %issued.domains.join(", "),
+                                "ACME certificate installed"
+                            );
+                            println!("installed a certificate for {}", issued.domains.join(", "));
+                        }
+                        Err(error) => {
+                            // A failure to install is fatal for the certificate but not
+                            // for the process: the existing one may still be valid, and
+                            // refusing to start would take the mail service down over a
+                            // permissions problem.
+                            tracing::error!(%error, "the ACME certificate could not be installed");
+                            println!("warning: the ACME certificate could not be installed: {error}");
+                        }
+                    },
+                    Err(error) => {
+                        tracing::error!(%error, "ACME issuance failed");
+                        println!("warning: ACME issuance failed: {error}");
+                        println!("the server will start with the certificate already on disk, if any");
+                    }
+                }
+            }
+            decision => tracing::debug!(renewal = %decision.describe(), "no ACME renewal needed"),
+        }
+    }
+
     let tls = tls::build(&config)?;
     if let Some(material) = &tls {
         if !material.source().is_trusted() {
@@ -635,6 +673,60 @@ async fn serve(config: &Config, args: &ServeArgs, log_sink: ferroma_api::LogSink
             tokio::spawn(async move { worker.run(queue_shutdown).await }),
         ));
     }
+
+    // The daily renewal check. Registered with the other background tasks below,
+    // because it needs the shutdown receiver and the restart signal they share.
+    if config.tls.acme.enabled {
+        let acme_config = config.clone();
+        let restart_for_renewal = restart.clone();
+        let mut renewal_shutdown = shutdown_rx.clone();
+        tasks.push((
+            "acme",
+            tokio::spawn(async move {
+                // A long first interval: the startup path has just decided whether this
+                // certificate needs renewing, and asking again immediately would be a
+                // second round trip for the same answer.
+                let mut ticker = tokio::time::interval(Duration::from_secs(6 * 60 * 60));
+                ticker.tick().await;
+                loop {
+                    tokio::select! {
+                        _ = renewal_shutdown.changed() => return,
+                        _ = ticker.tick() => {}
+                    }
+                    if !crate::acme::renewal_decision(&acme_config).should_renew() {
+                        continue;
+                    }
+                    tracing::info!("renewing the ACME certificate");
+                    let issued = match crate::acme::obtain(&acme_config).await {
+                        Ok(issued) => issued,
+                        Err(error) => {
+                            // Not fatal, and not a reason to stop trying: the next tick
+                            // is six hours away and the current certificate is still in
+                            // use until it is replaced.
+                            tracing::error!(%error, "ACME renewal failed; will retry");
+                            continue;
+                        }
+                    };
+                    match crate::acme::install(&acme_config, &issued) {
+                        Ok((cert, _)) => {
+                            tracing::info!(certificate = %cert.display(), "ACME certificate renewed");
+                            // The listener reads its certificate once, at startup, so the
+                            // new one is only served after a restart. This is the same
+                            // mechanism the first-run wizard uses, and the same brief
+                            // interruption it causes.
+                            println!("certificate renewed; restarting to serve it");
+                            restart_for_renewal.request();
+                            return;
+                        }
+                        Err(error) => {
+                            tracing::error!(%error, "the renewed certificate could not be installed");
+                        }
+                    }
+                }
+            }),
+        ));
+    }
+
 
     // --- IMAP and runtime listener control ---------------------------------
     let imap_factory = if selection.imap {

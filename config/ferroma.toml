@@ -150,6 +150,34 @@ min_version = "1.2"
 use_platform_roots = true
 allow_insecure_dev_mode = true
 
+# Obtain and renew the certificate automatically over ACME (RFC 8555), so the
+# deployment needs no certbot and no renewal cron. Off by default.
+#
+# What it needs: every name in `domains` must resolve to this host, and
+# `http://<name>/.well-known/acme-challenge/<token>` must reach the API — directly,
+# or through a reverse proxy that forwards that one path. Nothing else is proxied
+# for issuance.
+[tls.acme]
+enabled = false
+# Let's Encrypt production. While testing, use the staging directory:
+# https://acme-staging-v02.api.letsencrypt.org/directory — production has strict
+# rate limits and issues real, trusted certificates.
+directory_url = "https://acme-v02.api.letsencrypt.org/directory"
+# Registered with the account; the CA sends expiry warnings here.
+email = ""
+# Names for the certificate. Empty means `server.hostname`. Every name is validated
+# over HTTP, so a typo costs a rate-limited attempt rather than a warning.
+domains = []
+# The ACME account key and the challenge files. The account key IS the identity the
+# CA knows: keep it as carefully as the certificate key, and keep it out of any
+# backup that leaves the host.
+storage_dir = "./data/acme"
+# Renew when this many days are left. Let's Encrypt certificates last 90 days.
+renew_before_days = 30
+# Issuance is refused until this is true: agreeing to a certificate authority's
+# terms of service is an operator's decision, not a default to assume for them.
+agree_tos = false
+
 [dns]
 # Explicit resolvers, e.g. ["1.1.1.1:53", "9.9.9.9:53"]. Empty = system config.
 resolvers = []

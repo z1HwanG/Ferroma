@@ -16,6 +16,13 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ### Added
 
+- **Certificates can be obtained and renewed automatically.** `[tls.acme]` orders a
+  certificate over ACME (RFC 8555) with an HTTP-01 challenge, writes the chain and key
+  where the listener already reads them, and renews before expiry — at startup and every
+  six hours — so a deployment needs no certbot and no renewal cron. Off by default, and
+  refused unless `agree_tos` is set. `ferroma tls acme-renew [--dry-run]` runs it on
+  demand. `docs/deployment.md` §5.5.1.
+
 - **Search looks inside message bodies.** The search box matched the subject, the
   sender and the stored preview, so a word a few lines into a message found nothing.
   Bodies are extracted as mail arrives (MIME walk, charset decode, HTML reduced to

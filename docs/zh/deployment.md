@@ -770,6 +770,63 @@ server {
 证书必须覆盖你的用户与对端连接的名称：至少要有 `mail.example.com`（SMTP、IMAP 与
 API），如果你从 `mta-sts.example.com` 提供策略，还要加上它。
 
+有两种取得方式。**§5.5.1 是内置的**，不需要 certbot，也不需要续期定时任务；§5.5.2 是
+certbot 路线，当主机上的 80 端口已经由反向代理占用，或名称需要走 DNS-01 时，它是更好的
+选择。
+
+#### 5.5.1 内置 ACME
+
+```toml
+[tls]
+enabled = true
+cert_path = "/var/lib/ferroma/tls/fullchain.pem"
+key_path  = "/var/lib/ferroma/tls/privkey.pem"
+self_signed_fallback = false
+
+[tls.acme]
+enabled = true
+email   = "admin@example.com"
+domains = ["mail.example.com", "mta-sts.example.com"]
+storage_dir = "/var/lib/ferroma/acme"
+agree_tos = true
+```
+
+启动时，以及运行期间每六小时，Ferroma 会检查 `cert_path` 处的证书。当它缺失、不可读、
+或在 `renew_before_days`（默认 30）天内到期时，它通过 ACME（RFC 8555）订购一张新证书，
+并把证书链与私钥就地写入。续期会触发一次重启，让监听器提供新证书——与任何其他重启一样，
+只是短暂中断（见 §9.3）。
+
+它需要满足：
+
+* **`domains` 中的每个名称都解析到本主机**，并且
+  `http://<名称>/.well-known/acme-challenge/<token>` 必须能到达 Ferroma。直连最简单；
+  在反向代理后面时，只转发这一个路径：
+
+  ```nginx
+  location /.well-known/acme-challenge/ { proxy_pass http://127.0.0.1:8080; }
+  ```
+
+* **`agree_tos = true`。** 否则拒绝签发：同意证书颁发机构的服务条款是运维者做出的决定，
+  不是默认值替他们做出的决定。
+* **`directory_url` 必须是 `https://`。** 该交换是签名的但未加密，否则账号密钥会以明文
+  穿过网络。
+
+测试期间，把 `directory_url` 指向
+`https://acme-staging-v02.api.letsencrypt.org/directory`。生产环境有严格的速率限制——
+每周五张重复证书——而配置错误的名称会很快烧掉尝试次数。
+
+```bash
+# 按需续期，或者在不联系 CA 的情况下演练一次：
+docker compose -f docker-compose.yml exec ferroma ferroma tls acme-renew --dry-run
+docker compose -f docker-compose.yml exec ferroma ferroma tls acme-renew
+```
+
+`storage_dir` 中的账号密钥**就是**证书颁发机构认识的身份。丢失它意味着要重新注册；
+泄露它意味着别人可以为它持有的名称订购证书。请像对待证书私钥一样谨慎保管它，并让它远离
+任何离开主机的备份。它以 `0600` 权限写入。
+
+#### 5.5.2 certbot
+
 ```bash
 # certbot，HTTP-01。端口 80 必须可达。
 sudo certbot certonly --standalone \

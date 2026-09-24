@@ -170,6 +170,12 @@ pub fn discovery_routes() -> Router<AppState> {
     Router::new()
         .route("/.well-known/ferroma", get(routes::health::well_known))
         .route("/.well-known/mta-sts.txt", get(routes::health::mta_sts))
+        // Unauthenticated by design: the certificate authority fetching it has no
+        // account here. See the handler for how narrow it is.
+        .route(
+            "/.well-known/acme-challenge/{token}",
+            get(routes::health::acme_challenge),
+        )
         .route("/.well-known/jmap", get(routes::jmap::session))
         .route("/api/v1/health", get(routes::health::health))
         .route("/api/v1/version", get(routes::health::version))

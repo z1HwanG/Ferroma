@@ -75,6 +75,7 @@ rustls-pemfile = "2"
 rustls-pki-types = "1"
 webpki-roots = "0.26"
 rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+ring = "0.17"
 
 # --- crypto primitives ---
 sha1 = "0.10"

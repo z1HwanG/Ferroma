@@ -42,6 +42,7 @@ rustls-pemfile = { workspace = true }
 rustls-pki-types = { workspace = true }
 rand = { workspace = true }
 rcgen = { workspace = true }
+ring = { workspace = true }
 rsa = { workspace = true }
 pkcs8 = { workspace = true }
 pkcs1 = { workspace = true }

@@ -359,6 +359,107 @@ pub struct TlsConfig {
     pub use_platform_roots: bool,
     /// Refuse to start with `self_signed_fallback` outside development.
     pub allow_insecure_dev_mode: bool,
+    /// Obtain and renew the certificate automatically (ACME / RFC 8555).
+    pub acme: AcmeConfig,
+}
+
+/// `[tls.acme]` — certificate issuance through an ACME server.
+///
+/// Off by default. When on, the server obtains a certificate for `domains` at startup
+/// and renews it `renew_before_days` before it expires, writing the chain and the key to
+/// `tls.cert_path` and `tls.key_path` — the same two files a manually installed
+/// certificate uses, so nothing else in the deployment has to know which one it is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AcmeConfig {
+    /// Obtain certificates automatically.
+    pub enabled: bool,
+    /// The directory URL. Let's Encrypt production is the default; point this at
+    /// `https://acme-staging-v02.api.letsencrypt.org/directory` while testing, because
+    /// the production endpoint has strict rate limits and issues real certificates.
+    pub directory_url: String,
+    /// The contact address registered with the account, and where expiry warnings go.
+    pub email: String,
+    /// The names to put in the certificate. Empty means `server.hostname`.
+    ///
+    /// Every name has to resolve to this server and answer the HTTP-01 challenge, which
+    /// is why nothing is guessed: a name that does not is a validation failure, and the
+    /// failure costs a rate-limited attempt.
+    pub domains: Vec<String>,
+    /// Where the account key and the challenge files live.
+    ///
+    /// Relative paths resolve against the process working directory. The account key in
+    /// here is the identity the CA knows: losing it means registering again, and leaking
+    /// it means someone else can order certificates for the names it holds. Keep it with
+    /// the same care as the certificate key, and out of any backup that leaves the host.
+    pub storage_dir: PathBuf,
+    /// Renew this many days before expiry.
+    pub renew_before_days: u64,
+    /// Agree to the CA's terms of service. Issuance is refused without it: the flag is
+    /// an operator's statement, not a default to assume on their behalf.
+    pub agree_tos: bool,
+}
+
+impl Default for AcmeConfig {
+    fn default() -> Self {
+        AcmeConfig {
+            enabled: false,
+            directory_url: "https://acme-v02.api.letsencrypt.org/directory".into(),
+            email: String::new(),
+            domains: Vec::new(),
+            storage_dir: PathBuf::from("./data/acme"),
+            renew_before_days: 30,
+            agree_tos: false,
+        }
+    }
+}
+
+impl AcmeConfig {
+    /// The names to order: the configured list, or the server hostname.
+    pub fn effective_domains(&self, hostname: &str) -> Vec<String> {
+        if self.domains.is_empty() {
+            vec![hostname.to_string()]
+        } else {
+            self.domains.clone()
+        }
+    }
+
+    /// Where the HTTP-01 challenge files are written and served from.
+    pub fn challenge_dir(&self) -> PathBuf {
+        self.storage_dir.join("challenges")
+    }
+
+    /// The account key file.
+    pub fn account_key_path(&self) -> PathBuf {
+        self.storage_dir.join("account-key.pem")
+    }
+
+    /// Refuse a configuration that cannot work, with the reason.
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if !self.agree_tos {
+            return Err(
+                "tls.acme.agree_tos must be true: issuing a certificate means agreeing to the \
+                 certificate authority's terms of service"
+                    .into(),
+            );
+        }
+        if !self.directory_url.starts_with("https://") {
+            return Err(format!(
+                "tls.acme.directory_url must be https:// (got {:?}); an ACME exchange is signed                  but not encrypted, and the account key would travel in the clear",
+                self.directory_url
+            ));
+        }
+        if self.renew_before_days == 0 {
+            return Err(
+                "tls.acme.renew_before_days must be at least 1: a certificate renewed only after                  it expires is one that expired"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
 }
 
 impl Default for TlsConfig {
@@ -371,6 +472,7 @@ impl Default for TlsConfig {
             min_version: "1.2".into(),
             use_platform_roots: true,
             allow_insecure_dev_mode: true,
+            acme: AcmeConfig::default(),
         }
     }
 }
@@ -940,6 +1042,23 @@ impl Config {
                         .into(),
                 ),
             }
+        }
+
+        if let Err(problem) = self.tls.acme.validate() {
+            problems.push(problem);
+        }
+        // ACME writes the chain and the key itself, so it needs somewhere to put them.
+        // Without this the first renewal would succeed and then fail to install, which
+        // is a failure the operator only sees when the old certificate expires.
+        if self.tls.acme.enabled
+            && self.tls.enabled
+            && (self.tls.cert_path.is_none() || self.tls.key_path.is_none())
+        {
+            problems.push(
+                "tls.acme needs tls.cert_path and tls.key_path: it writes the issued \
+                 certificate there, and `self_signed_fallback` would ignore it"
+                    .into(),
+            );
         }
         if !matches!(self.tls.min_version.as_str(), "1.2" | "1.3") {
             problems.push("tls.min_version must be \"1.2\" or \"1.3\"".into());

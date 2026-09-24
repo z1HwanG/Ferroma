@@ -844,6 +844,67 @@ The certificate must cover the names your users and peers connect to: at minimum
 `mail.example.com` (SMTP, IMAP and the API), plus `mta-sts.example.com` if you
 serve the policy from it.
 
+There are two ways to get one. **§5.5.1 is built in** and needs no certbot and no
+renewal cron; §5.5.2 is the certbot route, which is the better choice when a
+reverse proxy already owns port 80 on the host, or when the names need DNS-01.
+
+#### 5.5.1 Built-in ACME
+
+```toml
+[tls]
+enabled = true
+cert_path = "/var/lib/ferroma/tls/fullchain.pem"
+key_path  = "/var/lib/ferroma/tls/privkey.pem"
+self_signed_fallback = false
+
+[tls.acme]
+enabled = true
+email   = "admin@example.com"
+domains = ["mail.example.com", "mta-sts.example.com"]
+storage_dir = "/var/lib/ferroma/acme"
+agree_tos = true
+```
+
+On start, and every six hours while it runs, Ferroma checks the certificate at
+`cert_path`. When it is missing, unreadable, or expires within `renew_before_days`
+(default 30), it orders a new one over ACME (RFC 8555) and writes the chain and key
+in place. A renewal triggers a restart so the listeners serve the new certificate —
+the same brief interruption as any other restart (§9.3).
+
+What it requires:
+
+* **Every name in `domains` resolves to this host**, and
+  `http://<name>/.well-known/acme-challenge/<token>` must reach Ferroma. Directly
+  is simplest. Behind a proxy, forward that one path and nothing else:
+
+  ```nginx
+  location /.well-known/acme-challenge/ { proxy_pass http://127.0.0.1:8080; }
+  ```
+
+* **`agree_tos = true`.** Issuance is refused otherwise: agreeing to a certificate
+  authority's terms is a decision an operator makes, not one a default makes for
+  them.
+* **`directory_url` must be `https://`.** The exchange is signed but not encrypted,
+  and the account key would otherwise cross the network in the clear.
+
+While testing, point `directory_url` at
+`https://acme-staging-v02.api.letsencrypt.org/directory`. Production has strict
+rate limits — five duplicate certificates per week — and a misconfigured name
+burns attempts quickly.
+
+```bash
+# Renew on demand, or rehearse one without contacting the CA:
+docker compose -f docker-compose.yml exec ferroma ferroma tls acme-renew --dry-run
+docker compose -f docker-compose.yml exec ferroma ferroma tls acme-renew
+```
+
+The account key in `storage_dir` **is** the identity the certificate authority
+knows. Losing it means registering again; leaking it means someone else can order
+certificates for the names it holds. Keep it with the same care as the certificate
+key, and out of any backup that leaves the host. It is written mode `0600`.
+
+#### 5.5.2 certbot
+
 ```bash
 # certbot, HTTP-01. Port 80 must be reachable.
 sudo certbot certonly --standalone \

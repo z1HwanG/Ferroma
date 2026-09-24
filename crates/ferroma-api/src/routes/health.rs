@@ -466,6 +466,39 @@ fn split_public_url(public: &str, fallback_host: &str) -> (String, bool) {
 }
 
 /// `GET /.well-known/ferroma`
+/// `GET /.well-known/acme-challenge/{token}`
+///
+/// Serves the file the ACME server fetches to prove this host controls the name. It is
+/// unauthenticated because the CA has no account here, and it is narrow for the same
+/// reason: one file, from one directory, with a name that must be an ACME token
+/// (base64url, RFC 8555 §8.3) before it is ever joined to a path. Anything else is a
+/// `404`, including a traversal — refusing is cheaper to reason about than escaping.
+pub async fn acme_challenge(
+    State(state): State<AppState>,
+    axum::extract::Path(token): axum::extract::Path<String>,
+) -> Response {
+    let valid = !token.is_empty()
+        && token.len() <= 128
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_');
+    if !valid {
+        return (StatusCode::NOT_FOUND, "no such challenge").into_response();
+    }
+
+    let directory = state.config.tls.acme.challenge_dir();
+    match std::fs::read_to_string(directory.join(&token)) {
+        Ok(body) => (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "text/plain")],
+            body,
+        )
+            .into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "no such challenge").into_response(),
+    }
+}
+
+/// `GET /.well-known/acme-challenge/:token`
 pub async fn well_known(State(state): State<AppState>) -> Json<WellKnownResponse> {
     Json(WellKnownResponse::from_config(&state.config))
 }

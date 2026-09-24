@@ -116,6 +116,10 @@ pub enum Command {
     #[command(subcommand)]
     Dkim(DkimCommand),
 
+    /// TLS certificate management.
+    #[command(subcommand)]
+    Tls(TlsCommand),
+
     /// Mail store maintenance.
     #[command(subcommand)]
     Storage(StorageCommand),
@@ -252,6 +256,21 @@ pub enum UserCommand {
         email: String,
         /// The id shown by `ferroma user totp`.
         id: i64,
+    },
+}
+
+/// `ferroma tls …`
+#[derive(Debug, Subcommand)]
+pub enum TlsCommand {
+    /// Obtain or renew the ACME certificate now, and write it where the server reads it.
+    ///
+    /// The server does this itself at startup and once a day while it runs; the command
+    /// exists for operators who prefer to drive renewal from cron, and for running it
+    /// on demand after a name has been added.
+    AcmeRenew {
+        /// Report what would happen without contacting the certificate authority.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
