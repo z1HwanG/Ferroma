@@ -440,6 +440,18 @@ impl Reply {
         )
     }
 
+    /// `550 5.7.1 <reason>` — the peer's address is on a block list.
+    ///
+    /// Permanent, and deliberately so: a block list is a statement about the address,
+    /// not about this message, so a retry from the same address would be refused again.
+    /// An operator who disagrees with a listing has the allowlist for that.
+    pub fn block_listed(reason: &str) -> Self {
+        Reply::line(
+            550,
+            format!("5.7.1 550 Access denied: your address is listed by {reason}"),
+        )
+    }
+
     /// `451 4.7.1 <reason>` — the greylisting-style "come back later" reply.
     pub fn try_again_later(reason: &str) -> Self {
         Reply::line(451, format!("4.7.1 {reason}"))

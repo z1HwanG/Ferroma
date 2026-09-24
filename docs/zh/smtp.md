@@ -739,11 +739,42 @@ pub fn is_temporary(&self) -> bool {
 | `550` | `5.1.1 No such user here` | 未知本地地址 |
 | `550` | `5.1.2 Relay access denied` | 未知本地域 |
 | `550` | `5.7.1 Relaying denied` | 未认证的中继尝试 |
+| `550` | `5.7.1 550 Access denied: your address is listed by <zone> (<codes>)` | `policy.dnsbl` 且 `action = "reject"` |
 | `550` | `5.7.1 Message rejected by the DMARC policy of <domain>` | DMARC，生效策略为 `reject`——SPF 与 DKIM 判定汇入 DMARC，而不单独拒绝 |
 | `552` | `5.3.4 Message size exceeds fixed maximum message size` | 大小限制 |
 | `552` | `5.3.4 <reason>`（`LimitExceeded`） | MIME 深度 / 部分预算超出限制 |
 | `554` | `5.5.1 Pipelining violated` | 命令跨 `STARTTLS` 流水线化 |
 | `554` | `5.7.1 <reason>`（`Forbidden`） | 投递策略拒绝 |
+
+### 12.6 DNS 黑名单
+
+`[policy.dnsbl]` **默认关闭**。开启后，对端地址会在 `MAIL FROM` 时每条邮件查询一次——
+在任何正文传输之前：地址被反转，拼接每一个配置的 zone，`127.0.0.0/8` 内的 `A` 记录即为
+命中。
+
+| 情形 | 结果 |
+|---|---|
+| 命中，`action = "reject"` | 返回 `550 5.7.1` 并结束该事务 |
+| 命中，`action = "quarantine"` | 接受，并投递到 `Junk` |
+| 未命中，或没有任何应答 | 接受 |
+| 私有、环回或链路本地地址 | **永不查询** |
+| `allowlist` 中的地址或网段 | **永不查询** |
+
+有三条规则是内建的而非可配置的，因为任何一条做错，都比完全不启用更糟：
+
+* **私有地址永不查询。** RFC 5782 §2.4 如此规定，而每一个公共 zone 的条款说得更严厉
+  ——查询环回或私有地址，正是主机自己的解析器被拉黑的原因。
+* **查询失败不算命中。** `NXDOMAIN`、超时与 `SERVFAIL` 都表示「没有应答」，绝不会因为
+  黑名单不可达而拒收邮件。第三方的故障不应变成这里的故障。
+* **只有 `127.0.0.0/8` 算命中。** 用其他任何地址应答的 zone——通配符、配置错误的记录、
+  解析到 zone 之外的名字——都不予采信。
+
+`quarantine` 是默认值，因为它可逆：邮件落到 `Junk`，由它的主人决定。共享黑名单上的误判
+足够常见，因此直接拒收应当是运维者的明确选择，而不是默认行为。
+
+判定结果会按 `cache_ttl_secs`（默认 15 分钟）缓存：否则同一对端的每次连接都要为每个
+zone 付一次查询。allowlist 之所以重要，与任何黑名单一样——共享名单在只想列出一个发件人
+时，常常把整个主机托管网段列进去。
 
 ### 12.6 灰名单
 

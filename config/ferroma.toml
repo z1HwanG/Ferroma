@@ -227,6 +227,35 @@ add_auth_results = true
 # Maximum DNS lookups while evaluating one SPF record (RFC 7208 §4.6.4).
 spf_max_lookups = 10
 
+# DNS block lists: ask a third party what it thinks of the connecting address, once
+# per message at MAIL FROM. Off by default, and off is the right default — a block
+# list is somebody else's judgement about an address.
+#
+# Two rules are built in and are not configurable, because getting either wrong is
+# worse than not running this at all: a private, loopback or link-local address is
+# never queried (every public zone's terms forbid it, and doing it is how a host
+# gets its resolver blocked), and a lookup that fails or answers nothing is NOT a
+# listing — mail is never refused because a block list was unreachable.
+#
+# Check the terms of every zone before enabling it: several are free for
+# low-volume use only, and exceeding the limit gets the host blocked rather than
+# billed.
+[policy.dnsbl]
+enabled = false
+# The zones to query, in order. The first listing decides.
+zones = []
+# "quarantine" delivers to Junk and lets the user decide; "reject" refuses the
+# message during the transaction. Quarantine is the default because a false
+# positive on a shared block list is common and a refusal cannot be undone.
+action = "quarantine"
+# Peers never looked up: an address (203.0.113.7) or a block (203.0.113.0/24).
+# A relay, a partner, or the office's own uplink belongs here.
+allowlist = []
+# How long a verdict is reused. Every connection from one peer would otherwise
+# cost one query per zone.
+cache_ttl_secs = 900
+cache_capacity = 4096
+
 # Greylisting: defer a peer whose (address, sender, recipient) triplet has never
 # been seen. A real MTA queues the message and retries; most bulk senders do not.
 # Off by default: turning it on delays legitimate first-time senders by

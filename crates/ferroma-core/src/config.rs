@@ -571,6 +571,98 @@ pub struct PolicyConfig {
     pub spf_max_lookups: usize,
     /// Greylisting: defer a peer whose triplet has never been seen.
     pub greylist: GreylistConfig,
+    /// DNS block lists: look the peer's address up before accepting the message.
+    pub dnsbl: DnsblConfig,
+}
+
+/// `[policy.dnsbl]` — refuse or quarantine mail from a listed peer.
+///
+/// Off by default, and off is the right default: a block list is a third party's
+/// judgement about an address, and acting on it turns that judgement into a delivery
+/// decision here. Two rules are built into the implementation and are not configurable,
+/// because getting either wrong is worse than not running this at all:
+///
+/// * a private, loopback or link-local address is never queried — every public block
+///   list's terms forbid it, and doing it is how a deployment gets itself blocked;
+/// * a lookup that fails, times out or answers nothing is **not** a listing. Mail is
+///   never refused because a block list was unreachable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DnsblConfig {
+    /// Look peers up at all.
+    pub enabled: bool,
+    /// The zones to query, in order. The first listing decides.
+    ///
+    /// Each entry is a domain name, e.g. `zen.spamhaus.org` or `bl.spamcop.net`.
+    /// **Check the terms of every zone before enabling it**: several are free for
+    /// low-volume use only, and a self-hosted server that exceeds the limit is blocked
+    /// rather than billed.
+    pub zones: Vec<String>,
+    /// What to do with a listed peer: `"quarantine"` or `"reject"`.
+    ///
+    /// `quarantine` is the default because it is reversible: the message lands in
+    /// `Junk` and the user decides. `reject` refuses it during the SMTP transaction,
+    /// which saves the bandwidth but cannot be undone — and a false positive on a block
+    /// list is common enough that it should be an operator's explicit choice.
+    pub action: String,
+    /// Peers never looked up, as addresses or `address/length` blocks.
+    ///
+    /// The same syntax `policy.greylist.whitelist` uses. A relay, a partner, or the
+    /// office's own uplink belongs here.
+    pub allowlist: Vec<String>,
+    /// How long a verdict is reused, in seconds.
+    ///
+    /// Every connection from the same peer would otherwise cost one DNS query per zone.
+    /// Zero disables caching, which is only sensible for tests.
+    pub cache_ttl_secs: u64,
+    /// The largest number of verdicts kept.
+    pub cache_capacity: usize,
+}
+
+impl Default for DnsblConfig {
+    fn default() -> Self {
+        DnsblConfig {
+            enabled: false,
+            zones: Vec::new(),
+            action: "quarantine".into(),
+            allowlist: Vec::new(),
+            cache_ttl_secs: 900,
+            cache_capacity: 4096,
+        }
+    }
+}
+
+impl DnsblConfig {
+    /// Whether a listed peer's mail is refused rather than quarantined.
+    pub fn rejects(&self) -> bool {
+        self.action.eq_ignore_ascii_case("reject")
+    }
+
+    /// Refuse a configuration that cannot work, with the reason.
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if self.zones.is_empty() {
+            return Err(
+                "policy.dnsbl.zones is empty, so nothing would ever be looked up; either list \
+                 the zones you intend to query or set enabled = false"
+                    .into(),
+            );
+        }
+        for zone in &self.zones {
+            if zone.trim().is_empty() || zone.contains(char::is_whitespace) {
+                return Err(format!("policy.dnsbl.zones contains {zone:?}, which is not a name"));
+            }
+        }
+        if !self.rejects() && !self.action.eq_ignore_ascii_case("quarantine") {
+            return Err(format!(
+                "policy.dnsbl.action is {:?}; it must be \"quarantine\" or \"reject\"",
+                self.action
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// `[policy.greylist]` — defer unknown peers once, at `RCPT TO`.
@@ -615,6 +707,7 @@ impl Default for PolicyConfig {
             add_auth_results: true,
             spf_max_lookups: 10,
             greylist: GreylistConfig::default(),
+            dnsbl: DnsblConfig::default(),
         }
     }
 }
@@ -1042,6 +1135,10 @@ impl Config {
                         .into(),
                 ),
             }
+        }
+
+        if let Err(problem) = self.policy.dnsbl.validate() {
+            problems.push(problem);
         }
 
         if let Err(problem) = self.tls.acme.validate() {

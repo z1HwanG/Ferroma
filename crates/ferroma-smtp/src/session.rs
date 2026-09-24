@@ -101,6 +101,13 @@ pub struct Transaction {
     pub eight_bit: bool,
     /// When the transaction started; the `Received:` header's timestamp.
     pub started_at: DateTime<Utc>,
+    /// The block list that listed this peer, when one did and the action is to
+    /// quarantine rather than refuse.
+    ///
+    /// Carried on the transaction because the check happens at `MAIL FROM` — before the
+    /// body, which is the point of a block list — while the decision it feeds is made
+    /// when the message is delivered.
+    pub block_listed_by: Option<String>,
 }
 
 impl Transaction {
@@ -112,6 +119,7 @@ impl Transaction {
             declared_size: None,
             eight_bit: false,
             started_at: Utc::now(),
+            block_listed_by: None,
         }
     }
 
@@ -228,6 +236,15 @@ impl SmtpSession {
         self.transaction.declared_size = declared_size;
         self.transaction.eight_bit = eight_bit;
         self.state = SmtpState::MailFrom;
+    }
+
+    /// Remember that a block list listed this peer, so delivery can quarantine it.
+    ///
+    /// Called after [`SmtpSession::begin_transaction`], which replaces the transaction
+    /// wholesale: setting this before the transaction begins would be setting it on the
+    /// object that is about to be thrown away.
+    pub fn mark_block_listed(&mut self, reason: String) {
+        self.transaction.block_listed_by = Some(reason);
     }
 
     /// Accept one `RCPT TO`.

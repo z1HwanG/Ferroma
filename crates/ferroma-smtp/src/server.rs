@@ -581,6 +581,12 @@ struct SessionContext {
     /// Built once here rather than per connection, so its resolver cache is shared by
     /// every session.
     policy: Option<crate::inbound::InboundPolicy>,
+    /// The block-list checker, when a resolver and zones are configured.
+    ///
+    /// Built once so its verdict cache is shared by every connection from the same
+    /// peer: without that, a sender that opens ten connections pays ten lookups per
+    /// zone.
+    dnsbl: Option<crate::dnsbl::DnsblChecker>,
 }
 
 impl SessionContext {
@@ -589,10 +595,14 @@ impl SessionContext {
         let policy = config.resolver.as_ref().map(|resolver| {
             crate::inbound::InboundPolicy::new(&config.config, Arc::clone(resolver))
         });
+        let dnsbl = config.resolver.as_ref().filter(|_| config.config.policy.dnsbl.enabled).map(
+            |resolver| crate::dnsbl::DnsblChecker::new(Arc::clone(resolver), &config.config.policy.dnsbl),
+        );
         SessionContext {
             config,
             limiter,
             policy,
+            dnsbl,
         }
     }
 
@@ -1591,11 +1601,49 @@ async fn handle_mail_from(
         }
     }
 
+    // One lookup per message, before the body: that is the point of a block list. It
+    // runs after authentication, because a submission from a known user is not an
+    // unknown peer, and after the size check, because a refused message should cost the
+    // peer nothing more than the command.
+    let mut quarantine_because = None;
+    if !session.is_authenticated() {
+        if let Some(checker) = context.dnsbl.as_ref() {
+            let verdict = checker.check(session.remote_addr.ip()).await;
+            if verdict.is_listed() {
+                let reason = verdict.describe();
+                if checker.rejects() {
+                    tracing::info!(
+                        connection_id = %session.connection_id,
+                        remote_ip = %session.remote_addr.ip(),
+                        sender = %params.from.as_ref().map(ToString::to_string).unwrap_or_else(|| "<>".into()),
+                        dnsbl = %reason,
+                        result = "rejected",
+                        "refused: the peer is on a block list"
+                    );
+                    return Reply::block_listed(&reason);
+                }
+                tracing::info!(
+                    connection_id = %session.connection_id,
+                    remote_ip = %session.remote_addr.ip(),
+                    dnsbl = %reason,
+                    result = "quarantined",
+                    "the peer is on a block list; the message will go to Junk"
+                );
+                quarantine_because = Some(reason);
+            }
+        }
+    }
+
     session.begin_transaction(
         params.from.clone(),
         params.size,
         params.body == Some(BodyType::EightBitMime),
     );
+    // After `begin_transaction`, which replaces the transaction: the flag lives on the
+    // transaction the delivery will read.
+    if let Some(reason) = quarantine_because {
+        session.mark_block_listed(reason);
+    }
     Reply::ok()
 }
 
@@ -1863,6 +1911,18 @@ async fn handle_data(
             return Ok(Some(Reply::from_error(&e)));
         }
     };
+
+    // A peer a block list listed is quarantined, not refused: the message is delivered
+    // into `Junk` and its owner decides. This is applied before the policy verdict so
+    // that a DMARC `reject` still wins — refusing outright is the stronger statement.
+    if let Some(reason) = session.transaction.block_listed_by.clone() {
+        message.deliver_to = Some(crate::delivery::JUNK.to_string());
+        tracing::info!(
+            connection_id = %connection_id,
+            dnsbl = %reason,
+            "quarantining a message from a listed peer"
+        );
+    }
 
     // Authenticated submissions must not be evaluated by inbound SPF/DMARC: the
     // submitting client is not the domain's published MX.

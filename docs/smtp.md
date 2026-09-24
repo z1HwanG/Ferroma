@@ -808,11 +808,48 @@ does not support them.
 | `550` | `5.1.1 No such user here` | unknown local address |
 | `550` | `5.1.2 Relay access denied` | unknown local domain |
 | `550` | `5.7.1 Relaying denied` | unauthenticated relay attempt |
+| `550` | `5.7.1 550 Access denied: your address is listed by <zone> (<codes>)` | `policy.dnsbl` with `action = "reject"` |
 | `550` | `5.7.1 Message rejected by the DMARC policy of <domain>` | DMARC, effective policy `reject` — SPF and DKIM verdicts feed DMARC instead of rejecting on their own |
 | `552` | `5.3.4 Message size exceeds fixed maximum message size` | size limit |
 | `552` | `5.3.4 <reason>` (`LimitExceeded`) | MIME depth / part budget over the limits |
 | `554` | `5.5.1 Pipelining violated` | command pipelined across `STARTTLS` |
 | `554` | `5.7.1 <reason>` (`Forbidden`) | delivery policy refusal |
+
+### 12.6 DNS block lists
+
+`[policy.dnsbl]` is **off by default**. When on, the peer's address is looked up once
+per message at `MAIL FROM`, before any body is transferred: the address is reversed,
+each configured zone is appended, and an `A` record in `127.0.0.0/8` is a listing.
+
+| Situation | What happens |
+|---|---|
+| Listed, `action = "reject"` | `550 5.7.1` and the transaction ends |
+| Listed, `action = "quarantine"` | accepted, and delivered to `Junk` |
+| Not listed, or no answer | accepted |
+| Private, loopback or link-local address | **never queried** |
+| An address or block in `allowlist` | **never queried** |
+
+Three rules are built in rather than configurable, because getting any of them wrong is
+worse than not running this at all:
+
+* **A private address is never queried.** RFC 5782 §2.4 says so, and every public
+  zone's terms say so more forcefully — querying about a loopback or private address is
+  how a host gets its own resolver blocked.
+* **A failed lookup is not a listing.** `NXDOMAIN`, a timeout and a `SERVFAIL` all mean
+  "no answer", and mail is never refused because a block list was unreachable. An outage
+  at a third party must not become an outage here.
+* **Only `127.0.0.0/8` is a listing.** A zone that answers with anything else — a
+  wildcard, a misconfigured record, a name that resolves out of the zone — is not
+  believed.
+
+`quarantine` is the default because it is reversible: the message lands in `Junk` and
+its owner decides. A false positive on a shared block list is common enough that
+refusing outright is an operator's explicit choice rather than a default.
+
+Verdicts are cached for `cache_ttl_secs` (default 15 minutes): without it, every
+connection from the same peer costs one query per zone. The allowlist matters for the
+same reason it exists on any block list — shared lists list whole hosting ranges when
+they mean to list one sender.
 
 ### 12.6 Greylisting
 

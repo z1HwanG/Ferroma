@@ -16,6 +16,13 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ### Added
 
+- **DNS block lists.** `[policy.dnsbl]` looks the connecting address up once per message
+  at `MAIL FROM` and either refuses it (`550 5.7.1`) or delivers it to `Junk`. Off by
+  default. Two rules are built in rather than configurable: a private, loopback or
+  link-local address is never queried, and a lookup that fails or answers nothing is not
+  a listing — mail is never refused because a block list was unreachable. Verdicts are
+  cached, and an allowlist exempts a relay or partner. `docs/smtp.md` §12.6.
+
 - **Certificates can be obtained and renewed automatically.** `[tls.acme]` orders a
   certificate over ACME (RFC 8555) with an HTTP-01 challenge, writes the chain and key
   where the listener already reads them, and renews before expiry — at startup and every
