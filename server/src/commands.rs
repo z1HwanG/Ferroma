@@ -409,6 +409,75 @@ pub fn user(config: &Config, command: &UserCommand) -> Result<ExitCode> {
                 println!("{} admin={}", user.email, admin);
                 Ok(ExitCode::SUCCESS)
             }
+            UserCommand::Totp { email } => {
+                let summary = totp_summary(&repos, email).await?;
+                println!("account      {}", summary.email);
+                println!(
+                    "second factor {}",
+                    match summary.status {
+                        ferroma_auth::TotpStatus::Disabled => "disabled",
+                        ferroma_auth::TotpStatus::Pending => "pending (not enforced)",
+                        ferroma_auth::TotpStatus::Enabled => "enabled",
+                    }
+                );
+                println!("recovery codes left {}", summary.recovery_codes_left);
+                if summary.app_passwords.is_empty() {
+                    println!("application passwords none");
+                } else {
+                    println!("application passwords");
+                    for entry in &summary.app_passwords {
+                        println!(
+                            "  #{} {} {}",
+                            entry.id,
+                            entry.label,
+                            match (entry.revoked_at, entry.last_used_at) {
+                                (Some(_), _) => "revoked".to_string(),
+                                (None, Some(used)) => format!("last used {used}"),
+                                (None, None) => "never used".to_string(),
+                            }
+                        );
+                    }
+                }
+                Ok(ExitCode::SUCCESS)
+            }
+            UserCommand::TotpDisable { email, yes } => {
+                let user = repos
+                    .users
+                    .find_by_email(email)
+                    .await?
+                    .ok_or_else(|| anyhow!("no such account: {email}"))?;
+                let user_id = UserId::new(user.id);
+                let status = totp_summary(&repos, email).await?.status;
+                if status == ferroma_auth::TotpStatus::Disabled {
+                    println!("{} has no second factor", user.email);
+                    return Ok(ExitCode::SUCCESS);
+                }
+                if !yes {
+                    println!(
+                        "this removes {}'s second factor; anyone holding their password \
+                         can sign in again. Re-run with --yes to confirm.",
+                        user.email
+                    );
+                    return Ok(ExitCode::FAILURE);
+                }
+                repos.totp.delete(user_id).await?;
+                println!("{}'s second factor is removed", user.email);
+                Ok(ExitCode::SUCCESS)
+            }
+            UserCommand::AppPasswordRevoke { email, id } => {
+                let user = repos
+                    .users
+                    .find_by_email(email)
+                    .await?
+                    .ok_or_else(|| anyhow!("no such account: {email}"))?;
+                let user_id = UserId::new(user.id);
+                if repos.app_passwords.revoke(user_id, *id).await? {
+                    println!("revoked application password #{id} for {}", user.email);
+                    Ok(ExitCode::SUCCESS)
+                } else {
+                    bail!("{} has no live application password #{id}", user.email)
+                }
+            }
             UserCommand::Delete { email, yes } => {
                 let user = repos
                     .users
@@ -956,6 +1025,37 @@ pub fn storage(config: &Config, command: &StorageCommand) -> Result<ExitCode> {
                 Ok(ExitCode::SUCCESS)
             }
         }
+    })
+}
+
+/// Everything `ferroma user totp` reports about one account.
+struct TotpSummary {
+    email: String,
+    status: ferroma_auth::TotpStatus,
+    recovery_codes_left: i64,
+    app_passwords: Vec<ferroma_storage::repository::AppPassword>,
+}
+
+/// Gather the second-factor state of one account.
+async fn totp_summary(repos: &Repositories, email: &str) -> Result<TotpSummary> {
+    let user = repos
+        .users
+        .find_by_email(email)
+        .await?
+        .ok_or_else(|| anyhow!("no such account: {email}"))?;
+    let user_id = UserId::new(user.id);
+    // The repositories answer both questions directly; an `AuthService` would only
+    // be needed for the verifications this command never performs.
+    let status = match repos.totp.find(user_id).await? {
+        None => ferroma_auth::TotpStatus::Disabled,
+        Some(enrollment) if enrollment.confirmed_at.is_none() => ferroma_auth::TotpStatus::Pending,
+        Some(_) => ferroma_auth::TotpStatus::Enabled,
+    };
+    Ok(TotpSummary {
+        email: user.email,
+        status,
+        recovery_codes_left: repos.recovery_codes.count_unused(user_id).await?,
+        app_passwords: repos.app_passwords.list(user_id).await?,
     })
 }
 

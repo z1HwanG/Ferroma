@@ -869,6 +869,19 @@ export const zhCN = {
   'Windows': 'Windows',
   'Yes': '是',
 
+  /* admin security */
+  'Application password revoked.': '应用专用密码已吊销。',
+  'A second factor cannot be cleared from here; use ferroma user totp-disable on the host.': '此处无法清除第二因子；请在主机上使用 ferroma user totp-disable。',
+  'Enabled.': '已启用。',
+  'Enrollment started, not confirmed.': '已开始注册，尚未确认。',
+  'Loading security…': '正在加载安全状态……',
+  'No recovery codes left: this account is one lost phone away from a lockout.': '恢复码已用完：该账号距离被锁死只差一部丢失的手机。',
+  'Not enabled.': '未启用。',
+  'Recovery codes left: {count}': '剩余恢复码：{count}',
+  'Second factor': '第二因子',
+  'Security': '安全',
+  'The security state could not be loaded.': '无法加载安全状态。',
+  'This account has no application passwords.': '该账号没有应用专用密码。',
   /* second factor */
   'Application passwords': '应用专用密码',
   'Code from the app': '应用显示的验证码',

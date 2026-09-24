@@ -305,6 +305,16 @@ Admin-only. `403 forbidden` for ordinary users.
 | `GET` | `/api/v1/users/:id/mailboxes` | addresses owned by the user |
 | `POST` | `/api/v1/users/:id/mailboxes` | `{domain, local_part, is_primary?, quota_bytes?}` — creates the Maildir and the standard folders |
 | `PATCH` | `/api/v1/users/:id/mailboxes/:mailbox_id` | `{is_primary?, quota_bytes?}`. `quota_bytes: 0` inherits the account quota. The address itself is not editable. |
+| `GET` | `/api/v1/users/:id/security` | `{totp_status, recovery_codes_left, app_passwords[]}` |
+| `DELETE` | `/api/v1/users/:id/app-passwords/:app_id` | revoke one application password |
+
+`GET /users/:id/security` is **read-only**. There is deliberately no endpoint that
+clears a second factor: an administrator's session that could do that would be a
+bypass for every account on the server, and the operator path for a user who has lost
+both their authenticator and their recovery codes is `ferroma user totp-disable` on
+the host ([deployment.md](deployment.md) §6.6). Revoking an application password *is*
+offered, because a lost device has to be able to stop working, and it weakens
+nothing — the user keeps their second factor.
 
 ### 4.2 Domains
 

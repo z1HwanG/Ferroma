@@ -438,6 +438,85 @@ pub async fn delete_user(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// One account's second-factor state, as an administrator sees it.
+///
+/// Read-only by design. There is deliberately **no** endpoint here that clears a
+/// second factor: an administrator's session that could do that would be a bypass
+/// for every account on the server, and the recovery route for a locked-out user is
+/// `ferroma user totp-disable` on the host — a higher bar for a rarer event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserSecurityResponse {
+    /// `disabled`, `pending` or `enabled`.
+    pub totp_status: String,
+    /// Unused recovery codes left. Zero with `enabled` means the account is one lost
+    /// phone away from a support call.
+    pub recovery_codes_left: i64,
+    /// The account's application passwords, revoked ones included.
+    pub app_passwords: Vec<crate::routes::mfa::AppPasswordResponse>,
+}
+
+/// `GET /api/v1/users/:id/security`
+pub async fn get_user_security(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+    Path(id): Path<i64>,
+) -> Result<Json<UserSecurityResponse>, ApiError> {
+    let user_id = UserId::new(id);
+    // A missing account is a `404`, and the check happens before the counters so an
+    // id that does not exist cannot come back as an enabled account with zero codes.
+    if state.repos.users.find_by_id(user_id).await?.is_none() {
+        return Err(ApiError::new(FerromaError::NotFound(format!("user {id}"))));
+    }
+    let status = state.auth.totp_status(user_id).await?;
+    Ok(Json(UserSecurityResponse {
+        totp_status: match status {
+            ferroma_auth::TotpStatus::Disabled => "disabled",
+            ferroma_auth::TotpStatus::Pending => "pending",
+            ferroma_auth::TotpStatus::Enabled => "enabled",
+        }
+        .to_string(),
+        recovery_codes_left: state.auth.recovery_codes_left(user_id).await?,
+        app_passwords: state
+            .auth
+            .list_app_passwords(user_id)
+            .await?
+            .into_iter()
+            .map(crate::routes::mfa::AppPasswordResponse::from)
+            .collect(),
+    }))
+}
+
+/// `DELETE /api/v1/users/:id/app-passwords/:app_id`
+///
+/// Revoking is offered because it is the one thing an administrator should be able
+/// to do here: a device is lost, and the credential on it has to stop working. It
+/// weakens nothing — the user keeps their second factor.
+pub async fn revoke_user_app_password(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+    Path((id, app_id)): Path<(i64, i64)>,
+) -> Result<StatusCode, ApiError> {
+    if state.repos.users.find_by_id(UserId::new(id)).await?.is_none() {
+        return Err(ApiError::new(FerromaError::NotFound(format!("user {id}"))));
+    }
+    let revoked = state
+        .auth
+        .revoke_app_password(UserId::new(id), app_id)
+        .await?;
+    if !revoked {
+        return Err(ApiError::new(FerromaError::NotFound(format!(
+            "no live application password {app_id} for user {id}"
+        ))));
+    }
+    tracing::info!(
+        admin = true,
+        user_id = id,
+        app_password_id = app_id,
+        "application password revoked by an administrator"
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// `GET /api/v1/users/:id/mailboxes`
 pub async fn list_user_mailboxes(
     State(state): State<AppState>,

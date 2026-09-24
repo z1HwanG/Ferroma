@@ -227,6 +227,32 @@ pub enum UserCommand {
         #[arg(long)]
         yes: bool,
     },
+    /// Show whether an account has a second factor, and its application passwords.
+    Totp {
+        /// The account's email address.
+        email: String,
+    },
+    /// Remove an account's second factor.
+    ///
+    /// This is the recovery path for a user who has lost both their authenticator
+    /// and their recovery codes, and it is **not** an HTTP endpoint. An admin API
+    /// that could clear a second factor would turn one stolen administrator session
+    /// into a bypass for every account on the server; shell access on the host is a
+    /// deliberately higher bar for a deliberately rarer event.
+    TotpDisable {
+        /// The account's email address.
+        email: String,
+        /// Skip the confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Revoke one application password by id.
+    AppPasswordRevoke {
+        /// The account's email address.
+        email: String,
+        /// The id shown by `ferroma user totp`.
+        id: i64,
+    },
 }
 
 /// `ferroma user create …`

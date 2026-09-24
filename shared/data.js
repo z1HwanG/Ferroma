@@ -412,6 +412,45 @@ export function normalizeUser(value) {
   };
 }
 
+/**
+ * One application password, as `GET /users/:id/security` sends it.
+ *
+ * The server sends `snake_case`; every view reads the normalised shape. Skipping this
+ * step is how a field ends up silently `undefined` on screen while the JSON was
+ * correct all along.
+ *
+ * @param {Record<string, unknown>} value
+ */
+export function normalizeAppPassword(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  return {
+    id: num(pick(source, ['id', 'app_password_id'], 0), 0),
+    label: String(pick(source, ['label', 'name'], '')),
+    createdAt: pick(source, ['created_at'], null),
+    lastUsedAt: pick(source, ['last_used_at'], null),
+    revokedAt: pick(source, ['revoked_at'], null),
+    raw: source,
+  };
+}
+
+/**
+ * One account's second-factor state.
+ *
+ * `totpStatus` is not lower-cased or defaulted to `enabled`: an unrecognised value
+ * must not be rendered as protection the account may not have.
+ *
+ * @param {Record<string, unknown>} value
+ */
+export function normalizeUserSecurity(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  return {
+    totpStatus: String(pick(source, ['totp_status', 'status'], 'disabled')).toLowerCase(),
+    recoveryCodesLeft: num(pick(source, ['recovery_codes_left'], 0), 0),
+    appPasswords: listOf(pick(source, ['app_passwords'], [])).map(normalizeAppPassword),
+    raw: source,
+  };
+}
+
 /** @param {unknown} payload */
 export function usersOf(payload) {
   return listOf(payload).map(normalizeUser);

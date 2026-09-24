@@ -914,6 +914,40 @@ docker compose -f docker-compose.yml exec postgres \
   "SELECT id, uid, subject, sender, size_bytes, storage_path FROM messages ORDER BY id DESC LIMIT 5;"
 ```
 
+### 6.6 第二因子，以及用户被锁死时怎么办
+
+用户自己在 **Webmail → 设置 → 安全** 中开启第二因子，也可以走 API
+（见 [api.md](api.md) §3）。注册在用验证码确认之前不会强制执行，因此扫错的二维码不会
+把任何人锁在门外；确认时签发的十个恢复码只显示一次。
+
+当用户**同时**丢失验证器与恢复码时，没有任何 Web 路径可以回到账号，这是刻意的：一个
+能清除第二因子的管理员会话，等于绕过服务器上每一个账号的第二因子。恢复路径是主机上的
+shell 访问权限，对更罕见的事件设置高得多的门槛。
+
+```bash
+# 这个账号处于什么状态？
+docker compose -f docker-compose.yml exec ferroma   ferroma user totp alice@example.com
+#   account      alice@example.com
+#   second factor enabled
+#   recovery codes left 10
+#   application passwords
+#     #1 Thunderbird last used 2026-09-24 05:12:03 UTC
+
+# 设备丢失：按 id 吊销一枚应用专用密码，不动第二因子。
+docker compose -f docker-compose.yml exec ferroma   ferroma user app-password-revoke alice@example.com 1
+
+# 验证器与恢复码都丢了。会先要求确认；不加 --yes 时它只说明将要做什么并以非零码退出。
+docker compose -f docker-compose.yml exec ferroma   ferroma user totp-disable alice@example.com --yes
+```
+
+移除第二因子后，账号在用户重新注册之前仅由密码保护，所以请提醒他们重新注册。不要为了
+「帮」一个仍握有两条恢复路径之一的用户而移除因子——请让他使用恢复码，那会消耗一个恢复码
+并让因子继续生效。
+
+Admin 控制台会显示账号的第二因子状态，并允许管理员吊销应用专用密码
+（`GET /users/:id/security`、`DELETE /users/:id/app-passwords/:app_id`）。它无法清除
+第二因子。
+
 ---
 
 ## 7. DKIM：生成并发布密钥

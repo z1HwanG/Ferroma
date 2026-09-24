@@ -16,6 +16,16 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ### Added
 
+- **An administrator can see an account's second factor, and cannot clear it.**
+  `GET /api/v1/users/:id/security` reports the enrollment state, the recovery codes
+  left and the application passwords; `DELETE /api/v1/users/:id/app-passwords/:app_id`
+  revokes one. The Admin user drawer shows both. Clearing a second factor is
+  deliberately absent from the HTTP surface — one stolen administrator session would
+  otherwise bypass every account — so the recovery route for a user who has lost both
+  their authenticator and their recovery codes is `ferroma user totp-disable` on the
+  host, with `ferroma user totp` to inspect and `ferroma user app-password-revoke` for
+  a lost device (`docs/deployment.md` §6.6).
+
 - **The Webmail can set up a second factor.** Settings grew a Security section:
   enroll an authenticator (the secret and its `otpauth://` URI are shown for manual
   entry — no QR image, because rendering one would mean a QR library or a request to

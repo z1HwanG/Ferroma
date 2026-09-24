@@ -13,6 +13,14 @@ Ferroma 的重要变更，新的在前。
 
 ### 新增
 
+- **管理员可以看到账号的第二因子，但无法清除它。**
+  `GET /api/v1/users/:id/security` 报告注册状态、剩余恢复码与应用专用密码；
+  `DELETE /api/v1/users/:id/app-passwords/:app_id` 吊销其中之一。Admin 的用户抽屉会
+  显示这两者。HTTP 接口刻意不提供清除第二因子的能力——否则一个被盗的管理员会话就能绕过
+  每一个账号——因此对于同时丢失验证器与恢复码的用户，恢复路径是主机上的
+  `ferroma user totp-disable`，配合用于查看的 `ferroma user totp` 与用于丢失设备的
+  `ferroma user app-password-revoke`（见 `docs/deployment.md` §6.6）。
+
 - **Webmail 可以设置第二因子。** 设置在「安全」中新增一节：注册验证器（显示密钥与其
   `otpauth://` URI 供手工输入——不渲染二维码，因为在一个持有密钥的页面上渲染它，要么
   引入二维码库，要么向别人的服务发请求）、用验证码确认、保存一次性恢复码、管理应用专用

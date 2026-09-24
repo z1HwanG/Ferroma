@@ -226,6 +226,14 @@ pub fn management_api() -> Router<AppState> {
                 .delete(routes::admin::users::delete_user),
         )
         .route(
+            "/users/{id}/security",
+            get(routes::admin::users::get_user_security),
+        )
+        .route(
+            "/users/{id}/app-passwords/{app_id}",
+            delete(routes::admin::users::revoke_user_app_password),
+        )
+        .route(
             "/users/{id}/mailboxes",
             get(routes::admin::users::list_user_mailboxes)
                 .post(routes::admin::users::create_user_mailbox),
@@ -843,12 +851,21 @@ pub fn route_table() -> Vec<(&'static str, &'static str)> {
         ("POST", "/api/v1/auth/logout"),
         ("GET", "/api/v1/auth/me"),
         ("POST", "/api/v1/auth/password"),
+        ("GET", "/api/v1/auth/totp"),
+        ("POST", "/api/v1/auth/totp/enroll"),
+        ("POST", "/api/v1/auth/totp/confirm"),
+        ("POST", "/api/v1/auth/totp/disable"),
+        ("GET", "/api/v1/auth/app-passwords"),
+        ("POST", "/api/v1/auth/app-passwords"),
+        ("DELETE", "/api/v1/auth/app-passwords/{id}"),
         // §4.1 users
         ("GET", "/api/v1/users"),
         ("POST", "/api/v1/users"),
         ("GET", "/api/v1/users/{id}"),
         ("PATCH", "/api/v1/users/{id}"),
         ("DELETE", "/api/v1/users/{id}"),
+        ("GET", "/api/v1/users/{id}/security"),
+        ("DELETE", "/api/v1/users/{id}/app-passwords/{app_id}"),
         ("GET", "/api/v1/users/{id}/mailboxes"),
         ("POST", "/api/v1/users/{id}/mailboxes"),
         ("PATCH", "/api/v1/users/{id}/mailboxes/{mailbox_id}"),

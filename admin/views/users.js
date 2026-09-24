@@ -5,7 +5,13 @@
  */
 
 import { API_BASE, ApiError, query, request } from '../../shared/api.js';
-import { domainsOf, mailboxesOf, totalOf, usersOf } from '../../shared/data.js';
+import {
+  domainsOf,
+  mailboxesOf,
+  normalizeUserSecurity,
+  totalOf,
+  usersOf,
+} from '../../shared/data.js';
 import { clear, el, setHidden, setText } from '../../shared/dom.js';
 import { formatBytes, formatLogStamp } from '../../shared/format.js';
 import { t, tn } from '../../shared/i18n.js';
@@ -305,6 +311,7 @@ function storageLabel(user) {
  */
 function openUserDrawer(user, handlers) {
   const addresses = el('div', {}, [el('p', { class: 'loading-state', text: t('Loading addresses…') })]);
+  const security = el('div', {}, [el('p', { class: 'loading-state', text: t('Loading security…') })]);
 
   const body = el('div', {}, [
     definitionList([
@@ -317,6 +324,12 @@ function openUserDrawer(user, handlers) {
     ]),
     el('h3', { class: 'drawer-section', text: t('Addresses') }),
     addresses,
+    el('h3', { class: 'drawer-section', text: t('Security') }),
+    security,
+    el('p', {
+      class: 'view-sub',
+      text: t('A second factor cannot be cleared from here; use ferroma user totp-disable on the host.'),
+    }),
   ]);
 
   // The account-level actions live here rather than in the row: six buttons per row
@@ -367,6 +380,104 @@ function openUserDrawer(user, handlers) {
         el('p', { class: 'view-sub', text: messageOf(error, t('The addresses could not be loaded.')) }),
       );
     });
+
+  loadSecurity(user, security);
+}
+
+/**
+ * Render one account's second-factor state.
+ *
+ * Read-only apart from revoking an application password: a control here that cleared
+ * a second factor would make one stolen administrator session a bypass for every
+ * account, so the recovery route for a locked-out user is the CLI on the host.
+ *
+ * @param {object} user
+ * @param {HTMLElement} into
+ */
+function loadSecurity(user, into) {
+  const load = () =>
+    request(`${API_BASE}/users/${user.id}/security`, { toast: false })
+      .then((payload) => {
+        const state = normalizeUserSecurity(payload);
+        clear(into);
+        const status =
+          state.totpStatus === 'enabled'
+            ? t('Enabled.')
+            : state.totpStatus === 'pending'
+              ? t('Enrollment started, not confirmed.')
+              : t('Not enabled.');
+        const codes = state.recoveryCodesLeft;
+        const rows = [
+          el('p', { class: 'view-sub', text: `${t('Second factor')}: ${status}` }),
+        ];
+        if (state.totpStatus === 'enabled') {
+          rows.push(
+            codes === 0
+              ? el('p', {
+                  class: 'field-error',
+                  text: t('No recovery codes left: this account is one lost phone away from a lockout.'),
+                })
+              : el('p', {
+                  class: 'view-sub',
+                  text: t('Recovery codes left: {count}', { count: codes }),
+                }),
+          );
+        }
+
+        const passwords = state.appPasswords;
+        rows.push(el('p', { class: 'drawer-section', text: t('Application passwords') }));
+        if (passwords.length === 0) {
+          rows.push(el('p', { class: 'view-sub', text: t('This account has no application passwords.') }));
+        } else {
+          rows.push(
+            el(
+              'ul',
+              { class: 'drawer-list' },
+              passwords.map((entry) => {
+                const used = entry.lastUsedAt
+                  ? t('Last used {when}', { when: formatLogStamp(entry.lastUsedAt) })
+                  : t('Never used');
+                if (entry.revokedAt) {
+                  return el('li', {}, [
+                    el('span', { class: 'cell-mono', text: entry.label }),
+                    el('span', { class: 'view-sub', text: t('Revoked') }),
+                  ]);
+                }
+                const revoke = el('button', { type: 'button', class: 'btn btn-danger', text: t('Revoke') });
+                revoke.addEventListener('click', () => {
+                  revoke.disabled = true;
+                  request(`${API_BASE}/users/${user.id}/app-passwords/${entry.id}`, {
+                    method: 'DELETE',
+                    toast: false,
+                  })
+                    .then(() => {
+                      toastSuccess(t('Application password revoked.'));
+                      load();
+                    })
+                    .catch((error) => {
+                      revoke.disabled = false;
+                      toastError(messageOf(error, t('The application password could not be revoked.')));
+                    });
+                });
+                return el('li', {}, [
+                  el('span', { class: 'cell-mono', text: entry.label }),
+                  el('span', { class: 'view-sub', text: used }),
+                  revoke,
+                ]);
+              }),
+            ),
+          );
+        }
+        into.append(...rows);
+      })
+      .catch((error) => {
+        clear(into);
+        into.append(
+          el('p', { class: 'view-sub', text: messageOf(error, t('The security state could not be loaded.')) }),
+        );
+      });
+
+  load();
 }
 
 /* --------------------------------------------------------------------- forms */

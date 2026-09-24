@@ -292,6 +292,14 @@ UTC 下的 RFC 3339 / ISO 8601，例如`2026-09-16T12:00:00Z`。除
 | `GET` | `/api/v1/users/:id/mailboxes` | 该用户拥有的地址 |
 | `POST` | `/api/v1/users/:id/mailboxes` | `{domain, local_part, is_primary?, quota_bytes?}`，创建 Maildir 与标准文件夹 |
 | `PATCH` | `/api/v1/users/:id/mailboxes/:mailbox_id` | `{is_primary?, quota_bytes?}`。`quota_bytes: 0` 表示继承账号配额。地址本身不可编辑。 |
+| `GET` | `/api/v1/users/:id/security` | `{totp_status, recovery_codes_left, app_passwords[]}` |
+| `DELETE` | `/api/v1/users/:id/app-passwords/:app_id` | 吊销一枚应用专用密码 |
+
+`GET /users/:id/security` 是**只读**的。这里刻意没有任何清除第二因子的端点：一个能做
+这件事的管理员会话，等于绕过服务器上每一个账号的第二因子。对于同时丢失验证器与恢复码
+的用户，运维路径是在主机上执行 `ferroma user totp-disable`
+（见 [deployment.md](deployment.md) §6.6）。吊销应用专用密码**是**提供的，因为丢失的
+设备必须能够停止工作，而这不会削弱任何东西——用户仍然保有第二因子。
 
 ### 4.2 域名
 

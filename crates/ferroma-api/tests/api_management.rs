@@ -1771,3 +1771,118 @@ async fn an_application_password_is_minted_listed_and_revoked() {
 
     app.cleanup().await;
 }
+
+#[tokio::test]
+async fn an_administrator_can_see_and_revoke_but_not_clear_a_second_factor() {
+    require_database!();
+    let app = TestApp::new().await;
+    let admin = bootstrap_admin(&app).await;
+    let (user_id, _mailbox_id, token) =
+        seed_account(&app, &admin, "example.net", "alice@example.net", PASSWORD).await;
+
+    // Disabled to begin with.
+    let status = app
+        .get(&format!("/api/v1/users/{user_id}/security"), Some(&admin))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(status["totp_status"], "disabled");
+    assert_eq!(status["recovery_codes_left"], 0);
+    assert_eq!(status["app_passwords"].as_array().map(Vec::len), Some(0));
+
+    // Enroll and confirm through the account's own session, so the administrator is
+    // looking at state the user created rather than state the test wrote.
+    let enrolled = app
+        .json("POST", "/api/v1/auth/totp/enroll", Some(&token), json!({}))
+        .await
+        .expect(StatusCode::OK);
+    let secret = enrolled["secret"].as_str().expect("a secret").to_string();
+    app.json(
+        "POST",
+        "/api/v1/auth/totp/confirm",
+        Some(&token),
+        json!({ "code": totp_code(&secret) }),
+    )
+    .await
+    .expect(StatusCode::OK);
+    let created = app
+        .json("POST", "/api/v1/auth/app-passwords", Some(&token), json!({ "label": "Phone" }))
+        .await
+        .expect(StatusCode::CREATED);
+    let app_id = created["id"].as_i64().expect("an id");
+
+    let after = app
+        .get(&format!("/api/v1/users/{user_id}/security"), Some(&admin))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(after["totp_status"], "enabled");
+    assert_eq!(
+        after["recovery_codes_left"],
+        ferroma_auth::totp::RECOVERY_CODE_COUNT as i64
+    );
+    assert_eq!(after["app_passwords"].as_array().map(Vec::len), Some(1));
+    assert_eq!(after["app_passwords"][0]["label"], "Phone");
+
+    // There is no route that clears the factor, and asking for one is a `404`/`405`,
+    // not a silent success: this is the property the whole design rests on.
+    for method in ["POST", "DELETE", "PATCH"] {
+        let attempt = app
+            .json(
+                method,
+                &format!("/api/v1/users/{user_id}/totp"),
+                Some(&admin),
+                json!({}),
+            )
+            .await;
+        assert!(
+            attempt.status == StatusCode::NOT_FOUND || attempt.status == StatusCode::METHOD_NOT_ALLOWED,
+            "{method} /users/{{id}}/totp answered {} — an admin session must not be able to clear a second factor",
+            attempt.status
+        );
+    }
+    // The factor is still enforced afterwards.
+    let still_gated = app
+        .json("POST", "/api/v1/auth/login", None, json!({
+            "email": "alice@example.net", "password": PASSWORD
+        }))
+        .await;
+    assert_eq!(still_gated.error_code(), "totp_required");
+
+    // Revoking the application password is the one thing an administrator may do.
+    let revoked = app
+        .delete(&format!("/api/v1/users/{user_id}/app-passwords/{app_id}"), Some(&admin))
+        .await;
+    assert_eq!(revoked.status, StatusCode::NO_CONTENT);
+    let listed = app
+        .get(&format!("/api/v1/users/{user_id}/security"), Some(&admin))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(listed["totp_status"], "enabled", "revoking must not touch the factor");
+    assert!(
+        listed["app_passwords"][0]["revoked_at"].is_string(),
+        "{listed}"
+    );
+
+    // Revoking again, an unknown id, and an unknown user are all `404`.
+    let again = app
+        .delete(&format!("/api/v1/users/{user_id}/app-passwords/{app_id}"), Some(&admin))
+        .await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND);
+    let unknown_id = app
+        .delete(&format!("/api/v1/users/{user_id}/app-passwords/999999"), Some(&admin))
+        .await;
+    assert_eq!(unknown_id.status, StatusCode::NOT_FOUND);
+    let unknown_user = app
+        .get("/api/v1/users/999999/security", Some(&admin))
+        .await;
+    assert_eq!(unknown_user.status, StatusCode::NOT_FOUND);
+
+    // And a plain user cannot read another account's security state.
+    let (_bob_id, _bob_mailbox, bob) =
+        seed_account(&app, &admin, "example.net", "bob@example.net", PASSWORD).await;
+    let refused = app
+        .get(&format!("/api/v1/users/{user_id}/security"), Some(&bob))
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+
+    app.cleanup().await;
+}

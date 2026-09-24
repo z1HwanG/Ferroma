@@ -998,6 +998,44 @@ docker compose -f docker-compose.yml exec postgres \
   "SELECT id, uid, subject, sender, size_bytes, storage_path FROM messages ORDER BY id DESC LIMIT 5;"
 ```
 
+### 6.6 Second factors, and what to do when a user is locked out
+
+A user turns on a second factor themselves, in **Webmail → Settings → Security**, or
+through the API ([api.md](api.md) §3). The enrollment is not enforced until a code
+confirms it, so a mis-scanned QR code cannot lock anyone out, and the ten recovery
+codes issued at confirmation are shown exactly once.
+
+When a user loses **both** their authenticator and their recovery codes, there is no
+web path back in, and that is deliberate: an administrator's session that could clear
+a second factor would be a bypass for every account on the server. The recovery route
+is shell access on the host, which is a much higher bar for a much rarer event.
+
+```bash
+# What state is this account in?
+docker compose -f docker-compose.yml exec ferroma   ferroma user totp alice@example.com
+#   account      alice@example.com
+#   second factor enabled
+#   recovery codes left 10
+#   application passwords
+#     #1 Thunderbird last used 2026-09-24 05:12:03 UTC
+
+# A lost device: revoke one application password by id, without touching the factor.
+docker compose -f docker-compose.yml exec ferroma   ferroma user app-password-revoke alice@example.com 1
+
+# Lost authenticator *and* recovery codes. Asks for confirmation first; without
+# --yes it explains what it would do and exits non-zero.
+docker compose -f docker-compose.yml exec ferroma   ferroma user totp-disable alice@example.com --yes
+```
+
+Removing the factor leaves the account protected by its password alone until the user
+enrolls again, so tell them to do that. Do not remove a factor to "help" a user who
+still has one of their two recovery paths — ask them to use a recovery code instead,
+which consumes it and keeps the factor in force.
+
+The Admin console shows an account's factor state and lets an administrator revoke an
+application password (`GET /users/:id/security`,
+`DELETE /users/:id/app-passwords/:app_id`). It cannot clear the factor.
+
 ---
 
 ## 7. DKIM: generating and publishing a key

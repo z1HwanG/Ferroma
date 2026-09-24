@@ -1054,6 +1054,26 @@ that has one has enrolled, and when the operator understands that an application
 password is a full-strength credential: it bypasses the second factor by design,
 which is what makes it usable from a mail client at all.
 
+### 15.3.1 What protects the second factor itself
+
+* **Enrollment is not enforcement.** A secret nobody has proved with a code is not a
+  second factor, and the API and the Webmail both say so rather than reporting
+  protection the account does not have.
+* **Disabling costs the account password.** A live session is not enough, at either
+  surface — a stolen session is the case the factor exists for.
+* **No administrator can clear a factor.** Neither the Admin API nor the console
+  offers it. One stolen administrator session would otherwise be a bypass for every
+  account on the server. The recovery route for a user who has lost both their
+  authenticator and their recovery codes is `ferroma user totp-disable` on the host
+  ([deployment.md](deployment.md) §6.6), which requires shell access.
+* **Revoking an application password is available to administrators**, because a lost
+  device must be able to stop working. It weakens nothing: the factor stays.
+
+The residual risk is the one that cannot be engineered away: a user who has lost both
+recovery paths needs an operator with host access, and an operator who runs
+`totp-disable` on request without verifying the request has become the bypass. Both
+halves of that are stated in the deployment guide rather than left implicit.
+
 ### 15.4 No cross-process event bus
 
 `EventBus` is one in-process object (`crates/ferroma-events/src/bus.rs`). There is
