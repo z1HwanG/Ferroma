@@ -573,13 +573,36 @@ impl MessagesRepository {
     }
 
     /// Replace the whole flag string.
+    ///
+    /// A live message whose `\Seen` bit changes moves the folder's `unseen_count` in
+    /// the same transaction. IMAP `STORE` and an implicit `\Seen` on `FETCH` both come
+    /// through here, and neither of them recounts afterwards.
     pub async fn set_flags(&self, id: MessageId, flags: &str) -> Result<()> {
-        let done = sqlx::query("UPDATE messages SET flags = $2, updated_at = NOW() WHERE id = $1")
-            .bind(id.get())
-            .bind(flags)
-            .execute(&self.pool)
-            .await?;
-        touched(done.rows_affected(), id)
+        let mut tx = self.pool.begin().await?;
+        let current: Option<Message> = sqlx::query_as(
+            "SELECT * FROM messages WHERE id = $1 FOR UPDATE",
+        )
+        .bind(id.get())
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(message) = current else {
+            return Err(not_found(format!("message {id}")));
+        };
+        if message.flags != flags {
+            sqlx::query("UPDATE messages SET flags = $2, updated_at = NOW() WHERE id = $1")
+                .bind(id.get())
+                .bind(flags)
+                .execute(&mut *tx)
+                .await?;
+            if message.expunged_at.is_none() {
+                let delta = unseen_delta(&message.flags, flags);
+                if delta != 0 {
+                    shift_folder_counters(&mut tx, message.folder_id, 0, delta, 0).await?;
+                }
+            }
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Update flags, Maildir path and durable cursor as one database mutation.
@@ -596,6 +619,17 @@ impl MessagesRepository {
         flags: &str,
     ) -> Result<Message> {
         let mut tx = self.pool.begin().await?;
+        let before: Option<(i64, String, Option<chrono::DateTime<chrono::Utc>>)> = sqlx::query_as(
+            "SELECT m.folder_id, m.flags, m.expunged_at FROM messages m
+               JOIN mailboxes b ON b.id = m.mailbox_id
+              WHERE m.id = $1 AND b.user_id = $2 AND m.storage_path = $3
+              FOR UPDATE OF m",
+        )
+        .bind(id.get())
+        .bind(user.get())
+        .bind(expected_path)
+        .fetch_optional(&mut *tx)
+        .await?;
         let updated: Option<Message> = sqlx::query_as(
             "UPDATE messages m SET flags = $4, storage_path = $5, updated_at = NOW()
                FROM mailboxes b WHERE m.id = $1 AND m.mailbox_id = b.id
@@ -606,6 +640,14 @@ impl MessagesRepository {
         .bind(flags).bind(new_path)
         .fetch_optional(&mut *tx).await?;
         let message = if let Some(message) = updated {
+            if let Some((folder_id, old_flags, expunged_at)) = before {
+                if expunged_at.is_none() {
+                    let delta = unseen_delta(&old_flags, &message.flags);
+                    if delta != 0 {
+                        shift_folder_counters(&mut tx, folder_id, 0, delta, 0).await?;
+                    }
+                }
+            }
             sqlx::query(
                 "INSERT INTO change_log (user_id, mailbox_id, folder_id, message_id, kind, payload)
                  VALUES ($1, $2, $3, $4, 'message_updated', $5)",
@@ -767,10 +809,18 @@ impl MessagesRepository {
     pub async fn hard_delete(&self, id: MessageId) -> Result<Option<Message>> {
         let mut tx = self.pool.begin().await?;
         let row = lock_message_for_deletion(&mut tx, id, None).await?;
-        if row.is_some() {
+        if let Some(message) = &row {
             reject_active_queue(&mut tx, id.get()).await?;
             sqlx::query("DELETE FROM messages WHERE id = $1")
                 .bind(id.get()).execute(&mut *tx).await?;
+            // A tombstone is not mail. Expunge already drops its share; a hard delete
+            // of a still-live row has to do the same, or the folder badge keeps it.
+            if message.expunged_at.is_none() {
+                let unseen = i64::from(!flag_is_set(&message.flags, "seen"));
+                shift_folder_counters(
+                    &mut tx, message.folder_id, -1, -unseen, -message.size_bytes,
+                ).await?;
+            }
         }
         tx.commit().await?;
         Ok(row)
@@ -787,6 +837,12 @@ impl MessagesRepository {
             reject_active_queue(&mut tx, id.get()).await?;
             sqlx::query("DELETE FROM messages WHERE id = $1")
                 .bind(id.get()).execute(&mut *tx).await?;
+            if message.expunged_at.is_none() {
+                let unseen = i64::from(!flag_is_set(&message.flags, "seen"));
+                shift_folder_counters(
+                    &mut tx, message.folder_id, -1, -unseen, -message.size_bytes,
+                ).await?;
+            }
             sqlx::query(
                 "INSERT INTO change_log (user_id, mailbox_id, folder_id, message_id, kind, payload)
                  VALUES ($1, $2, $3, $4, 'message_deleted', $5)",
@@ -844,15 +900,20 @@ impl MessagesRepository {
         expected_source: Option<&str>,
     ) -> Result<Message> {
         let mut tx = self.pool.begin().await?;
-        let from_folder = if let Some(user) = user {
-            let source: Option<(i64,)> = sqlx::query_as(
-                "SELECT m.folder_id FROM messages m JOIN mailboxes b ON b.id = m.mailbox_id
-                  WHERE m.id = $1 AND b.user_id = $2 AND m.mailbox_id = $3
-                    AND ($4::TEXT IS NULL OR m.storage_path = $4) FOR UPDATE OF m",
-            ).bind(id.get()).bind(user.get()).bind(to_mailbox_id.get())
-                .bind(expected_source).fetch_optional(&mut *tx).await?;
-            Some(source.ok_or_else(|| not_found(format!("message {id}")))?.0)
-        } else { None };
+        // Read the source folder before the UPDATE replaces it. The logged path also
+        // checks ownership; the unlogged path still needs the folder so its counters
+        // can move with the row.
+        let source: Option<(i64,)> = sqlx::query_as(
+            "SELECT m.folder_id FROM messages m JOIN mailboxes b ON b.id = m.mailbox_id
+              WHERE m.id = $1 AND ($2::BIGINT IS NULL OR b.user_id = $2) AND m.mailbox_id = $3
+                AND ($4::TEXT IS NULL OR m.storage_path = $4) FOR UPDATE OF m",
+        ).bind(id.get()).bind(user.map(UserId::get)).bind(to_mailbox_id.get())
+            .bind(expected_source).fetch_optional(&mut *tx).await?;
+        let from_folder = match (user, source) {
+            (_, Some((folder,))) => Some(folder),
+            (Some(_), None) => return Err(not_found(format!("message {id}"))),
+            (None, None) => None,
+        };
         let moved = sqlx::query_as::<_, Message>(
             "WITH next_uid AS (
                  UPDATE folders SET uid_next = uid_next + 1, updated_at = NOW()
@@ -879,6 +940,19 @@ impl MessagesRepository {
             tx.rollback().await?;
             return Err(self.missing_message_or_folder(id, to_folder_id).await?);
         };
+        // The row changed folders; the counters have to follow it in this same
+        // transaction. A move into the folder it already occupies is a no-op for them.
+        if message.expunged_at.is_none() {
+            if let Some(source_folder) = from_folder.filter(|folder| *folder != message.folder_id) {
+                let unseen = i64::from(!flag_is_set(&message.flags, "seen"));
+                shift_folder_counters(
+                    &mut tx, source_folder, -1, -unseen, -message.size_bytes,
+                ).await?;
+                shift_folder_counters(
+                    &mut tx, message.folder_id, 1, unseen, message.size_bytes,
+                ).await?;
+            }
+        }
         if let (Some(user), Some(from_folder)) = (user, from_folder) {
             append_relocation_change(&mut tx, user, &message, Some(from_folder)).await?;
         }
@@ -1029,6 +1103,14 @@ impl MessagesRepository {
             .bind(new_id)
             .fetch_one(&mut *tx)
             .await?;
+        // A copy is a new live message. The destination's badge has to count it; the
+        // source keeps its own share, because the original row did not leave.
+        if copied.expunged_at.is_none() {
+            let unseen = i64::from(!flag_is_set(&copied.flags, "seen"));
+            shift_folder_counters(
+                &mut tx, copied.folder_id, 1, unseen, copied.size_bytes,
+            ).await?;
+        }
         // Repair cached usage from the actual live rows, including this copy.
         // The owner lock above prevents two concurrent COPYs from both passing
         // on the same pre-copy total and overwriting each other's accounting.
@@ -1552,6 +1634,47 @@ impl AttachmentsRepository {
                 .await?;
         Ok(total)
     }
+}
+
+/// Move one live message's share of a folder's denormalised counters.
+///
+/// `insert` adds the share and `expunge` subtracts it. Move, copy and a hard delete
+/// used to touch only the message row, so the sidebar kept counting a message that
+/// had already left — or never counted one that had arrived by copy. `delta` is `1`
+/// on the destination and `-1` on the source. `GREATEST` stops a folder that was
+/// already behind from going negative; the next full `recount` still repairs it.
+async fn shift_folder_counters(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    folder_id: i64,
+    delta: i64,
+    unseen: i64,
+    bytes: i64,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE folders
+            SET message_count = GREATEST(message_count + $2, 0),
+                unseen_count  = GREATEST(unseen_count + $3, 0),
+                total_bytes   = GREATEST(total_bytes + $4, 0),
+                updated_at    = NOW()
+          WHERE id = $1",
+    )
+    .bind(folder_id)
+    .bind(delta)
+    .bind(unseen)
+    .bind(bytes)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// How `unseen_count` should move when a flag string changes.
+///
+/// `1` when the message becomes unread, `-1` when it becomes read, `0` when `\Seen`
+/// is untouched. Star, answer and delete do not belong in this number.
+fn unseen_delta(before: &str, after: &str) -> i64 {
+    let was_unseen = !flag_is_set(before, "seen");
+    let is_unseen = !flag_is_set(after, "seen");
+    i64::from(is_unseen) - i64::from(was_unseen)
 }
 
 /// Whether a flag string contains `flag`.

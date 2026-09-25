@@ -1002,9 +1002,12 @@ HAVING f.message_count <> COUNT(m.id) FILTER (WHERE m.expunged_at IS NULL)
 ```
 
 `FoldersRepository::recount(folder_id)` 是修复手段：它重算全部三个计数器并返回更新后的
-`Folder`。`MailboxesRepository::recompute_usage` 对 `users.used_bytes` 做同样的事。
+`Folder`。`MailboxesRepository::recompute_usage` 对 `users.used_bytes` 做同样的事。移动、
+复制、硬删除以及改变 `\Seen` 也会在同一事务里改写文件夹的这三列，因此文件夹不会继续计
+已经离开的邮件。已经落后的文件夹仍由下一次 `recount` 修好，打开文件夹列表也会：
+`GET /api/v1/mailboxes/:id/folders` 会先重算每个文件夹再回答。
 
-`message_count` 不对只是表面问题，文件夹列表会显示错误的数字。`uid_next` 不对则不是：
+`message_count` 不对时，文件夹列表会显示错误的数字，直到那次重算跑完。`uid_next` 不对则不是：
 它是 UID 分配器，而 `MessagesRepository::max_uid`
 （`SELECT COALESCE(MAX(uid), 0) FROM messages WHERE folder_id = $1`）是它至少应达到的
 值。如果 `uid_next` 曾经落后于 `max_uid`，下一次投递会分配一个已经存在的 UID，而

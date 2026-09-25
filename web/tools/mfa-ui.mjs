@@ -93,6 +93,27 @@ check(module.groupSecret('  mzxw6ytboi  ') === 'mzxw 6ytb oi', 'grouping trims a
 check(module.groupSecret('') === '', 'an empty secret stays empty');
 check(module.groupSecret(null) === '', 'a missing secret does not throw');
 
+/* ------------------------------------------------------------- the QR code */
+
+// A code that cannot be drawn must disappear rather than leave a stale picture
+// from the previous attempt on screen, and the secret text stays either way.
+check(
+  /function showQr\(/.test(source) && /setHidden\(node, true\)/.test(source),
+  'a URI that cannot be drawn hides the picture instead of leaving the previous one',
+);
+check(
+  /showQr\(qr, payload\.uri\)/.test(source),
+  'enrollment renders the otpauth URI as a QR code',
+);
+check(
+  /Scan this code with your authenticator app\./.test(source),
+  'the QR code needs a caption saying what to do with it',
+);
+check(
+  /Or enter this secret by hand\./.test(source),
+  'the manual secret stays, for a camera that cannot read the picture',
+);
+
 /* ------------------------------------------------------------------ report */
 
 if (failures.length) {

@@ -265,7 +265,9 @@ for (const root of ROOTS) {
 
 const LOCAL_SUITES = [
   ['web', 'tools/mfa-ui.mjs'],
+  ['web', 'tools/qr.mjs'],
   ['web', 'tools/list-race.mjs'],
+  ['web', 'tools/list-empty.mjs'],
   ['web', 'tools/security-regressions.mjs'],
 ];
 

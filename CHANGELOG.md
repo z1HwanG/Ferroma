@@ -14,6 +14,51 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ## [Unreleased]
 
+## [0.1.14] — 2026-09-25
+
+### Added
+
+- **The Webmail draws a QR code for two-factor enrollment.** Settings → Security
+  renders the `otpauth://` URI as a QR code the authenticator can scan, drawn in
+  the page itself — no QR library and no request to anyone else's service, which
+  is why the secret and the URI are still shown beside it for manual entry. A URI
+  that cannot be drawn leaves the picture out rather than showing a wrong one.
+
+### Changed
+
+- **Settings is three pages, and the rare ones stay closed.** Writing, appearance
+  and security are tabs. The password form, the second factor and application
+  passwords each stay collapsed until asked for, so opening Settings no longer
+  starts under a scroll of secret.
+- **Contacts has its own layout in the list pane.** Search, add and each person
+  are a form rather than a borrowed message list: a search field, an add form,
+  and a card with the address, the name, a note, and favorite / block as toggles.
+  Leaving Contacts puts the listbox role and the bulk bar back even when the
+  messages themselves have not changed.
+
+### Fixed
+
+- **Folder badges follow the mail.** Moving, copying, hard-deleting or changing
+  `\Seen` updates `message_count`, `unseen_count` and `total_bytes` in the same
+  transaction as the row. Those columns used to be a cache that `recount` repaired
+  afterwards, so a folder kept counting mail that had already left — or never
+  counted a copy that had arrived. A folder that was already behind is still
+  repaired by the next full recount, and by opening the folder list: `GET
+  /api/v1/mailboxes/:id/folders`, JMAP `Mailbox/get` and the Admin message total
+  recompute each folder from its live rows before answering. A recount that fails
+  keeps the stored number rather than dropping the folder or blanking the total.
+- **An empty folder no longer wears the previous folder's count.** Switching to a
+  folder whose page came back empty cleared the rows and left "3 / 3" beside
+  "This folder is empty." The pill is cleared on that path.
+- **A JMAP client that tries Bearer first can fall back to the mailbox password.**
+  `GET /.well-known/jmap` already named `Basic` in `WWW-Authenticate`, but the `401`
+  body was the management envelope and had no RFC 7807 `type`. `jmap-client` 0.4
+  (Flectar Mail) only treats a `401` as an authentication failure when the body is
+  `application/problem+json` and parses as a problem, so a correct password sent as
+  `Bearer` was reported as `Server failed: 401 Unauthorized` and Basic was never
+  tried. A JMAP `401` now carries `type` as well as the Ferroma error envelope.
+  Management and FCP `401`s keep the documented JSON envelope.
+
 ## [0.1.13] — 2026-09-25
 
 ### Added

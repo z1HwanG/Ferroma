@@ -2252,6 +2252,11 @@ async fn message_remove_flags_subtracts_only_what_is_asked() {
 
     repos.messages.set_flags(message.message_id(), "seen flagged $label1").await.unwrap();
     assert_eq!(
+        folder(&repos, f.inbox_id).await.unseen_count,
+        0,
+        "marking a message read must leave the unread badge"
+    );
+    assert_eq!(
         repos.messages.remove_flags(message.message_id(), "FLAGGED").await.unwrap(),
         "seen $label1"
     );
@@ -2383,6 +2388,10 @@ async fn message_hard_delete_returns_the_row_once() {
     assert_eq!(removed.map(|m| m.id), Some(message.id));
     assert!(repos.messages.hard_delete(message.message_id()).await.unwrap().is_none());
     assert_eq!(t.count("messages").await, 0);
+    let inbox = folder(&repos, f.inbox_id).await;
+    assert_eq!(inbox.message_count, 0, "a deleted message must leave the folder badge");
+    assert_eq!(inbox.unseen_count, 0);
+    assert_eq!(inbox.total_bytes, 0);
 
     t.cleanup().await;
 }
@@ -2494,6 +2503,14 @@ async fn message_move_allocates_a_fresh_uid_in_the_target() {
 
     assert_eq!(repos.messages.count_by_folder(f.inbox_id).await.unwrap(), 1);
     assert_eq!(repos.messages.count_by_folder(trash.folder_id()).await.unwrap(), 1);
+    // The sidebar reads the denormalised counters, not `count_by_folder`. A move that
+    // leaves them behind is what makes a folder claim mail it no longer holds.
+    let inbox = folder(&repos, f.inbox_id).await;
+    let trash_after = folder(&repos, trash.folder_id()).await;
+    assert_eq!(inbox.message_count, 1);
+    assert_eq!(trash_after.message_count, 1);
+    assert_eq!(inbox.unseen_count + trash_after.unseen_count, 2);
+    assert_eq!(inbox.total_bytes + trash_after.total_bytes, kept.size_bytes + moved.size_bytes);
     assert!(repos.messages.find_by_uid(f.inbox_id, 2).await.unwrap().is_none());
     assert!(repos.messages.find_by_uid(trash.folder_id(), 1).await.unwrap().is_some());
     assert_eq!(
@@ -2570,8 +2587,13 @@ async fn message_copy_preserves_the_source_and_duplicates_the_sub_rows() {
     assert_eq!(copy.storage_path, stored.storage_path);
     assert_eq!(copy.flags, stored.flags);
 
-    // The source is untouched.
+    // The source is untouched, and the destination's counters gain the copy.
     assert_eq!(repos.messages.count_by_folder(f.inbox_id).await.unwrap(), 1);
+    let inbox = folder(&repos, f.inbox_id).await;
+    let archive_after = folder(&repos, archive.folder_id()).await;
+    assert_eq!(inbox.message_count, 1, "copying must not take the source's count");
+    assert_eq!(archive_after.message_count, 1, "the copy is mail the badge has to count");
+    assert_eq!(archive_after.total_bytes, stored.size_bytes);
     assert_eq!(
         repos
             .messages

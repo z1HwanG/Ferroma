@@ -134,12 +134,31 @@ pub async fn list_folders(
     Path(id): Path<i64>,
 ) -> Result<Json<FolderListResponse>, ApiError> {
     let mailbox = owned_mailbox(&state.repos, MailboxId::new(id), user.user_id()).await?;
-    let folders = state
+    let stored = state
         .repos
         .folders
         .list(mailbox.mailbox_id())
         .await
         .map_err(ApiError::from)?;
+    // The sidebar renders these counters, and they are a cache. Move, copy and a hard
+    // delete used to leave them behind, so a folder that no longer holds the mail still
+    // wore its old badge. Recomputing here is what makes the next folder refresh true
+    // for mail that was already miscounted; a failed recount keeps the stored row
+    // rather than failing the whole list.
+    let mut folders = Vec::with_capacity(stored.len());
+    for folder in stored {
+        match state.repos.folders.recount(folder.folder_id()).await {
+            Ok(fresh) => folders.push(fresh),
+            Err(error) => {
+                tracing::warn!(
+                    folder_id = folder.id,
+                    error = %error,
+                    "folder counters could not be recomputed while listing folders"
+                );
+                folders.push(folder);
+            }
+        }
+    }
     Ok(Json(FolderListResponse {
         mailbox_id: mailbox.id,
         folders: folders.iter().map(FolderResponse::from_row).collect(),

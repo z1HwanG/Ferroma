@@ -438,6 +438,11 @@ function wireChrome() {
 
   byId('contacts-button').addEventListener('click', async () => {
     const { showContacts } = await import('./contacts.js');
+    setText(byId('list-title'), t('Contacts'));
+    setText(byId('list-count'), '');
+    byId('list-pane').classList.add('is-contacts');
+    setHidden(byId('list-empty'), true);
+    setHidden(byId('list-more'), true);
     await showContacts(byId('message-list'));
   });
 

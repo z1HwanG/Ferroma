@@ -71,6 +71,7 @@ export const zhCN = {
   'A key is required.': '必须填写键名。',
   'Add': '添加',
   'Add setting': '添加设置',
+  'Appearance': '外观',
   'Appended to every new message you compose.': '会附加到你撰写的每封新邮件末尾。',
   'Change password': '修改密码',
   'Changing…': '修改中…',
@@ -867,6 +868,7 @@ export const zhCN = {
   'When': '时间',
   'Where TLS is offered': '提供 TLS 的位置',
   'Windows': 'Windows',
+  'Writing': '写信',
   'Yes': '是',
 
   /* admin security */
@@ -897,7 +899,10 @@ export const zhCN = {
   'No application passwords yet.': '还没有应用专用密码。',
   'Off. A password is the only thing protecting this account.': '已关闭。账号仅由密码保护。',
   'On. Mail clients sign in with an application password.': '已开启。邮件客户端需使用应用专用密码登录。',
+  'Or enter this secret by hand.': '也可以手动输入这个密钥。',
   'Or use this URI if your app accepts one:': '如果你的应用接受 URI，也可以使用这一个：',
+  'QR code for your authenticator app': '供验证器应用扫描的二维码',
+  'Scan this code with your authenticator app.': '用验证器应用扫描这个二维码。',
   'Save these recovery codes now. Each one works once, and they are not shown again.': '请现在保存这些恢复码。每个只能使用一次，且不会再次显示。',
   'Set up two-factor authentication': '设置双因素认证',
   'That code did not match.': '验证码不匹配。',

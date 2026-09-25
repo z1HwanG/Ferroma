@@ -258,7 +258,7 @@ UTC 下的 RFC 3339 / ISO 8601，例如`2026-09-16T12:00:00Z`。除
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | `GET` | `/api/v1/auth/totp` | `{ "status": "disabled\|pending\|enabled", "recovery_codes_left": 0 }` |
-| `POST` | `/api/v1/auth/totp/enroll` | 签发`{ "secret", "uri" }`——处于`pending`，**尚未**强制执行 |
+| `POST` | `/api/v1/auth/totp/enroll` | 签发`{ "secret", "uri" }`——处于`pending`，**尚未**强制执行。Webmail 在页面内把 `uri` 画成二维码 |
 | `POST` | `/api/v1/auth/totp/confirm` | `{ "code": "123456" }`证明验证器持有该密钥；返回`{ "enabled": true, "recovery_codes": ["…"] }` |
 | `POST` | `/api/v1/auth/totp/disable` | `{ "password": "…" }` |
 | `GET` | `/api/v1/auth/app-passwords` | 全部应用专用密码，含已吊销的 |
@@ -561,7 +561,7 @@ PEM 文件，以及哪些端口提供 TLS。
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET` | `/api/v1/mailboxes` | 调用者的地址 |
-| `GET` | `/api/v1/mailboxes/:id/folders` | 带`message_count`、`unseen_count`、`special_use`的 IMAP 文件夹 |
+| `GET` | `/api/v1/mailboxes/:id/folders` | 带`message_count`、`unseen_count`、`special_use`的 IMAP 文件夹。每个文件夹在应答前都会按现存行重算，因此移动或删除留下的旧角标会在打开列表时修好 |
 | `POST` | `/api/v1/mailboxes/:id/folders` | `{name, parent?}` |
 | `PATCH` | `/api/v1/folders/:id` | `{name?, parent_id?, subscribed?}`。`parent_id: null` 表示移到顶层，数字表示移入该文件夹，省略该字段则父目录不变。移动会同时改写自身与所有子文件夹的路径（名字即路径）；若会形成「文件夹放进自己内部」的环则被拒绝 |
 | `DELETE` | `/api/v1/folders/:id` | 拒绝`INBOX` |
@@ -778,7 +778,10 @@ FCP 并存，并不取代其中任何一个。
 
 标准客户端用 `Authorization: Basic`（完整邮箱地址和它的密码）访问
 `GET /.well-known/jmap`，得到 RFC 8620 Session 对象。`401` 的
-`WWW-Authenticate` 会写明 `Basic`，客户端据此重发密码。同一次请求也接受
+`WWW-Authenticate` 会写明 `Basic`，客户端据此重发密码。这个 `401` 的
+`Content-Type` 是 `application/problem+json`，正文带 `type`（RFC 7807）；
+JMAP 客户端库需要这个字段，才会把状态当成认证失败并改试 Basic。同一份正文里
+仍有 Ferroma 的错误信封。同一次请求也接受
 `POST /api/jmap/auth/token`（`email`、`password`、`device_name`）签发的
 JMAP Bearer 令牌。该令牌只被 JMAP 端点接受；浏览器 cookie、普通 REST 令牌和
 FCP 令牌都会被拒绝。Basic 登录会复用该地址已经打开的 JMAP 会话，而不是每次请求都写一行。

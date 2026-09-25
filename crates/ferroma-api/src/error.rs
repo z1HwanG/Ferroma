@@ -86,6 +86,32 @@ pub fn method_not_allowed(message: &str) -> Response {
     )
 }
 
+/// A JMAP `401` as both the Ferroma envelope and an RFC 7807 problem.
+///
+/// `Content-Type` is `application/problem+json` and the body carries `type`,
+/// which is what a JMAP client library needs before it will treat the status as
+/// "try the other HTTP authentication scheme". `type` is a stable URI, not the
+/// localised `message`, so a translated detail cannot make the parse fail.
+fn problem_unauthorized(message: String) -> Response {
+    let body = serde_json::json!({
+        "type": "about:blank",
+        "status": StatusCode::UNAUTHORIZED.as_u16(),
+        "title": "Unauthorized",
+        "detail": message,
+        "error": {
+            "code": "unauthorized",
+            "message": message.clone(),
+        }
+    });
+    let mut response = (StatusCode::UNAUTHORIZED, Json(body)).into_response();
+    if let Ok(value) = HeaderValue::from_str("application/problem+json") {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_TYPE, value);
+    }
+    response
+}
+
 /// Anything a handler can return as a failure.
 ///
 /// Handlers use `?` on `Result<_, FerromaError>` and `Result<_, StorageError>` and let
@@ -232,15 +258,24 @@ impl IntoResponse for ApiError {
         let status = self.status();
         self.log(status);
 
-        let body = ErrorBody {
-            error: ErrorDetail {
-                code: self.code().to_string(),
-                message: self.client_message(),
-                details: self.details,
-            },
+        let mut response = if status == StatusCode::UNAUTHORIZED && self.www_authenticate {
+            // RFC 7807 problem+json, which is the only 401 body `jmap-client` 0.4
+            // (and therefore Flectar Mail) treats as an authentication failure.
+            // The management envelope below has no `type`, so that library's JSON
+            // parse fails and the client reports "Server failed: 401 Unauthorized"
+            // instead of retrying with Basic. The Ferroma envelope stays: `type`
+            // is only what the problem parser requires.
+            problem_unauthorized(self.client_message())
+        } else {
+            let body = ErrorBody {
+                error: ErrorDetail {
+                    code: self.code().to_string(),
+                    message: self.client_message(),
+                    details: self.details,
+                },
+            };
+            (status, Json(body)).into_response()
         };
-
-        let mut response = (status, Json(body)).into_response();
 
         // A JMAP client retries a 401 with the scheme named here. Without it, the
         // client that just sent the mailbox password has no reason to try Basic.
@@ -425,6 +460,64 @@ mod tests {
         assert!(!message.contains("password_hash"), "{message}");
         assert!(!message.contains("ferroma\\db"), "{message}");
         assert_eq!(message, "the server could not complete the request");
+    }
+
+    #[tokio::test]
+    async fn a_jmap_401_is_a_problem_document_a_client_can_parse() {
+        // `jmap-client` 0.4 only treats a 401 as an authentication failure when
+        // the body is `application/problem+json` *and* it has a `type`. Without
+        // that, Flectar Mail reports "Server failed: 401 Unauthorized" and never
+        // retries the mailbox password as Basic. The Ferroma envelope stays.
+        let response = ApiError::new(FerromaError::Unauthorized(
+            "invalid email address or password".into(),
+        ))
+        .with_www_authenticate()
+        .into_response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/problem+json")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(header::WWW_AUTHENTICATE)
+                .and_then(|value| value.to_str().ok()),
+            Some("Basic realm=\"jmap\", Bearer")
+        );
+        let bytes = to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("body must be readable");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("body must be JSON");
+        assert_eq!(json["type"], "about:blank");
+        assert_eq!(json["status"], 401);
+        assert_eq!(json["error"]["code"], "unauthorized");
+        assert!(json["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("invalid email address or password"));
+    }
+
+    #[tokio::test]
+    async fn a_management_401_keeps_the_documented_envelope() {
+        let response =
+            ApiError::new(FerromaError::Unauthorized("session expired".into())).into_response();
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json")
+        );
+        let bytes = to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("body must be readable");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("body must be JSON");
+        assert!(json.get("type").is_none(), "{json}");
+        assert_eq!(json["error"]["code"], "unauthorized");
     }
 
     #[tokio::test]

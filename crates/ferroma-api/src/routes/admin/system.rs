@@ -318,8 +318,10 @@ pub async fn count_mailboxes(state: &AppState) -> Option<i64> {
 
 /// How many stored messages exist.
 ///
-/// Derived from the folders' own `message_count` counters, which the repository
-/// maintains, rather than from a `COUNT(*)` this crate cannot issue.
+/// The figure is the folders' `message_count`, recomputed from the live rows first.
+/// Reading the cache as it stands would report mail a move or a delete had already
+/// taken out of the folder. A folder whose recount fails still contributes the number
+/// it already holds, so one bad folder does not blank the whole total.
 pub async fn count_messages(state: &AppState) -> Option<i64> {
     let domains = state.repos.domains.list().await.ok()?;
     let mut total = 0i64;
@@ -339,7 +341,18 @@ pub async fn count_messages(state: &AppState) -> Option<i64> {
                 .await
                 .unwrap_or_default();
             for folder in folders {
-                total += i64::from(folder.message_count);
+                let count = match state.repos.folders.recount(folder.folder_id()).await {
+                    Ok(fresh) => fresh.message_count,
+                    Err(error) => {
+                        tracing::warn!(
+                            folder_id = folder.id,
+                            error = %error,
+                            "folder counters could not be recomputed while counting messages"
+                        );
+                        folder.message_count
+                    }
+                };
+                total += i64::from(count);
                 counted_any = true;
             }
         }

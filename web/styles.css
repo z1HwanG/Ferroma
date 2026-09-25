@@ -1371,9 +1371,181 @@ html[data-theme-resolved="dark"] .reader-html {
 
 /* ----------------------------------------------------------------- settings */
 
+/* Three pages inside one dialog. The tab strip is the only chrome; each page is
+   a short stack, and the security page folds its forms until they are asked for.
+   `.settings-grid` remains the gap used by the enrollment and disable panes. */
 .settings-grid {
   display: grid;
   gap: 4px;
+}
+
+.settings-layout {
+  display: grid;
+  gap: 16px;
+}
+
+.settings-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+}
+
+.settings-tab {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+  cursor: pointer;
+  transition:
+    background-color var(--dur) var(--ease),
+    color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+
+.settings-tab:hover {
+  color: var(--text);
+}
+
+.settings-tab[aria-selected="true"] {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+
+.settings-panel {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
+.settings-panel .field,
+.settings-fold .field,
+.settings-fold .checkbox {
+  margin-bottom: 0;
+}
+
+.settings-panel .field-hint,
+.settings-fold .modal-message {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+
+.settings-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px 16px;
+  align-items: end;
+}
+
+.settings-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.settings-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.settings-inline > .input {
+  flex: 1 1 160px;
+  width: auto;
+  min-width: 0;
+}
+
+/* A disclosure, not a card. The summary is the whole hit target; the body sits
+   one step in, so an open form reads as belonging to the row above it. */
+.settings-fold {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.settings-fold + .settings-fold,
+.settings-stack > .settings-fold + .settings-stack {
+  margin-top: 0;
+}
+
+.settings-fold-summary {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  font-size: 13.5px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.settings-fold-summary:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+
+.settings-fold-summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-fold-summary::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 0.45em;
+  height: 0.45em;
+  margin-inline-end: 10px;
+  border-right: 1.6px solid currentColor;
+  border-bottom: 1.6px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform var(--dur) var(--ease);
+}
+
+.settings-fold[open] > .settings-fold-summary::before {
+  transform: rotate(45deg);
+}
+
+.settings-fold-body {
+  display: grid;
+  gap: 12px;
+  padding: 2px 14px 14px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.settings-panel textarea.input {
+  min-height: 72px;
+}
+
+@media (max-width: 520px) {
+  .settings-pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-tabs {
+    border-radius: var(--radius-sm);
+  }
+
+  .settings-tab {
+    padding-inline: 8px;
+  }
 }
 
 /* ------------------------------------------------------------------- toasts */
@@ -2293,6 +2465,254 @@ html.theme-switching .theme-toggle .icon {
   text-align: center;
 }
 
+/* ------------------------------------------------------------------ contacts
+   The list pane is a column of message rows. Contacts replace that column, so
+   they need their own surface: a quiet add strip, then one card per address.
+   The message-row rules still match anything inside #message-list, which is why
+   the card resets display and margin rather than hoping the cascade skips it. */
+
+#list-pane.is-contacts .bulk-bar {
+  display: none;
+}
+
+#message-list .contacts {
+  display: flex;
+}
+
+.contacts {
+  flex-direction: column;
+  min-height: 100%;
+  background: var(--surface);
+}
+
+.contact-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  background: linear-gradient(180deg, var(--surface), var(--surface-2));
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.contact-search-wrap {
+  position: relative;
+  display: block;
+}
+
+.contact-search-wrap > .icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  color: var(--text-faint);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.contact-search {
+  padding-left: 36px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+}
+
+.contact-search:focus {
+  background: var(--surface);
+}
+
+.contact-add-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.contact-add {
+  padding-inline: 12px 14px;
+}
+
+.contact-add .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.contact-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+}
+
+.contact-list .empty {
+  min-height: 160px;
+}
+
+.contact-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+.contact-card.is-favorite:not(.is-blocked) {
+  border-color: color-mix(in srgb, var(--warn) 42%, var(--border-subtle));
+}
+
+.contact-card.is-blocked {
+  background: color-mix(in srgb, var(--danger-soft) 55%, var(--surface));
+  border-color: color-mix(in srgb, var(--danger) 28%, var(--border-subtle));
+}
+
+.contact-identity {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.contact-avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.contact-card.is-blocked .contact-avatar {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.contact-card.is-favorite:not(.is-blocked) .contact-avatar {
+  background: color-mix(in srgb, var(--warn) 16%, var(--surface));
+  color: var(--warn);
+}
+
+.contact-who {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+
+.contact-address {
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.contact-display {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.contact-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.contact-fields .input {
+  min-height: 32px;
+  background: var(--surface-2);
+}
+
+.contact-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.contact-flags,
+.contact-commit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.contact-chip {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text-muted);
+  font-weight: 550;
+}
+
+.contact-chip .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.contact-chip:hover:not(:disabled) {
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+  color: var(--text);
+  transform: none;
+}
+
+.contact-chip-star[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  border-color: color-mix(in srgb, var(--warn) 50%, transparent);
+  color: var(--warn);
+}
+
+.contact-chip-star[aria-pressed="true"] .icon path {
+  fill: currentColor;
+  stroke: none;
+}
+
+.contact-chip-block[aria-pressed="true"] {
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 46%, transparent);
+  color: var(--danger);
+}
+
+.contact-save {
+  background: var(--surface);
+}
+
+.contact-delete {
+  color: var(--text-muted);
+}
+
+.contact-delete:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: transparent;
+  color: var(--danger);
+}
+
+@media (max-width: 1100px) {
+  .contact-add-form,
+  .contact-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .contact-add {
+    justify-self: stretch;
+  }
+}
+
 /* ------------------------------------------------------------- reading pane */
 
 .reader-head {
@@ -2707,7 +3127,29 @@ html.theme-switching .theme-toggle .icon {
 
 /* Second-factor enrollment and application passwords. A secret is read off the
    screen and typed into another device, so it is monospaced, wrapped and spaced
-   rather than set as prose that a reader has to keep their place in. */
+   rather than set as prose that a reader has to keep their place in.
+
+   The QR is fixed at 196px — 33 to 57 modules land on whole pixels there, so a
+   module is never blurred across two device pixels — and on a white field,
+   because a camera reads dark modules on a light ground and a theme-coloured one
+   would not survive the dark theme. The quiet zone is in the SVG itself. */
+.totp-qr {
+  width: 196px;
+  height: 196px;
+  margin: 4px 0 12px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: #000;
+}
+
+.totp-qr svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
 .secret-value {
   display: block;
   margin: 4px 0 8px;

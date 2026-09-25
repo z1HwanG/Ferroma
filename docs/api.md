@@ -273,7 +273,7 @@ The authenticated user, plus their addresses:
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/api/v1/auth/totp` | `{ "status": "disabled\|pending\|enabled", "recovery_codes_left": 0 }` |
-| `POST` | `/api/v1/auth/totp/enroll` | issue `{ "secret", "uri" }` — a `pending` enrollment, **not** enforced |
+| `POST` | `/api/v1/auth/totp/enroll` | issue `{ "secret", "uri" }` — a `pending` enrollment, **not** enforced. The Webmail draws `uri` as a QR code in the page |
 | `POST` | `/api/v1/auth/totp/confirm` | `{ "code": "123456" }` proves the authenticator holds the secret; answers `{ "enabled": true, "recovery_codes": ["…"] }` |
 | `POST` | `/api/v1/auth/totp/disable` | `{ "password": "…" }` |
 | `GET` | `/api/v1/auth/app-passwords` | every application password, revoked ones included |
@@ -588,7 +588,7 @@ that will fail its TLS handshakes while the configuration looks correct.
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/api/v1/mailboxes` | the caller's addresses |
-| `GET` | `/api/v1/mailboxes/:id/folders` | IMAP folders with `message_count`, `unseen_count`, `special_use` |
+| `GET` | `/api/v1/mailboxes/:id/folders` | IMAP folders with `message_count`, `unseen_count`, `special_use`. Each folder is recounted from its live rows before the response, so a badge a move or a delete left behind is repaired by opening the list |
 | `POST` | `/api/v1/mailboxes/:id/folders` | `{name, parent?}` |
 | `PATCH` | `/api/v1/folders/:id` | `{name?, parent_id?, subscribed?}`. `parent_id: null` moves the folder to the top level, a number moves it inside that folder, and omitting the field leaves the parent alone. A move re-paths the folder and its descendants — the name is the path — and is refused when it would put a folder inside itself |
 | `DELETE` | `/api/v1/folders/:id` | refuses `INBOX` |
@@ -811,7 +811,10 @@ a replacement for either.
 A standard client sends `Authorization: Basic` — the full mailbox address and its
 password — to `GET /.well-known/jmap` and receives the RFC 8620 Session object. A
 `401` names `Basic` in `WWW-Authenticate`, which is what tells the client to send
-that password. The same request also accepts a JMAP bearer token minted by
+that password. That `401` is `application/problem+json` and carries a `type`
+(RFC 7807), which is what a JMAP client library needs before it will treat the
+status as an authentication failure and try Basic. The Ferroma error envelope is
+still in the same body. The same request also accepts a JMAP bearer token minted by
 `POST /api/jmap/auth/token` (`email`, `password`, `device_name`). That token is
 accepted only by JMAP endpoints; browser cookies and ordinary REST or FCP bearer
 sessions are rejected. A Basic login reuses the JMAP session already open for that

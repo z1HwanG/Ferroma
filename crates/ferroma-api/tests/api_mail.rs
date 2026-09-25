@@ -1196,6 +1196,49 @@ async fn changing_a_flag_recounts_the_folder_it_lives_in() {
     app.cleanup().await;
 }
 
+/// Opening the folder list repairs a badge that no longer matches the mail.
+///
+/// The sidebar reads `message_count`. A move or a delete that predates the counter
+/// update left that column behind, and refreshing the list only reread it. The list
+/// now recomputes each folder from its live rows before answering.
+#[tokio::test]
+async fn listing_folders_recounts_a_badge_that_no_longer_matches() {
+    require_database!();
+    let (app, _admin, mailbox_id, token) = app_with_address().await;
+    let inbox = folder_id(&app, &token, mailbox_id, "INBOX").await;
+
+    app.db()
+        .execute(&format!(
+            "INSERT INTO messages (folder_id, mailbox_id, uid, size_bytes, storage_path, flags)
+             VALUES ({inbox}, {mailbox_id}, 1, 12, 'cur/stale.eml', '')"
+        ))
+        .await
+        .expect("message insert");
+    // The opposite of the truth: one live, unseen message, and a badge that says three.
+    app.db()
+        .execute(&format!(
+            "UPDATE folders SET message_count = 3, unseen_count = 3, total_bytes = 99
+              WHERE id = {inbox}"
+        ))
+        .await
+        .expect("stale counters");
+
+    let listed = app
+        .get(&format!("/api/v1/mailboxes/{mailbox_id}/folders"), Some(&token))
+        .await
+        .expect(StatusCode::OK);
+    let folder = listed["folders"]
+        .as_array()
+        .expect("folders")
+        .iter()
+        .find(|folder| folder["id"].as_i64() == Some(inbox))
+        .expect("INBOX");
+    assert_eq!(folder["message_count"], 1, "the badge must match the live row: {folder}");
+    assert_eq!(folder["unseen_count"], 1, "{folder}");
+
+    app.cleanup().await;
+}
+
 /// A word that appears only inside a message body is findable by the search box.
 ///
 /// The search box calls `GET /api/v1/messages?query=`, which matched the subject, the

@@ -5,10 +5,17 @@
  * The preferences are per-browser and live in localStorage (see `store.js`); the
  * password is the one thing here that belongs to the *account*, so it is the one
  * thing that goes to the server (`POST /api/v1/auth/password`).
+ *
+ * The dialog is three pages — writing, appearance, security — because a single
+ * column of every field made the common ones (a signature, a theme) sit under a
+ * scroll the reader had to earn. Password, the second factor and application
+ * passwords each stay collapsed until asked for: they are the rare visits, and
+ * an open enrollment form is a wall of secret the rest of the page does not need.
  */
 
 import { API_BASE, ApiError, request } from '../shared/api.js';
 import { el, setHidden, setText, svgIcon } from '../shared/dom.js';
+import { qrSvg } from '../shared/qr.js';
 import { LOCALES, currentLocale, setLocale, t, tn } from '../shared/i18n.js';
 import { openModal } from '../shared/modal.js';
 import { MESSAGES_PER_PAGE_CHOICES, PREF_DEFAULTS, getPrefs, savePrefs } from './store.js';
@@ -39,6 +46,7 @@ const FIELDS = {
   totpEnroll: 'settings-totp-enroll',
   totpPane: 'settings-totp-pane',
   totpSecret: 'settings-totp-secret',
+  totpQr: 'settings-totp-qr',
   totpUri: 'settings-totp-uri',
   totpCode: 'settings-totp-code',
   totpConfirm: 'settings-totp-confirm',
@@ -123,10 +131,12 @@ function themeControl() {
  *
  * Three things about it are deliberate.
  *
- * There is no QR image. Rendering one would mean either a QR library or a request to
- * somebody else's service, and shipping the second is out of the question for a page
- * that is holding a shared secret. The secret is shown in groups an authenticator can
- * accept by hand, with the `otpauth://` URI beside it for an app that takes one.
+ * The QR image is drawn in the page, from the `otpauth://` URI, and never fetched:
+ * this page is holding the shared secret, so handing it to another service to render
+ * is out of the question, and the front ends have no build step to vendor a QR
+ * library into. The grouped secret stays beside the picture, because a camera that
+ * cannot read it is the case the manual entry exists for, and a picture that failed
+ * to draw must never be the only copy of the secret.
  *
  * The recovery codes and a new application password are shown **once**, because only
  * digests are stored on the server. The panel says so rather than leaving the user to
@@ -148,6 +158,7 @@ function securitySection() {
   /* ------------------------------------------------------------ enrollment */
 
   const secret = el('code', { class: 'secret-value', id: FIELDS.totpSecret });
+  const qr = el('div', { class: 'totp-qr', id: FIELDS.totpQr, hidden: true });
   const uri = el('code', { class: 'secret-value', id: FIELDS.totpUri });
   const code = el('input', {
     class: 'input',
@@ -161,7 +172,9 @@ function securitySection() {
   const recovery = el('ul', { class: 'secret-list', id: FIELDS.totpRecovery, hidden: true });
   const pane = el('div', { class: 'settings-grid', id: FIELDS.totpPane, hidden: true }, [
     el('div', { class: 'field' }, [
-      el('p', { class: 'modal-message', text: t('Enter this secret in your authenticator app.') }),
+      el('p', { class: 'modal-message', text: t('Scan this code with your authenticator app.') }),
+      qr,
+      el('p', { class: 'modal-message', text: t('Or enter this secret by hand.') }),
       secret,
       el('p', { class: 'modal-message', text: t('Or use this URI if your app accepts one:') }),
       uri,
@@ -325,6 +338,7 @@ function securitySection() {
       const payload = await request(`${API_BASE}/auth/totp/enroll`, { method: 'POST', toast: false });
       setText(secret, groupSecret(payload.secret));
       setText(uri, payload.uri);
+      showQr(qr, payload.uri);
       recovery.replaceChildren();
       setHidden(pane, false);
       setHidden(recovery, true);
@@ -408,17 +422,35 @@ function securitySection() {
 
   create.addEventListener('click', createPassword);
 
-  const node = el('div', { class: 'settings-grid' }, [
-    el('h3', { class: 'card-title', text: t('Two-factor authentication') }),
-    el('div', { class: 'field' }, [status, enroll, pane, disablePane, error]),
-    el('h3', { class: 'card-title', text: t('Application passwords') }),
+  // Both blocks start closed. Enrollment, the disable form and the create form
+  // are the long part of this page; a status line is enough until someone asks.
+  const factorBody = el('div', { class: 'settings-fold-body' }, [
+    status,
+    enroll,
+    pane,
+    disablePane,
+    error,
+  ]);
+  const factor = el('details', { class: 'settings-fold' }, [
+    el('summary', { class: 'settings-fold-summary', text: t('Two-factor authentication') }),
+    factorBody,
+  ]);
+
+  const passwordsBody = el('div', { class: 'settings-fold-body' }, [
     el('p', {
       class: 'modal-message',
       text: t('For mail clients that cannot ask for a code. Each one is a full credential for this account.'),
     }),
-    el('div', { class: 'field' }, [label, create, fresh]),
+    el('div', { class: 'settings-inline' }, [label, create]),
+    fresh,
     list,
   ]);
+  const passwords = el('details', { class: 'settings-fold' }, [
+    el('summary', { class: 'settings-fold-summary', text: t('Application passwords') }),
+    passwordsBody,
+  ]);
+
+  const node = el('div', { class: 'settings-stack' }, [factor, passwords]);
 
   return { node, reload };
 }
@@ -452,6 +484,32 @@ export function groupSecret(value) {
     .trim();
 }
 
+/**
+ * Draw `uri` into `node` as a QR code, or hide the node when it cannot be drawn.
+ *
+ * The markup comes from [`qrSvg`], which builds one path from the encoded modules.
+ * It is parsed into a detached document and the node moved across, rather than
+ * assigned as markup: the reading pane is the one place this app renders markup,
+ * and it does so in a sandboxed frame. The secret stays on screen as text either
+ * way, so a picture that failed to draw is an inconvenience rather than the loss
+ * of the only copy.
+ *
+ * @param {HTMLElement} node
+ * @param {string} uri
+ */
+export function showQr(node, uri) {
+  const svg = qrSvg(String(uri || ''));
+  if (svg === null) {
+    node.replaceChildren();
+    setHidden(node, true);
+    return;
+  }
+  const picture = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement;
+  picture.setAttribute('aria-label', t('QR code for your authenticator app'));
+  node.replaceChildren(node.ownerDocument.importNode(picture, true));
+  setHidden(node, false);
+}
+
 export function openSettings() {
   const prefs = getPrefs();
 
@@ -463,7 +521,7 @@ export function openSettings() {
     value: prefs.displayName,
   });
 
-  const signature = el('textarea', { class: 'input', id: FIELDS.signature, rows: '6', spellcheck: 'true' });
+  const signature = el('textarea', { class: 'input', id: FIELDS.signature, rows: '3', spellcheck: 'true' });
   signature.value = prefs.signature;
 
   const theme = themeControl();
@@ -516,7 +574,7 @@ export function openSettings() {
   const passwordStatus = el('p', { class: 'field-error', id: FIELDS.passwordStatus, role: 'alert', hidden: true });
   const changePassword = el('button', { type: 'submit', class: 'btn', text: t('Change password') });
 
-  const passwordForm = el('form', { class: 'settings-grid', id: 'settings-password' }, [
+  const passwordForm = el('form', { class: 'settings-stack', id: 'settings-password' }, [
     el('div', { class: 'field' }, [
       el('label', { class: 'field-label', for: FIELDS.passwordCurrent, text: t('Current password') }),
       currentPassword,
@@ -529,7 +587,8 @@ export function openSettings() {
       el('label', { class: 'field-label', for: FIELDS.passwordConfirm, text: t('Repeat the new password') }),
       confirmPassword,
     ]),
-    el('div', { class: 'field' }, [changePassword, passwordStatus]),
+    el('div', { class: 'settings-actions' }, [changePassword]),
+    passwordStatus,
   ]);
 
   /** Show or clear the inline message under the password form. */
@@ -586,36 +645,116 @@ export function openSettings() {
 
   const security = securitySection();
 
-  const body = el('div', { class: 'settings-grid' }, [
+  // Three pages, not one column. Writing is what someone opens Settings for;
+  // appearance is a glance; security is the rare visit and starts collapsed.
+  const writing = el('div', { class: 'settings-panel', role: 'tabpanel', id: 'settings-panel-writing' }, [
     el('div', { class: 'field' }, [
       el('label', { class: 'field-label', for: FIELDS.displayName, text: t('Display name') }),
       displayName,
-      el('p', { class: 'modal-message', text: t('Used for the From line of new messages.') }),
+      el('p', { class: 'field-hint', text: t('Used for the From line of new messages.') }),
     ]),
     el('div', { class: 'field' }, [
       el('label', { class: 'field-label', for: FIELDS.signature, text: t('Signature') }),
       signature,
-      el('p', { class: 'modal-message', text: t('Appended to every new message you compose.') }),
+      el('p', { class: 'field-hint', text: t('Appended to every new message you compose.') }),
     ]),
+  ]);
+
+  const appearance = el('div', {
+    class: 'settings-panel',
+    role: 'tabpanel',
+    id: 'settings-panel-appearance',
+    hidden: true,
+  }, [
     el('div', { class: 'field' }, [
       el('span', { class: 'field-label', text: t('Theme') }),
       theme.node,
     ]),
-    el('div', { class: 'field' }, [
-      el('label', { class: 'field-label', for: FIELDS.language, text: t('Language') }),
-      language,
-    ]),
-    el('div', { class: 'field' }, [
-      el('label', { class: 'field-label', for: FIELDS.perPage, text: t('Messages per page') }),
-      perPage,
+    el('div', { class: 'settings-pair' }, [
+      el('div', { class: 'field' }, [
+        el('label', { class: 'field-label', for: FIELDS.language, text: t('Language') }),
+        language,
+      ]),
+      el('div', { class: 'field' }, [
+        el('label', { class: 'field-label', for: FIELDS.perPage, text: t('Messages per page') }),
+        perPage,
+      ]),
     ]),
     el('label', { class: 'checkbox', for: FIELDS.markReadOnOpen }, [
       markRead,
       el('span', { text: t('Mark messages as read when I open them') }),
     ]),
-    el('h3', { class: 'card-title', text: t('Password') }),
-    passwordForm,
+  ]);
+
+  const passwordFold = el('details', { class: 'settings-fold' }, [
+    el('summary', { class: 'settings-fold-summary', text: t('Password') }),
+    el('div', { class: 'settings-fold-body' }, [passwordForm]),
+  ]);
+
+  const account = el('div', {
+    class: 'settings-panel',
+    role: 'tabpanel',
+    id: 'settings-panel-security',
+    hidden: true,
+  }, [
+    passwordFold,
     security.node,
+  ]);
+
+  const panels = [
+    { id: 'writing', label: t('Writing'), node: writing },
+    { id: 'appearance', label: t('Appearance'), node: appearance },
+    { id: 'security', label: t('Security'), node: account },
+  ];
+
+  const tabs = el('div', { class: 'settings-tabs', role: 'tablist', 'aria-label': t('Settings') });
+  const tabButtons = [];
+  const showPanel = (id) => {
+    for (const panel of panels) setHidden(panel.node, panel.id !== id);
+    for (const button of tabButtons) {
+      const on = button.dataset.panel === id;
+      button.setAttribute('aria-selected', on ? 'true' : 'false');
+      button.tabIndex = on ? 0 : -1;
+    }
+  };
+  for (const panel of panels) {
+    const button = el('button', {
+      type: 'button',
+      class: 'settings-tab',
+      role: 'tab',
+      id: `settings-tab-${panel.id}`,
+      'aria-controls': panel.node.id,
+      'aria-selected': panel.id === 'writing' ? 'true' : 'false',
+      tabindex: panel.id === 'writing' ? '0' : '-1',
+      dataset: { panel: panel.id },
+      text: panel.label,
+    });
+    button.addEventListener('click', () => showPanel(panel.id));
+    tabButtons.push(button);
+    tabs.append(button);
+    panel.node.setAttribute('aria-labelledby', button.id);
+  }
+  // Arrow keys move between pages the way a tablist does; the buttons are not a
+  // toolbar, so Left and Right are the reading direction rather than a shortcut.
+  tabs.addEventListener('keydown', (event) => {
+    const current = tabButtons.findIndex((button) => button.getAttribute('aria-selected') === 'true');
+    if (current < 0) return;
+    let next = current;
+    if (event.key === 'ArrowRight') next = (current + 1) % tabButtons.length;
+    else if (event.key === 'ArrowLeft') next = (current - 1 + tabButtons.length) % tabButtons.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = tabButtons.length - 1;
+    else return;
+    event.preventDefault();
+    showPanel(panels[next].id);
+    tabButtons[next].focus();
+  });
+
+  const body = el('div', { class: 'settings-layout' }, [
+    tabs,
+    writing,
+    appearance,
+    account,
   ]);
 
   const close = el('button', { type: 'button', class: 'btn', text: t('Close') });

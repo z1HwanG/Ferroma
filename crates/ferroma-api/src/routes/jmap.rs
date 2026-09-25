@@ -268,13 +268,28 @@ async fn mailbox_get(
         .await
         .map_err(server)?;
     for address in addresses {
-        for folder in state
+        for stored in state
             .repos
             .folders
             .list(address.mailbox_id())
             .await
             .map_err(server)?
         {
+            // `totalEmails` / `unreadEmails` are the same denormalised counters the
+            // Webmail sidebar reads. Listing recomputes them, so a client that asks
+            // Mailbox/get after a move does not keep the count the move left behind.
+            // A failed recount keeps the stored row rather than dropping the mailbox.
+            let folder = match state.repos.folders.recount(stored.folder_id()).await {
+                Ok(fresh) => fresh,
+                Err(error) => {
+                    tracing::warn!(
+                        folder_id = stored.id,
+                        error = %error,
+                        "folder counters could not be recomputed for Mailbox/get"
+                    );
+                    stored
+                }
+            };
             if wanted
                 .as_ref()
                 .is_none_or(|ids| ids.contains(&folder.id.to_string()))

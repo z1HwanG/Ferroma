@@ -175,11 +175,21 @@ export function renderList() {
   const list = byId('message-list');
   const loadMore = byId('list-more');
   const empty = byId('list-empty');
+  // Contacts borrow this pane and leave a marker. Dropping it here, before the
+  // signature check, is what returns the listbox role and the bulk bar even when
+  // the messages themselves have not changed.
+  const leavingContacts = list.dataset.contactsRole !== undefined;
+  if (leavingContacts) {
+    byId('list-pane').classList.remove('is-contacts');
+    list.setAttribute('role', list.dataset.contactsRole);
+    list.setAttribute('aria-multiselectable', 'true');
+    delete list.dataset.contactsRole;
+  }
 
   // Repainting on every state change would drop the row a keyboard user is on;
   // only a change to what the list actually shows is worth rebuilding for.
   const signature = listSignature(state);
-  if (signature === renderedSignature) return;
+  if (signature === renderedSignature && !leavingContacts) return;
   renderedSignature = signature;
 
   const allChecked = state.messages.length > 0 && state.messages.every((message) => state.checked.has(message.id));
@@ -200,6 +210,9 @@ export function renderList() {
   if (state.messages.length === 0) {
     list.hidden = true;
     setHidden(loadMore, true);
+    // The pill is written only on the path that has rows. Leaving it alone here
+    // kept the previous folder's "3 / 3" next to "This folder is empty."
+    setText(byId('list-count'), '');
     // Keep whatever the empty pane said while a load is in flight, so the pane
     // never flashes between "empty" and the arriving content.
     if (!state.listLoading) {

@@ -1085,9 +1085,13 @@ HAVING f.message_count <> COUNT(m.id) FILTER (WHERE m.expunged_at IS NULL)
 
 `FoldersRepository::recount(folder_id)` is the repair: it recomputes all three
 counters and returns the updated `Folder`. `MailboxesRepository::recompute_usage`
-does the same for `users.used_bytes`.
+does the same for `users.used_bytes`. Move, copy, a hard delete and a change to
+`\Seen` also shift the three folder columns in the same transaction as the row,
+so a folder does not keep counting mail that has already left. A folder that was
+already behind is still repaired by the next `recount`, and by opening the folder
+list: `GET /api/v1/mailboxes/:id/folders` recomputes each folder before it answers.
 
-A wrong `message_count` is cosmetic — the folder list shows the wrong number.
+A wrong `message_count` is what the folder list shows until that recount runs.
 A wrong `uid_next` is not: it is the UID allocator, and `MessagesRepository::max_uid`
 (`SELECT COALESCE(MAX(uid), 0) FROM messages WHERE folder_id = $1`) is the value it
 must be at least. If `uid_next` is ever behind `max_uid`, the next delivery
