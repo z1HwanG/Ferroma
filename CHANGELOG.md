@@ -14,6 +14,20 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ## [Unreleased]
 
+## [0.1.16] — 2026-09-25
+
+### Fixed
+
+- **A JMAP client that requires EmailSubmission can connect.** The Session
+  advertised only core and mail. Flectar Mail (`jmap-client`) stops before
+  opening the mailbox with `server does not advertise JMAP EmailSubmission`
+  when `urn:ietf:params:jmap:submission` is missing from the session or the
+  account. The capability is now advertised in both places, with that account
+  as its primary account. `Identity/get` lists the account's own addresses, and
+  `EmailSubmission/set` submits a stored RFC 5322 message through the same Sent
+  copy and outbound queue as Webmail. A `Bcc` header is removed from the copy
+  that is stored; its addresses stay on the envelope.
+
 ## [0.1.15] — 2026-09-25
 
 ### Fixed

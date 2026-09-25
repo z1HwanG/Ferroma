@@ -828,14 +828,57 @@ address instead of writing one row per request.
 | `POST` | `/api/jmap/upload/:accountId` | upload one raw blob |
 | `GET` | `/api/jmap/download/:accountId/:blobId` | download an owned blob |
 
-The method endpoint currently supports `Mailbox/get`, `Email/query`, `Email/get`,
-`Email/set`, and `Email/import`. `Email/set` changes standard seen/flagged keywords
-or destroys an email through the shared message service, so its changes are visible to
-IMAP and FCP cursor sync. `Email/import` consumes a blob returned by the upload
-endpoint and files the parsed RFC 5322 message into a selected existing folder.
+The Session advertises `urn:ietf:params:jmap:submission` both as a server
+capability and on the account, with that account as `primaryAccounts` for it.
+A client that can read mail but is refused at setup with `server does not
+advertise JMAP EmailSubmission` is looking for this URI. The account capability
+sets `maxDelayedSend` to `0` and `submissionExtensions` to an empty object:
+delayed sending and SMTP extension parameters are not offered.
 
-This first cut deliberately does not advertise push, calendars, contacts, Sieve,
-Mailbox mutations, arbitrary custom keyword patches, multi-mailbox Email membership,
-or the full MIME-body property set. Clients must poll the JMAP state returned by the
-Session and method responses. Those unsupported pieces are not claimed as RFC 8621
-complete support.
+The method endpoint supports `Mailbox/get`, `Mailbox/set`, `Mailbox/changes`,
+`Email/query`, `Email/get`, `Email/set`, `Email/changes`, `Email/import`,
+`Identity/get`, `EmailSubmission/get` and `EmailSubmission/set`. A request may
+take an argument from an earlier call in the same request with a `#` result
+reference (RFC 8620 §3.7), and a creation id (`#id`) names an object created by
+an earlier call. `Mailbox/set` creates, renames, reparents, subscribes and
+destroys folders through the same Maildir path the Webmail uses. A standard
+folder (`INBOX` and any folder with a role) cannot be renamed or destroyed, and
+`myRights` says so. Destroying a folder permanently deletes the mail inside it
+and refuses while it still has a child.
+
+`Email/get` returns the message metadata and, when the client asks for them,
+`textBody`, `htmlBody`, `bodyValues`, `bodyStructure` and `attachments`.
+`properties` limits the object; `fetchTextBodyValues`, `fetchHTMLBodyValues`,
+`fetchAllBodyValues` and `maxBodyValueBytes` decide whether and how much of a
+body is inlined. `Email/query` filters on `inMailbox`, `from`, `to`, `subject`,
+`text`, `body`, `hasKeyword`, `notKeyword`, `hasAttachment`, `after` and
+`before`, and sorts by one of `receivedAt`, `sentAt`, `size`, `from` or
+`subject`. `hasKeyword: "$seen"` matches mail that has been read. A filter
+operator, a second sort comparator and `collapseThreads` are rejected rather
+than silently ignored. The query does not calculate changes
+(`canCalculateChanges` is false), so a folder view re-runs the query.
+
+`Email/set` creates a draft from the structured properties (`mailboxIds`,
+`keywords`, the address fields, `subject`, `textBody` and `htmlBody`), replaces
+or patches the keyword set (`$seen`, `$flagged`, `$answered`, `$draft` and a
+private keyword), moves an email by setting its single `mailboxIds` entry, or
+destroys it. The account's `maxMailboxesPerEmail` is `1`, so an email cannot
+belong to two folders. `Email/import` still files an uploaded RFC 5322 blob.
+`Email/changes` and `Mailbox/changes` read the same change log FCP does. The
+state string is that log's cursor. A page that fills `maxObjectsInGet` sets
+`hasMoreChanges` and returns the cursor of its last row, so the next call
+continues rather than skipping.
+
+`Identity/get` lists the account's enabled addresses; an Identity is that mailbox,
+not a separately stored object. `EmailSubmission/set` submits one already stored
+Email through the same Sent-copy and queue transaction as Webmail. The stored
+RFC 5322 bytes are what is queued. A `Bcc` header is removed from that copy
+before it is stored, while its addresses stay on the envelope. `onSuccessDestroyEmail`
+may name the source Email as `#id`, which is how a client drops the draft it just
+sent. The submission object itself is not stored.
+
+This surface is enough for a JMAP mail client to list folders, read, file, move
+and send. It does not advertise push, calendars, contacts, Sieve, vacation
+responses, quotas, sharing, or a message in more than one mailbox. Clients poll
+the state the Session and the `/changes` methods return. Those unsupported
+pieces are not claimed as RFC 8621 complete support.

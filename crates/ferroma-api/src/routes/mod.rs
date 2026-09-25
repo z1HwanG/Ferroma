@@ -20,5 +20,6 @@ pub mod auth;
 pub mod client;
 pub mod health;
 pub mod jmap;
+pub mod jmap_logic;
 pub mod mfa;
 pub mod mail;

@@ -794,11 +794,46 @@ FCP 令牌都会被拒绝。Basic 登录会复用该地址已经打开的 JMAP �
 | `POST` | `/api/jmap/upload/:accountId` | 上传一个原始二进制对象 |
 | `GET` | `/api/jmap/download/:accountId/:blobId` | 下载当前账户拥有的对象 |
 
-方法端点当前支持 `Mailbox/get`、`Email/query`、`Email/get`、`Email/set` 和
-`Email/import`。`Email/set` 经由共享邮件服务修改标准的已读/旗标关键字，或删除邮件，
-因此变更会进入 IMAP 与 FCP 游标同步所用的同一条变更日志。`Email/import` 使用上传端点
-返回的对象，并将解析后的 RFC 5322 邮件存入选定的既有文件夹。
+Session 同时在服务器能力与账户能力中声明 `urn:ietf:params:jmap:submission`，
+并把该账户写进它的 `primaryAccounts`。一个能读邮件、却在建立时被
+`server does not advertise JMAP EmailSubmission` 拒绝的客户端，找的就是这个 URI。
+账户能力把 `maxDelayedSend` 设为 `0`，`submissionExtensions` 设为空对象：
+不提供延迟发送，也不接受 SMTP 扩展参数。
 
-首批实现刻意不宣称支持推送、日历、联系人、Sieve、Mailbox 写操作、任意自定义关键字
-补丁、多邮箱 Email 成员关系，或完整 MIME 正文属性集。客户端必须轮询 Session 与方法
-响应返回的 JMAP state；上述未实现部分不构成完整 RFC 8621 支持。
+方法端点支持 `Mailbox/get`、`Mailbox/set`、`Mailbox/changes`、`Email/query`、
+`Email/get`、`Email/set`、`Email/changes`、`Email/import`、`Identity/get`、
+`EmailSubmission/get` 和 `EmailSubmission/set`。同一次请求可以用 `#` 结果引用
+取前一次调用的返回值（RFC 8620 §3.7），创建 id（`#id`）指向同一次请求里更早创建的对象。
+`Mailbox/set` 经由与 Webmail 相同的 Maildir 路径创建、改名、改父级、改订阅和删除文件夹。
+标准文件夹（`INBOX` 以及任何带 role 的文件夹）不能改名或删除，`myRights` 也如此声明。
+删除文件夹会永久删除其中的邮件；它还有子文件夹时会被拒绝。
+
+`Email/get` 返回邮件元数据，并在客户端要求时返回 `textBody`、`htmlBody`、
+`bodyValues`、`bodyStructure` 和 `attachments`。`properties` 限制返回的字段；
+`fetchTextBodyValues`、`fetchHTMLBodyValues`、`fetchAllBodyValues` 和
+`maxBodyValueBytes` 决定正文是否内联、内联多少。`Email/query` 可按 `inMailbox`、
+`from`、`to`、`subject`、`text`、`body`、`hasKeyword`、`notKeyword`、
+`hasAttachment`、`after` 和 `before` 过滤，并按 `receivedAt`、`sentAt`、`size`、
+`from`、`subject` 其中之一排序。`hasKeyword: "$seen"` 匹配已读邮件。过滤运算符、
+第二个排序条件和 `collapseThreads` 会被拒绝，而不是被静默忽略。查询不计算增量
+（`canCalculateChanges` 为 false），所以文件夹视图要重新执行查询。
+
+`Email/set` 用结构化属性创建草稿（`mailboxIds`、`keywords`、地址字段、`subject`、
+`textBody`、`htmlBody`），整体替换或逐个补丁关键字（`$seen`、`$flagged`、
+`$answered`、`$draft` 以及私有关键字），通过设置唯一的 `mailboxIds` 移动邮件，
+或删除邮件。账户的 `maxMailboxesPerEmail` 为 `1`，因此一封邮件不能同时属于两个文件夹。
+`Email/import` 仍把上传的 RFC 5322 对象存入文件夹。`Email/changes` 和
+`Mailbox/changes` 读的是 FCP 所用的同一条变更日志，state 字符串就是这条日志的游标。
+一页填满 `maxObjectsInGet` 时会置 `hasMoreChanges`，并返回该页最后一行的游标，
+下一次调用从这里继续，而不是跳过。
+
+`Identity/get` 列出该账户已启用的地址；一个 Identity 就是那个邮箱，而不是另存的对象。
+`EmailSubmission/set` 把一封已经存储的 Email 交给与 Webmail 相同的 Sent 副本与队列事务。
+入队的是存储下来的 RFC 5322 字节。`Bcc` 头会在存入这份副本之前去掉，
+地址仍留在信封上。`onSuccessDestroyEmail` 可以用 `#id` 指向源邮件，
+客户端借此删掉刚刚发出的草稿。提交对象本身不存储。
+
+这个接口足够一个 JMAP 邮件客户端列出文件夹、阅读、归档、移动和发送。它不宣称
+支持推送、日历、联系人、Sieve、休假回复、配额、共享，或一封邮件同时属于多个邮箱。
+客户端轮询 Session 和 `/changes` 方法返回的 state。上述未实现部分不构成完整
+RFC 8621 支持。

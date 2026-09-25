@@ -348,7 +348,7 @@ fixes it rather than leaving you to guess:
 | 2. Collect configuration | asks interactively: mail domain, MX hostname, admin address, database address, API port (default `127.0.0.1:18080`) |
 | 3. Write `.env` | generates a random database password and `FERROMA_JWT_SECRET`, mode 600; **it is the only configuration file** |
 | 4. Create the role and the database | tries, in order: `sudo -u postgres` (peer auth), the `psql` **inside a PostgreSQL container on this host** (how 1Panel and similar panels run it, through `docker exec`), and the superuser named by `--pg-password`; if none works it prints SQL you can paste — in the `docker exec` form when the database is a container |
-| 5. Build the image | a local `docker build` (10–30 minutes the first time). Pass `--image wesukilaye/ferroma:0.1.15` to pull the release instead — the same command skips the build entirely |
+| 5. Build the image | a local `docker build` (10–30 minutes the first time). Pass `--image wesukilaye/ferroma:0.1.16` to pull the release instead — the same command skips the build entirely |
 | 6. Create the schema | runs `ferroma database init` in the container (which also creates the database when it is missing) |
 | 7. Install the certificate | installs the certificate into `./tls` as uid 10001 for 465/993, and checks that the SAN covers the MX hostname |
 | 8. Start | `docker compose up -d`, waiting up to 3 minutes for the health check and printing the log on timeout |
@@ -552,7 +552,7 @@ refuse to start without the required ones.
 | `FERROMA_JWT_SECRET` | `openssl rand -base64 48` | prod (`:?`) | signs access/refresh tokens. `scripts/deploy.sh` generates it into `.env`; the server also generates one into the data volume when no value is stated |
 | `FERROMA_HOSTNAME` | `mail.example.com` | prod (`:?`) | must equal the PTR record. `scripts/deploy.sh` writes it |
 | `FERROMA_PUBLIC_URL` | `https://mail.example.com` | prod (`:?`) | used in `.well-known/ferroma` and in links. `scripts/deploy.sh` writes it |
-| `FERROMA_VERSION` | `0.1.15` | prod (`:?`) | a released image tag; prod never builds |
+| `FERROMA_VERSION` | `0.1.16` | prod (`:?`) | a released image tag; prod never builds |
 
 Stating any of these in the environment wins over the wizard, which is the point: a
 deployment that knows its identity sets it once, and an instance being set up by hand gets
@@ -1616,7 +1616,7 @@ file rather than an edit. That is why step 1 is step 1.
 
 ```bash
 # Roll the image back.
-sed -i 's/^FERROMA_VERSION=.*/FERROMA_VERSION=0.1.15/' .env
+sed -i 's/^FERROMA_VERSION=.*/FERROMA_VERSION=0.1.16/' .env
 docker compose -f docker-compose.yml pull ferroma
 docker compose -f docker-compose.yml up -d ferroma
 ```
@@ -1753,7 +1753,7 @@ For a **single-host private registry** instead of Docker Hub, point
 ```json
 {
   "status": "ok",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "protocol_version": 1,
   "uptime_secs": 84213,
   "database": { "ok": true, "server_version": "PostgreSQL 16.15",

@@ -11,6 +11,18 @@ Ferroma 的重要变更，新的在前。
 
 ## [未发布]
 
+## [0.1.16] — 2026-09-25
+
+### 修复
+
+- **要求 EmailSubmission 的 JMAP 客户端可以连接。** Session 原先只声明 core 与 mail。
+  Flectar Mail（`jmap-client`）在会话或账户缺少
+  `urn:ietf:params:jmap:submission` 时，会在打开邮箱之前以
+  `server does not advertise JMAP EmailSubmission` 停止。该能力现在两处都声明，
+  并把该账户作为它的主账户。`Identity/get` 列出账户自己的地址，
+  `EmailSubmission/set` 把已存储的 RFC 5322 邮件交给与 Webmail 相同的 Sent 副本和
+  出站队列。存下的那份副本会去掉 `Bcc` 头；地址仍留在信封上。
+
 ## [0.1.15] — 2026-09-25
 
 ### 修复

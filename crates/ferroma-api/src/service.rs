@@ -383,6 +383,163 @@ impl MessageService {
         })
     }
 
+    /// Submit an already-formed RFC 5322 message as the authenticated user.
+    ///
+    /// JMAP `EmailSubmission/set` uses this. The bytes are stored as they arrived:
+    /// rebuilding them would drop attachments and rewrite headers the client already
+    /// signed. `from` must be an address the caller owns, and the envelope recipients
+    /// are the only addresses that enter the outbound queue.
+    pub async fn submit_raw(
+        &self,
+        user: UserId,
+        from: &str,
+        raw: &[u8],
+        envelope_recipients: &[String],
+    ) -> Result<SendResult, FerromaError> {
+        if raw.len() as u64 > self.config.limits.max_message_size {
+            return Err(FerromaError::LimitExceeded(format!(
+                "message exceeds the limit of {} bytes",
+                self.config.limits.max_message_size
+            )));
+        }
+        if envelope_recipients.is_empty() {
+            return Err(FerromaError::Invalid(
+                "a message needs at least one recipient".to_string(),
+            ));
+        }
+        if envelope_recipients.len() > self.config.limits.max_recipients {
+            return Err(FerromaError::LimitExceeded(format!(
+                "{} recipients exceeds the limit of {}",
+                envelope_recipients.len(),
+                self.config.limits.max_recipients
+            )));
+        }
+        self.check_send_limits(user, envelope_recipients.len())
+            .await?;
+
+        let (mailbox, domain) =
+            crate::routes::mail::store::resolve_sender(&self.repos, from, user).await?;
+        let mut parsed = ferroma_mail::ParsedMessage::parse_with_limits(
+            raw,
+            &ferroma_mail::message::ParseLimits::from_limits(&self.config.limits),
+        )?;
+        // RFC 5322 forbids a Bcc header on a copy that leaves the sender. The
+        // addresses still travel in the envelope; only the visible header is
+        // removed, and the body bytes are left untouched.
+        let raw = if parsed.headers.contains("Bcc") {
+            parsed.headers.remove("Bcc");
+            let mut without_bcc = parsed.headers.render().into_bytes();
+            let (_headers, body) = split_stored_body(raw);
+            without_bcc.extend_from_slice(body);
+            without_bcc
+        } else {
+            raw.to_vec()
+        };
+        let raw = raw.as_slice();
+        self.repos
+            .folders
+            .ensure_standard(mailbox.mailbox_id())
+            .await?;
+        self.maildir.ensure_mailbox(&domain, &mailbox.local_part)?;
+        let folder = self
+            .repos
+            .folders
+            .find_by_name(mailbox.mailbox_id(), "Sent")
+            .await?
+            .ok_or_else(|| FerromaError::NotFound("folder Sent".to_string()))?;
+        let staged = self
+            .maildir
+            .store(&domain, &mailbox.local_part, "Sent", raw, "seen")?;
+
+        let mut attachments = Vec::new();
+        for part in parsed.attachments() {
+            if part.content.is_empty() {
+                continue;
+            }
+            let blob = match self.attachments.store(&part.content) {
+                Ok(blob) => blob,
+                Err(error) => {
+                    let _ = self.maildir.delete(&staged.path);
+                    return Err(error.into());
+                }
+            };
+            attachments.push(ferroma_storage::SubmissionAttachment {
+                filename: part.filename(),
+                content_type: part.content_type.to_string(),
+                size_bytes: blob.size as i64,
+                storage_path: blob.path,
+                content_id: part.content_id().map(str::to_string),
+                is_inline: part
+                    .disposition()
+                    .is_some_and(|value| value.eq_ignore_ascii_case("inline")),
+                checksum_sha256: Some(blob.sha256),
+                replaces: None,
+            });
+        }
+        let sender = mailbox.address(&domain);
+        let submission = ferroma_storage::Submission {
+            user_id: user,
+            message: NewMessage {
+                folder_id: folder.folder_id(),
+                mailbox_id: mailbox.mailbox_id(),
+                rfc_message_id: parsed.message_id().map(|id| id.as_str().to_string()),
+                thread_id: parsed.message_id().map(|id| id.as_str().to_string()),
+                subject: parsed.subject(),
+                sender: Some(sender.clone()),
+                sender_name: parsed.from().first().and_then(|from| from.name.clone()),
+                snippet: Some(parsed.snippet(180)),
+                body_text: parsed.searchable_text(),
+                size_bytes: staged.size as i64,
+                storage_path: staged.path.clone(),
+                checksum_sha256: Some(staged.sha256),
+                flags: "seen".to_string(),
+                internal_date: None,
+                sent_at: parsed.date(),
+                has_attachments: !attachments.is_empty(),
+                attachment_count: attachments.len() as i32,
+                is_draft: false,
+            },
+            recipients: imported_recipients(&parsed),
+            attachments,
+            sender,
+            remote_recipients: envelope_recipients.to_vec(),
+            max_attempts: i32::try_from(self.config.queue.max_attempts).unwrap_or(i32::MAX),
+        };
+        let message = match ferroma_storage::store_submission(&self.repos, &submission).await {
+            Ok(message) => message,
+            Err(error) => {
+                if let Err(cleanup) = self.maildir.delete(&staged.path) {
+                    tracing::warn!(
+                        path = %staged.path,
+                        %cleanup,
+                        "could not remove staged body after a failed submission"
+                    );
+                }
+                return Err(error.into());
+            }
+        };
+        for address in envelope_recipients {
+            let _ = self.repos.contacts.remember(user, address, None).await;
+        }
+        self.events
+            .publish(
+                EventScope::User(user),
+                Event::mail_sent(
+                    mailbox.mailbox_id(),
+                    message.message_id(),
+                    envelope_recipients.len(),
+                    true,
+                ),
+            )
+            .await;
+        Ok(SendResult {
+            message_id: message.id,
+            queued: envelope_recipients.len(),
+            recipients: envelope_recipients.to_vec(),
+            draft: false,
+        })
+    }
+
     /// Build the outgoing message, resolving and validating attachments.
     async fn build_outgoing(
         &self,
@@ -629,9 +786,41 @@ impl MessageService {
             }
         }
         let updated_flags = tokens.join(" ");
+        self.write_flags(user, message, &updated_flags, seen.is_some()).await
+    }
+
+    /// Replace a message's keyword set with `flags`.
+    ///
+    /// JMAP `Email/set` sends the whole set (or a patch that has already been
+    /// applied to it). The four booleans of [`MessageService::set_message_flags`]
+    /// cannot express `$draft` or a private keyword, so this is the path that can.
+    /// The stored order is the caller's; an equal set is a no-op.
+    pub async fn set_message_flags_exact(
+        &self,
+        id: MessageId,
+        user: UserId,
+        flags: &str,
+    ) -> Result<Message, FerromaError> {
+        let (message, _mailbox) = owned_live_message(&self.repos, id, user).await?;
+        let seen_changed = flag_present(&message.flags, "seen") != flag_present(flags, "seen");
+        self.write_flags(user, message, flags, seen_changed).await
+    }
+
+    /// Persist `updated_flags` for a message the caller already owns.
+    ///
+    /// `seen_changed` decides which event the rest of the process hears. The
+    /// Maildir rename, the row, the cursor and the folder recount are the same
+    /// whichever caller asked.
+    async fn write_flags(
+        &self,
+        user: UserId,
+        message: Message,
+        updated_flags: &str,
+        seen_changed: bool,
+    ) -> Result<Message, FerromaError> {
         if updated_flags == message.flags {
             // A no-op PATCH can still repair a stale denormalised folder counter.
-            if seen.is_some() {
+            if seen_changed {
                 if let Err(error) = self.repos.folders.recount(MailboxId::new(message.folder_id)).await {
                     tracing::warn!(folder_id = message.folder_id, %error,
                         "could not recount folder after no-op flag patch");
@@ -654,7 +843,7 @@ impl MessageService {
             }
         };
         let updated = match self.repos.messages.set_flags_with_path_logged(
-            id, user, &message.storage_path, &new_path, &updated_flags,
+            message.message_id(), user, &message.storage_path, &new_path, updated_flags,
         ).await {
             Ok(row) => row,
             Err(error) => {
@@ -695,14 +884,14 @@ impl MessageService {
         let mailbox = owned_mailbox(&self.repos, MailboxId::new(updated.mailbox_id), user).await?;
         // set_flags_with_path_logged already committed the FCP cursor entry.
 
-        if seen.is_some() {
+        if seen_changed {
             self.events
                 .publish(
                     EventScope::User(user),
                     Event::mail_read(
                         mailbox.mailbox_id(),
                         updated.message_id(),
-                        updated.flags.contains("seen"),
+                        flag_present(&updated.flags, "seen"),
                     ),
                 )
                 .await;
@@ -938,6 +1127,18 @@ impl MessageService {
     }
 }
 
+/// Split a stored message into its header block and the bytes that follow the
+/// blank line. The body is returned unchanged, including its own MIME headers.
+fn split_stored_body(raw: &[u8]) -> (&[u8], &[u8]) {
+    if let Some(at) = raw.windows(4).position(|window| window == b"\r\n\r\n") {
+        return (&raw[..at], &raw[at + 4..]);
+    }
+    if let Some(at) = raw.windows(2).position(|window| window == b"\n\n") {
+        return (&raw[..at], &raw[at + 2..]);
+    }
+    (raw, &[])
+}
+
 /// Convert the standard RFC 5322 address headers into storage recipient rows.
 fn imported_recipients(message: &ferroma_mail::ParsedMessage) -> Vec<Recipient> {
     let mut recipients = Vec::new();
@@ -1059,4 +1260,11 @@ mod tests {
         assert_eq!(swapped.attachments().root(), dir.path().join("att-b"));
         assert_eq!(swapped.repositories().pool().size(), 0);
     }
+}
+
+/// Whether `flags` contains `name` as a whole token.
+fn flag_present(flags: &str, name: &str) -> bool {
+    flags
+        .split_whitespace()
+        .any(|flag| flag.eq_ignore_ascii_case(name))
 }

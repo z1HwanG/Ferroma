@@ -177,6 +177,10 @@ pub fn discovery_routes() -> Router<AppState> {
             get(routes::health::acme_challenge),
         )
         .route("/.well-known/jmap", get(routes::jmap::session))
+        // The Session advertises `apiUrl` with the trailing slash RFC 8620's
+        // examples use. The nested router matches `/api/jmap`; this matches the
+        // slashed form a client posts to, which otherwise comes back as an empty 404.
+        .route("/api/jmap/", post(routes::jmap::api))
         .route("/api/v1/health", get(routes::health::health))
         .route("/api/v1/version", get(routes::health::version))
 }
