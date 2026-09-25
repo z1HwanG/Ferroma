@@ -170,6 +170,16 @@ function securitySection() {
   });
   const confirm = el('button', { type: 'button', class: 'btn btn-primary', id: FIELDS.totpConfirm, text: t('Confirm') });
   const recovery = el('ul', { class: 'secret-list', id: FIELDS.totpRecovery, hidden: true });
+  // The codes are shown once and only as text, so a download is the only copy a
+  // person can keep without transcribing ten lines by hand. The button stays hidden
+  // until confirmation has something to save.
+  const downloadCodes = el('button', {
+    type: 'button',
+    class: 'btn',
+    id: 'settings-totp-recovery-download',
+    hidden: true,
+    text: t('Download recovery codes'),
+  });
   const pane = el('div', { class: 'settings-grid', id: FIELDS.totpPane, hidden: true }, [
     el('div', { class: 'field' }, [
       el('p', { class: 'modal-message', text: t('Scan this code with your authenticator app.') }),
@@ -179,14 +189,15 @@ function securitySection() {
       el('p', { class: 'modal-message', text: t('Or use this URI if your app accepts one:') }),
       uri,
     ]),
-    el('div', { class: 'field' }, [
+    el('div', { class: 'field field-stack' }, [
       el('label', { class: 'field-label', for: FIELDS.totpCode, text: t('Code from the app') }),
       code,
       confirm,
     ]),
-    el('div', { class: 'field' }, [
+    el('div', { class: 'field field-stack' }, [
       el('p', { class: 'modal-message', text: t('Save these recovery codes now. Each one works once, and they are not shown again.') }),
       recovery,
+      downloadCodes,
     ]),
   ]);
 
@@ -198,9 +209,9 @@ function securitySection() {
     type: 'password',
     autocomplete: 'current-password',
   });
-  const disable = el('button', { type: 'button', class: 'btn btn-danger', id: FIELDS.totpOff, text: t('Turn off') });
+  const disable = el('button', { type: 'button', class: 'btn btn-danger', id: FIELDS.totpOff, text: t('Turn off two-factor authentication') });
   const disablePane = el('div', { class: 'settings-grid', id: FIELDS.totpDisablePane, hidden: true }, [
-    el('div', { class: 'field' }, [
+    el('div', { class: 'field field-stack' }, [
       el('label', { class: 'field-label', for: FIELDS.totpPassword, text: t('Confirm with your account password.') }),
       disablePassword,
       disable,
@@ -223,28 +234,28 @@ function securitySection() {
   const list = el('ul', { class: 'secret-list', id: FIELDS.appPasswordList });
 
   /**
-   * One application password row, with its own revoke button.
+   * One live application password, with its own revoke button.
    *
-   * @param {{id: number, label: string, last_used_at: string|null, revoked_at: string|null}} entry
+   * A revoked credential is not drawn. The server keeps the row so an administrator
+   * can still see that it existed; this list is the user's, and a password they
+   * just revoked is one they asked to be rid of.
+   *
+   * @param {{id: number, label: string, last_used_at: string|null}} entry
    */
   const appPasswordRow = (entry) => {
     const when = entry.last_used_at
       ? t('Last used {when}', { when: relativeStamp(entry.last_used_at) })
       : t('Never used');
-    const trailing = entry.revoked_at
-      ? el('span', { class: 'modal-message', text: t('Revoked') })
-      : el('button', { type: 'button', class: 'btn btn-small', text: t('Revoke') });
+    const revokeButton = el('button', { type: 'button', class: 'btn btn-small', text: t('Revoke') });
     const row = el('li', { class: 'secret-row' }, [
       el('span', { class: 'secret-name', text: entry.label }),
       el('span', { class: 'modal-message', text: when }),
-      trailing,
+      revokeButton,
     ]);
-    if (!entry.revoked_at) {
-      trailing.addEventListener('click', async () => {
-        trailing.disabled = true;
-        await revoke(entry.id);
-      });
-    }
+    revokeButton.addEventListener('click', async () => {
+      revokeButton.disabled = true;
+      await revoke(entry.id);
+    });
     return row;
   };
 
@@ -280,7 +291,7 @@ function securitySection() {
 
     try {
       const payload = await request(`${API_BASE}/auth/app-passwords`, { toast: false });
-      const items = Array.isArray(payload.items) ? payload.items : [];
+      const items = (Array.isArray(payload.items) ? payload.items : []).filter((entry) => !entry.revoked_at);
       list.replaceChildren();
       if (items.length === 0) {
         list.append(el('li', { class: 'modal-message', text: t('No application passwords yet.') }));
@@ -342,6 +353,7 @@ function securitySection() {
       recovery.replaceChildren();
       setHidden(pane, false);
       setHidden(recovery, true);
+      setHidden(downloadCodes, true);
       paneSticky = true;
       code.value = '';
       code.focus();
@@ -373,7 +385,9 @@ function securitySection() {
       const codes = Array.isArray(payload.recovery_codes) ? payload.recovery_codes : [];
       recovery.replaceChildren();
       for (const one of codes) recovery.append(el('li', { class: 'secret-row', text: one }));
-      setHidden(recovery, false);
+      setHidden(recovery, codes.length === 0);
+      setHidden(downloadCodes, codes.length === 0);
+      downloadCodes.onclick = () => saveRecoveryCodes(codes);
       // The codes stay on screen until the dialog closes; `reload` must not clear it.
       paneSticky = true;
       code.value = '';
@@ -482,6 +496,30 @@ export function groupSecret(value) {
     .replace(/\s+/g, '')
     .replace(/(.{4})/g, '$1 ')
     .trim();
+}
+
+/**
+ * Offer `codes` as a text file the browser downloads.
+ *
+ * The server returns a recovery code once and stores only its digest, so the file
+ * is built here, in the page, from the codes already on screen. Nothing is sent
+ * anywhere to produce it. An empty list downloads nothing: there is no file to save.
+ *
+ * @param {string[]} codes
+ */
+export function saveRecoveryCodes(codes) {
+  const lines = (Array.isArray(codes) ? codes : []).map((code) => String(code).trim()).filter(Boolean);
+  if (lines.length === 0 || typeof document === 'undefined') return;
+  const blob = new Blob([`${lines.join('\n')}\n`], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = 'ferroma-recovery-codes.txt';
+  anchor.rel = 'noopener';
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 
 /**

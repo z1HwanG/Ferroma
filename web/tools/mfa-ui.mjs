@@ -53,8 +53,24 @@ check(
   'a new application password needs to say it is shown once',
 );
 check(
-  /The codes stay on screen[\s\S]{0,120}paneSticky = true;/.test(source),
+  /The codes stay on screen[\s\S]{0,160}paneSticky = true;/.test(source),
   'confirming must keep the pane — and therefore the codes — on screen',
+);
+check(
+  /Download recovery codes/.test(source) && /saveRecoveryCodes\(codes\)/.test(source),
+  'the recovery codes need a download, not only a list on screen',
+);
+check(
+  /ferroma-recovery-codes\.txt/.test(source),
+  'the download has a stable filename a person can find again',
+);
+check(
+  /\.filter\(\(entry\) => !entry\.revoked_at\)/.test(source),
+  'a revoked application password leaves the list instead of staying as a dead row',
+);
+check(
+  /class: 'field field-stack'/.test(source),
+  'a button that follows an input sits in a stack, not on the field border',
 );
 
 // Disabling costs the account password, and the request must not be replayed
@@ -75,7 +91,10 @@ const module = await import(
   `data:text/javascript,${encodeURIComponent(
     source
       .replace(/^import .*$/gm, '')
-      .replace(/t\(\s*'([^']*)'\s*(?:,\s*\{[^}]*\})?\s*\)/g, (_match, key) => JSON.stringify(key)),
+      .replace(
+        /(?<![A-Za-z0-9_])t\(\s*'([^']*)'\s*(?:,\s*\{[^}]*\})?\s*\)/g,
+        (_match, key) => JSON.stringify(key),
+      ),
   )}`
 );
 
@@ -92,6 +111,55 @@ check(module.groupSecret('MZXW6YTBOI') === 'MZXW 6YTB OI', 'a secret is grouped 
 check(module.groupSecret('  mzxw6ytboi  ') === 'mzxw 6ytb oi', 'grouping trims and keeps case');
 check(module.groupSecret('') === '', 'an empty secret stays empty');
 check(module.groupSecret(null) === '', 'a missing secret does not throw');
+
+// The download is a file of the codes, one per line, and nothing else. There is
+// no document here, so the helper must leave an empty list alone rather than
+// trying to click an anchor that does not exist.
+const downloaded = [];
+const realDocument = globalThis.document;
+const realUrl = globalThis.URL;
+const realWindow = globalThis.window;
+globalThis.document = {
+  createElement() {
+    return {
+      set href(value) { this._href = value; },
+      set download(value) { this._download = value; },
+      set rel(value) { this._rel = value; },
+      click() { downloaded.push({ href: this._href, download: this._download }); },
+      remove() {},
+    };
+  },
+  body: { append() {}, },
+};
+globalThis.URL = {
+  createObjectURL(blob) {
+    downloaded.push({ blob });
+    return 'blob:recovery';
+  },
+  revokeObjectURL() {},
+};
+globalThis.window = { setTimeout() {} };
+module.saveRecoveryCodes(['DJV4-W3TI-USSJ-YUXB', '  JKTK-UH7C-CEKX-S4UR  ', '']);
+const file = downloaded.find((entry) => entry.blob);
+check(file !== undefined, 'a non-empty code list becomes a file');
+if (file) {
+  const text = await file.blob.text();
+  check(
+    text === 'DJV4-W3TI-USSJ-YUXB\nJKTK-UH7C-CEKX-S4UR\n',
+    `the file is the codes, one per line: ${JSON.stringify(text)}`,
+  );
+}
+check(
+  downloaded.some((entry) => entry.download === 'ferroma-recovery-codes.txt'),
+  'the anchor names the recovery-code file',
+);
+const before = downloaded.length;
+module.saveRecoveryCodes([]);
+module.saveRecoveryCodes(['   ']);
+check(downloaded.length === before, 'an empty list downloads nothing');
+globalThis.document = realDocument;
+globalThis.URL = realUrl;
+globalThis.window = realWindow;
 
 /* ------------------------------------------------------------- the QR code */
 

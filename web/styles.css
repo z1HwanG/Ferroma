@@ -1434,6 +1434,25 @@ html[data-theme-resolved="dark"] .reader-html {
   margin-bottom: 0;
 }
 
+/* A label, a control and the button that acts on it. A button that follows an
+   input in normal flow has no gap of its own, so the two read as one control
+   and the button sits on the field's border. The stack keeps them apart. */
+.field-stack {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+
+.field-stack > .input,
+.field-stack > .btn {
+  margin: 0;
+}
+
+.field-stack > .input {
+  width: 100%;
+  justify-self: stretch;
+}
+
 .settings-panel .field-hint,
 .settings-fold .modal-message {
   margin: 6px 0 0;
@@ -3174,11 +3193,15 @@ html.theme-switching .theme-toggle .icon {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  padding: 6px 0;
+  gap: 8px 12px;
+  padding: 8px 0;
   border-top: 1px solid var(--border);
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   font-size: 13px;
+}
+
+.secret-list .secret-row > .btn {
+  margin-inline-start: auto;
 }
 
 .secret-list .secret-name {

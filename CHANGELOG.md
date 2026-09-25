@@ -14,6 +14,24 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ## [Unreleased]
 
+## [0.1.15] — 2026-09-25
+
+### Fixed
+
+- **Recovery codes can be downloaded, and a revoked application password leaves
+  the list.** Settings showed the ten codes as text and nothing else, so the only
+  copy was a transcription. Confirming now offers a `ferroma-recovery-codes.txt`
+  download of those codes. The confirm and "turn off" buttons no longer sit on
+  the field they follow. Revoking an application password drops it from the list
+  instead of leaving a "revoked" row; the server still keeps the row.
+- **A JMAP session document parses.** `eventSourceUrl` was `""`. RFC 8620 types it
+  as a URI, and a client (Flectar Mail, `jmap-client`) rejects a relative URL
+  with no base — `Session eventSourceUrl is not a valid URL` — before it opens
+  the mailbox, so neither the account password nor an application password could
+  get past session setup. The field is now an absolute URL on `api.public_url`,
+  like `apiUrl`. Ferroma still has no push stream; a client that does not
+  subscribe never requests it.
+
 ## [0.1.14] — 2026-09-25
 
 ### Added
@@ -230,7 +248,8 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 - **The JMAP session document is valid.** `eventSourceUrl` was `null`. RFC 8620
   requires a string, and a client stopped parsing at that field. Ferroma has no
-  JMAP push, so the field is an empty string.
+  JMAP push; the field was an empty string, which a later client also rejected
+  (see [0.1.15]).
 
 - **An export uses a `pg_dump` of the server's major version.** The image shipped
   PostgreSQL 16's client, which aborts against a PostgreSQL 18 server before

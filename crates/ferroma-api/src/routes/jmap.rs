@@ -80,7 +80,12 @@ pub async fn session(State(state): State<AppState>, auth: JmapAuth) -> Result<Re
         "apiUrl": format!("{base}/api/jmap/"),
         "downloadUrl": format!("{base}/api/jmap/download/{{accountId}}/{{blobId}}?type={{type}}&name={{name}}"),
         "uploadUrl": format!("{base}/api/jmap/upload/{{accountId}}"),
-        "eventSourceUrl": "",
+        // RFC 8620 requires a URI. An empty string is a relative URL with no base,
+        // which a client rejects before it ever opens a stream (`Session
+        // eventSourceUrl is not a valid URL`). Ferroma has no push endpoint; the
+        // absolute URL is what the type requires, and a client that never subscribes
+        // never requests it.
+        "eventSourceUrl": format!("{base}/api/jmap/eventsource/?types={{types}}&closeafter={{closeafter}}&ping={{ping}}"),
         "state": session_state(&state, auth.user_id().get()).await
     });
     let mut response = Json(payload).into_response();
@@ -828,6 +833,23 @@ fn jmap_addresses(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_session_event_source_is_an_absolute_uri() {
+        // RFC 8620 types `eventSourceUrl` as a URI. An empty string parses as a
+        // relative URL with no base, and a client (jmap-client) stops at
+        // "Session eventSourceUrl is not a valid URL" before it opens a mailbox.
+        // Ferroma does not implement push; the value still has to be absolute, the
+        // same way `apiUrl` is, so session parsing can finish.
+        let base = "https://mail.example.com";
+        let event_source = format!(
+            "{base}/api/jmap/eventsource/?types={{types}}&closeafter={{closeafter}}&ping={{ping}}"
+        );
+        let parsed = url::Url::parse(&event_source).expect("absolute eventSourceUrl");
+        assert_eq!(parsed.scheme(), "https");
+        assert!(parsed.path().starts_with("/api/jmap/eventsource/"));
+        assert!(url::Url::parse("").is_err());
+    }
 
     #[test]
     fn account_and_blob_ids_are_opaque_and_round_trip() {
