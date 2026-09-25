@@ -14,6 +14,19 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ## [Unreleased]
 
+## [0.1.17] — 2026-09-25
+
+### Fixed
+
+- **A JMAP account with more than one address can be opened.** Every address is
+  provisioned with its own standard folders, and `Mailbox/get` lists them all
+  under the one account. A second address therefore advertised a second `inbox`
+  role (and a second `sent`, `drafts`, `trash`, `junk` and `archive`). RFC 8621
+  §2 allows each role at most once, so a client (`jmap-client`) stops with
+  `mailboxes N and M both advertise the inbox role` before it opens the
+  mailbox. Only the primary address's standard folders keep a role; the others
+  are still listed, with `role` null. Their mail is untouched.
+
 ## [0.1.16] — 2026-09-25
 
 ### Fixed

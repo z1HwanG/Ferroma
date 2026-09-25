@@ -288,6 +288,47 @@ async fn a_client_can_read_file_move_and_sync_mail() {
         Some("drafts")
     );
 
+    // A second address brings its own standard folders. RFC 8621 §2 lets an
+    // account advertise each role at most once, and jmap-client stops with
+    // "mailboxes N and M both advertise the inbox role" when it sees two.
+    app.json(
+        "POST",
+        &format!("/api/v1/users/{user_id}/mailboxes"),
+        Some(&admin),
+        json!({
+            "domain": "example.net",
+            "local_part": "alice.other",
+            "is_primary": false
+        }),
+    )
+    .await
+    .expect(StatusCode::CREATED);
+    let after_alias = app
+        .json(
+            "POST",
+            "/api/jmap/",
+            Some(&token),
+            json!({
+                "using": [CORE, MAIL],
+                "methodCalls": [["Mailbox/get", {"accountId": account}, "b2"]]
+            }),
+        )
+        .await
+        .expect(StatusCode::OK);
+    let roles = after_alias["methodResponses"][0][1]["list"]
+        .as_array()
+        .expect("mailboxes")
+        .iter()
+        .filter_map(|mailbox| mailbox["role"].as_str())
+        .collect::<Vec<_>>();
+    for role in ["inbox", "sent", "drafts", "trash", "junk", "archive"] {
+        assert_eq!(
+            roles.iter().filter(|found| **found == role).count(),
+            1,
+            "role {role} must be advertised once: {after_alias}"
+        );
+    }
+
     let written = app
         .json(
             "POST",

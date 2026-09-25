@@ -808,6 +808,11 @@ Session 同时在服务器能力与账户能力中声明 `urn:ietf:params:jmap:s
 标准文件夹（`INBOX` 以及任何带 role 的文件夹）不能改名或删除，`myRights` 也如此声明。
 删除文件夹会永久删除其中的邮件；它还有子文件夹时会被拒绝。
 
+一个账户可以拥有多个地址，每个地址都有自己的标准文件夹。RFC 8621 §2 规定一个账户
+里每个角色最多出现一次，因此 `Mailbox/get` 只给主地址的标准文件夹标注角色。其余
+地址的文件夹仍在列表中，`role` 为 null。以 `mailboxes N and M both advertise the
+inbox role` 停止的客户端，读到的是一个把该角色声明了两次的服务器。
+
 `Email/get` 返回邮件元数据，并在客户端要求时返回 `textBody`、`htmlBody`、
 `bodyValues`、`bodyStructure` 和 `attachments`。`properties` 限制返回的字段；
 `fetchTextBodyValues`、`fetchHTMLBodyValues`、`fetchAllBodyValues` 和

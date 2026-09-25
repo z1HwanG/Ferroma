@@ -846,6 +846,13 @@ folder (`INBOX` and any folder with a role) cannot be renamed or destroyed, and
 `myRights` says so. Destroying a folder permanently deletes the mail inside it
 and refuses while it still has a child.
 
+An account may own several addresses, and each address has its own standard
+folders. RFC 8621 §2 lets an account advertise each role at most once, so
+`Mailbox/get` gives a role only to the primary address's standard folders. The
+other addresses' folders are still in the list, with `role` null. A client that
+stops with `mailboxes N and M both advertise the inbox role` was reading a
+server that advertised the role twice.
+
 `Email/get` returns the message metadata and, when the client asks for them,
 `textBody`, `htmlBody`, `bodyValues`, `bodyStructure` and `attachments`.
 `properties` limits the object; `fetchTextBodyValues`, `fetchHTMLBodyValues`,

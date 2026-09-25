@@ -393,6 +393,12 @@ async fn mailbox_get(
         .await
         .map_err(server)?;
     for address in addresses {
+        // RFC 8621 §2: at most one mailbox of an account may have a given role.
+        // Every address is provisioned with its own standard folders, so an
+        // account with two addresses would otherwise advertise two `inbox`
+        // roles and a client (jmap-client) refuses to open the account. The
+        // primary address is listed first and is the one that keeps the roles.
+        let roles = address.is_primary;
         for stored in state
             .repos
             .folders
@@ -420,6 +426,9 @@ async fn mailbox_get(
                 .is_none_or(|ids| ids.contains(&folder.id.to_string()))
             {
                 let standard = folder.is_inbox() || folder.special_use.is_some();
+                let role = roles
+                    .then(|| folder_role(folder.special_use.as_deref(), &folder.name))
+                    .flatten();
                 // JMAP's name is the one segment, and `parentId` carries the rest.
                 // A folder that predates `parent_id` still has the whole path in
                 // its name and no parent, so that path is what the client sees.
@@ -435,7 +444,7 @@ async fn mailbox_get(
                     "id": folder.id.to_string(),
                     "name": name,
                     "parentId": folder.parent_id.map(|id| id.to_string()),
-                    "role": folder_role(folder.special_use.as_deref(), &folder.name),
+                    "role": role,
                     "sortOrder": 0,
                     "totalEmails": folder.message_count,
                     "unreadEmails": folder.unseen_count,
