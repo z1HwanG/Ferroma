@@ -14,6 +14,8 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
 
 ## [Unreleased]
 
+## [0.1.13] — 2026-09-25
+
 ### Added
 
 - **DNS block lists.** `[policy.dnsbl]` looks the connecting address up once per message
@@ -119,6 +121,40 @@ The Chinese translation is at [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
   that forbids remote images until the reader opts in; reply/forward no longer
   mounts sender HTML into the same-origin editor; list loads ignore stale
   responses; sending waits for pending uploads.
+- **Unknown accounts cost one Argon2 verification.** An unknown address returned
+  immediately while a wrong password paid for a hash check, so the login endpoint
+  distinguished the two by timing. Unknown accounts now verify against a fixed
+  dummy PHC hash carrying the production cost before answering
+  `invalid_credentials()`. `docs/security.md` §3.3.
+- **Refresh rotation is atomic.** Revoking the presented session and opening its
+  replacement were two steps, so two concurrent requests with the same token
+  minted two live pairs. `SessionsRepository::rotate` revokes conditionally and
+  inserts the replacement in one transaction; the loser is refused as a reuse
+  without burning the family, while a replay that reads back already revoked
+  still does. `docs/security.md` §3.3.
+- **Idempotent operation replays stay with their owner and kind.** A replay
+  matched the operation id alone, so a key completed by one user answered
+  another user's request with the first user's cached response, and the same
+  user reusing a key for a different mutation had the second mutation swallowed
+  as a replay. A replay whose stored `user_id` or `kind` differs is now refused
+  with a conflict. `docs/sync.md`.
+- **Draft attachments survive reopening.** A draft carrying attachments opened an
+  empty upload list, so reopening it looked like it had lost its files. Kept
+  rows now render as uploaded, stay in the payload and remain detachable, with
+  new uploads appending to them.
+- **Attachment uploads survive an expired access token.** An upload whose token
+  expired failed outright while every other `request()` call refreshed once and
+  retried. The upload path now refreshes through the shared helper and retries
+  once before reporting a failure.
+
+### Changed
+
+- **The production compose file is bound to what `deploy.sh` promises.**
+  `docker-compose.yml` reads the `.env` the script writes, forwards every name
+  `write_env()` persists, guards the database, identity and token secret with
+  `:?`, drops the competing `ferroma.toml` mount, and probes the configured
+  host and port. `tools/check-deploy.mjs` asserts the contract so the two
+  cannot drift again. `docs/deployment.md` §3.1.
 
 ## [0.1.12] — 2026-09-23
 

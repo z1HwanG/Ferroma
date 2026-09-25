@@ -28,7 +28,7 @@ cp .env.example .env          # set FERROMA_VERSION to the release you want
 docker compose up -d
 ```
 
-Open `http://localhost:8080`. Pin the image with `FERROMA_VERSION=0.1.12`; `latest`
+Open `http://localhost:8080`. Pin the image with `FERROMA_VERSION=0.1.13`; `latest`
 follows the newest release. `docker-compose.demo.yml` is a plaintext demonstration
 and is not part of the command above.
 
