@@ -443,11 +443,11 @@ interview() {
     if [ "$WIZARD_MODE" = 1 ]; then
         # The whole point of the mode: the domain, the MX hostname, the first administrator
         # and the public URL are asked on the wizard page, once the stack is up — so this
-        # run only needs to know which port to publish.
+        # run only needs to know which port the reverse proxy should reach.
         info "wizard mode: the mail domain, hostname, administrator and TLS are collected at"
-        info "             http://<this host>:${WEB_PORT:-8080}/admin/ after the stack starts."
+        info "             http://$API_HOST:$API_PORT/admin/ after the stack starts."
         printf '\n'
-        [ -n "$PUBLIC_PORT_ARG" ] || WEB_PORT=$(ask "Web port (wizard, Webmail and API)" "${WEB_PORT:-8080}")
+        [ -n "$API_PORT_ARG" ] || API_PORT=$(ask "Port your reverse proxy proxies to (bound to $API_HOST)" "$API_PORT")
         printf '\n'
         return 0
     fi
@@ -540,19 +540,13 @@ write_env() {
     env_set POSTGRES_IMAGE "$POSTGRES_IMAGE"
     env_set FERROMA_IMAGE "$FERROMA_IMAGE"
 
-    if [ "$WIZARD_MODE" = 1 ]; then
-        # Stated values would beat the wizard's: `apply_stored_settings` only adopts what
-        # the configuration left at its default. So in this mode the hostname, the public
-        # URL and the JWT secret are simply absent — the wizard stores the first two, and
-        # the server generates the third once into the data volume and reuses it.
-        env_set WEB_PORT "${WEB_PORT:-8080}"
-        info "wizard mode: hostname, public URL and TLS are left unset for the wizard"
-    else
-        env_set FERROMA_HOSTNAME "$FERROMA_HOSTNAME"
-        env_set FERROMA_PUBLIC_URL "$(public_url)"
-        env_set FERROMA_PUBLIC_PORT "$PUBLIC_PORT"
-        env_set FERROMA_JWT_SECRET "$JWT_SECRET"
-    fi
+    env_set FERROMA_HOSTNAME "$FERROMA_HOSTNAME"
+    env_set FERROMA_PUBLIC_URL "$(public_url)"
+    env_set FERROMA_API_PUBLIC_URL "$(public_url)"
+    env_set FERROMA_PUBLIC_PORT "$PUBLIC_PORT"
+    # Refresh tokens have to survive restarts: without a stable JWT secret every
+    # session — and the setup flow itself — is invalidated on restart.
+    env_set FERROMA_JWT_SECRET "$JWT_SECRET"
     env_set FERROMA_DATA_DIR "/var/lib/ferroma"
     [ -n "$(env_get FERROMA_LOG_LEVEL)" ]  || env_set FERROMA_LOG_LEVEL "info"
     [ -n "$(env_get FERROMA_LOG_FORMAT)" ] || env_set FERROMA_LOG_FORMAT "text"
@@ -1124,7 +1118,7 @@ first_run() {
     fi
     if [ "$WIZARD_MODE" = 1 ]; then
         step "First-run wizard"
-        info "no administrator yet: open http://<this host>:${WEB_PORT:-8080}/admin/ and fill"
+        info "no administrator yet: open http://$API_HOST:$API_PORT/admin/ and fill"
         info "in the domain, the hostname, the first administrator and TLS."
         return 0
     fi
@@ -1217,7 +1211,7 @@ summary() {
 
     if [ "$WIZARD_MODE" = 1 ]; then
         printf '  %sFirst-run wizard%s\n' "$C_BOLD" "$C_RESET"
-        printf '    http://<this host>:%s/admin/\n' "${WEB_PORT:-8080}"
+        printf '    http://%s:%s/admin/\n' "$API_HOST" "$API_PORT"
         printf '    the mail domain, hostname, first administrator and TLS are set there;\n'
         printf '    DNS (MX/A/PTR/SPF/DKIM/DMARC) has to be in place before mail flows.\n'
         printf '\n'

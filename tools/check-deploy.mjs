@@ -282,13 +282,16 @@ for (const file of composeFiles) {
   // inner variable expands to empty, the `:?` guard inside it never fires, and the
   // resulting reference fails at pull time with "invalid reference format".
   //
-  // Comments are stripped first: the compose files explain this trap by quoting the
-  // broken form, and a checker that fired on its own documentation would be turned
-  // off rather than fixed.
+  // Comments are stripped first, and so are quoted healthcheck URLs: the production
+  // file documents nested-interpolation traps in comments and probes the API with
+  // shell-expanded `$${VAR}` forms that are not Compose interpolations at all. A
+  // checker that fired on its own documentation — or on a shell variable — would be
+  // turned off rather than fixed.
   const code = text
     .split('\n')
     .filter((line) => !/^\s*#/.test(line))
-    .join('\n');
+    .join('\n')
+    .replace(/\$\$/g, '');
   if (/\$\{[^}]*\$\{/.test(code)) {
     problems.push(
       `${file} nests one \${…} inside another. Compose does not substitute the inner ` +
@@ -396,6 +399,96 @@ for (const file of ['Dockerfile', ...composeFiles]) {
     if (!/Healthcheck/.test(cli)) {
       problems.push(`${file} runs \`ferroma healthcheck\`, which the CLI does not define`);
     }
+  }
+}
+
+// -----------------------------------------------------------------------------
+// G. The production compose file applies what the deployment script promises
+// -----------------------------------------------------------------------------
+// `docker-compose.yml` is the file `scripts/deploy.sh` drives: its `.env` is that
+// script's output, and its container has to receive it. The last time the two
+// drifted, the generated database credentials and the loopback API bind never
+// reached the container — the API served 0.0.0.0:8080 instead of 127.0.0.1:18080
+// and the deployment could not connect to its own database.
+{
+  const deployEnv = read('scripts/deploy.sh');
+  const prod = read('docker-compose.yml');
+  const prodCode = prod
+    .split('\n')
+    .filter((line) => !/^\s*#/.test(line))
+    .join('\n');
+
+  // The `.env` the script writes is what the container reads.
+  if (!/^\s*env_file:\s*$/m.test(prodCode) || !/^\s*-\s*\.env\s*$/m.test(prodCode)) {
+    problems.push(
+      'docker-compose.yml does not read `.env` (env_file): the values ' +
+        '`scripts/deploy.sh` writes would never reach the container',
+    );
+  }
+
+  // Every name `write_env()` persists must cross into the container. `env_set X`
+  // is the write; `X:` / `${X…}` in the service environment is the handover.
+  const written = new Set(
+    [...deployEnv.matchAll(/^\s*env_set\s+([A-Z_][A-Z0-9_]*)/gm)].map((m) => m[1]),
+  );
+  const bookkeeping = new Set([
+    'POSTGRES_USER',
+    'POSTGRES_PASSWORD',
+    'POSTGRES_DB',
+    'DB_HOST',
+    'DB_PORT',
+    'POSTGRES_IMAGE',
+    'FERROMA_IMAGE',
+    'FERROMA_DEPLOY_DOMAIN',
+    'FERROMA_DEPLOY_ADMIN',
+    'FERROMA_DEPLOY_SETUP_DONE',
+    'WEB_PORT',
+  ]);
+  const forwarded = new Set([
+    ...[...prodCode.matchAll(/^\s*([A-Z_][A-Z0-9_]*):/gm)].map((m) => m[1]),
+    ...[...prodCode.matchAll(/\$\{([A-Z_][A-Z0-9_]*)(?::|[\s}])/g)].map((m) => m[1]),
+  ]);
+  for (const name of [...written].sort()) {
+    if (bookkeeping.has(name)) continue;
+    // `FERROMA_PUBLIC_URL` reaches the server as the alias it reads.
+    if (name === 'FERROMA_PUBLIC_URL' && forwarded.has('FERROMA_API_PUBLIC_URL')) continue;
+    if (!forwarded.has(name)) {
+      problems.push(
+        `docker-compose.yml never forwards ${name}, but scripts/deploy.sh writes it ` +
+          `into .env — the deployment would silently keep its default`,
+      );
+    }
+  }
+
+  // The database, identity and token secret must be present, not defaulted away.
+  for (const name of ['DATABASE_URL', 'FERROMA_HOSTNAME', 'FERROMA_PUBLIC_URL', 'FERROMA_JWT_SECRET']) {
+    if (!new RegExp(`\\$\\{${name}:\\?`).test(prodCode)) {
+      problems.push(
+        `docker-compose.yml must guard ${name} with \${${name}:?…}: without it an ` +
+          `unset value boots on an insecure default instead of failing loudly`,
+      );
+    }
+  }
+
+  // The production stack mounts no file-based configuration: with `.env` as the
+  // whole configuration, a mounted `ferroma.toml` would silently compete with it.
+  if (/-\s+\.\/config\/ferroma\.toml:/.test(prodCode)) {
+    problems.push(
+      'docker-compose.yml mounts ./config/ferroma.toml: the production stack takes ' +
+        'its configuration from .env, and a mounted file would compete with it',
+    );
+  }
+
+  // The health check must follow the configured bind, not a hard-coded address.
+  const hardcoded = [...prodCode.matchAll(/healthcheck[\s\S]{0,400}?127\.0\.0\.1:8080/g)];
+  if (hardcoded.length > 0) {
+    problems.push(
+      'docker-compose.yml probes a hard-coded 127.0.0.1:8080: the production ' +
+        'health check must follow FERROMA_API_HOST:FERROMA_API_PORT',
+    );
+  }
+  if (!/FERROMA_API_HOST/.test(prodCode) || !/FERROMA_API_PORT/.test(prodCode)) {
+    problems.push('docker-compose.yml must pass FERROMA_API_HOST and FERROMA_API_PORT to the health check');
   }
 }
 

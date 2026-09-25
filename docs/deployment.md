@@ -297,8 +297,9 @@ The Admin console's DNS Health screen (`GET /api/v1/domains/:id/dns`,
 ## 3. One compose file
 
 There is one deployment, `docker-compose.yml`. `docker compose up -d` reads it
-and starts Ferroma only. The host is assumed to already run PostgreSQL, and the
-setup page asks for that server's host, user name and password.
+and starts Ferroma only. The host is assumed to already run PostgreSQL, and
+`scripts/deploy.sh` writes its address into `.env` before the stack starts —
+the setup page is the demo stack's path, not this file's.
 
 `docker-compose.demo.yml` is a demonstration. It builds this checkout, starts a
 PostgreSQL beside Ferroma, and serves everything in plaintext. It is what you run
@@ -326,9 +327,12 @@ plaintext, has no resource limits, and it binds port 143 to the host unencrypted
 
 ### 3.1 A host that already runs PostgreSQL
 
-Start `docker-compose.yml`. On the setup page, give the host, user name and password of
-the PostgreSQL that is already running. A reverse proxy that already owns 443 keeps owning it;
-Ferroma's web port stays behind it. `scripts/deploy.sh` drives the same file.
+Start from `scripts/deploy.sh`, not from `docker compose up -d` alone. The
+compose file reads the `.env` the script writes and refuses to start without
+the database URL, the hostname, the public URL and the JWT secret — it no
+longer boots on insecure defaults and asks for the database on a setup page.
+A reverse proxy that already owns 443 keeps owning it; Ferroma's web port
+stays behind it. `scripts/deploy.sh` drives the same file.
 
 ```bash
 git clone … && cd Ferroma
@@ -366,8 +370,13 @@ The trade-offs that matter:
   survive your build, the script notices before starting and tells you the one line
   that fixes it: `sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0`.
 * **`.env` is the whole configuration.** This stack mounts no `ferroma.toml`, so
-  every setting is an environment override (the double-underscore form, like
-  `FERROMA__SMTP__PORT=2525`); `docker compose … up -d` applies it.
+  every setting is an environment override: the `DATABASE_URL` and
+  `FERROMA_API_HOST/PORT` aliases, the JWT/TLS/DKIM aliases, and the generic
+  double-underscore form (like `FERROMA__SMTP__PORT=2525`). `docker compose …
+  up -d` reads `.env` automatically, and refuses to start without the database
+  URL, the hostname, the public URL and the JWT secret rather than booting on
+  insecure defaults. The health check probes the configured
+  `FERROMA_API_HOST:FERROMA_API_PORT`, not a hard-coded `127.0.0.1:8080`.
 * **HTTPS is still your reverse proxy's job.** Ferroma serves its plaintext API on
   `127.0.0.1:18080` only, and the public-facing TLS is terminated by the proxy —
   exactly what §5.3 and §5.4 describe. When the proxy itself runs in a container, or
@@ -540,14 +549,14 @@ refuse to start without the required ones.
 | Variable | Example | Required by | Notes |
 |---|---|---|---|
 | `POSTGRES_PASSWORD` | `openssl rand -base64 32` | all | `${POSTGRES_PASSWORD:?…}` — compose fails without it |
-| `FERROMA_JWT_SECRET` | `openssl rand -base64 48` | optional | signs access/refresh tokens. Leave it unset and the server generates one into the data volume and reuses it; set it only to share the secret across instances |
-| `FERROMA_HOSTNAME` | `mail.example.com` | optional | must equal the PTR record. Absent, the first-run wizard asks for it and the stored value is adopted at the next start |
-| `FERROMA_PUBLIC_URL` | `https://mail.example.com` | optional | used in `.well-known/ferroma` and in links. Same arrangement as the hostname: the wizard owns it unless the deployment states it |
+| `FERROMA_JWT_SECRET` | `openssl rand -base64 48` | prod (`:?`) | signs access/refresh tokens. `scripts/deploy.sh` generates it into `.env`; the server also generates one into the data volume when no value is stated |
+| `FERROMA_HOSTNAME` | `mail.example.com` | prod (`:?`) | must equal the PTR record. `scripts/deploy.sh` writes it |
+| `FERROMA_PUBLIC_URL` | `https://mail.example.com` | prod (`:?`) | used in `.well-known/ferroma` and in links. `scripts/deploy.sh` writes it |
 
 Stating any of these in the environment wins over the wizard, which is the point: a
 deployment that knows its identity sets it once, and an instance being set up by hand gets
-asked. `scripts/deploy.sh --wizard` writes none of them, so a fresh container needs only
-the web port published — plus `POSTGRES_PASSWORD`, which the script generates.
+asked. The production compose file guards them with `:?`: a `.env` missing any of them
+fails before starting instead of booting on insecure defaults.
 | `FERROMA_VERSION` | `0.1.12` | prod (`:?`) | a released image tag; prod never builds |
 
 ### 4.2 Commonly set
@@ -1761,19 +1770,19 @@ For a **single-host private registry** instead of Docker Hub, point
 docker compose -f docker-compose.yml exec ferroma \
   ferroma healthcheck --url http://127.0.0.1:8080/api/v1/health
 
-# Or without the CLI.
+# Or without the CLI (substitute the configured host and port).
 docker compose -f docker-compose.yml exec ferroma \
-  sh -c 'wget -qO- http://127.0.0.1:8080/api/v1/health || echo unreachable'
+  sh -c 'wget -qO- http://127.0.0.1:18080/api/v1/health || echo unreachable'
 ```
 
-The Docker health check in the compose files and the `Dockerfile` runs
-`ferroma healthcheck --url http://127.0.0.1:8080/api/v1/health` every 30 s with a
-20–30 s start period and 3 retries. The address in
-`docker-compose.yml` follows `FERROMA_API_HOST` **and**
-`FERROMA_API_PORT` (default `127.0.0.1:18080`) — the probe follows wherever the API
-is bound. When a containerised proxy forces the API onto the Docker bridge address
-(the end of §5.4), the probe moves with it instead of reporting a healthy server as
-unhealthy.
+The Docker health check in `docker-compose.yml` runs `ferroma healthcheck`
+against the configured `FERROMA_API_HOST:FERROMA_API_PORT` (default
+`127.0.0.1:18080`) every 30 s with a 30 s start period and 3 retries — the probe
+follows wherever the API is bound. When a containerised proxy forces the API
+onto the Docker bridge address (the end of §5.4), the probe moves with it
+instead of reporting a healthy server as unhealthy. The demo stack and the
+`Dockerfile` still probe the fixed `127.0.0.1:8080`, which is the address that
+stack serves.
 
 ### 10.2 What to watch
 

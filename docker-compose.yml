@@ -1,11 +1,13 @@
 # =============================================================================
 # Ferroma — the deployment. `docker compose up -d` uses this file.
 # =============================================================================
-#   docker compose up -d                              # needs FERROMA_VERSION, nothing else
+#   ./scripts/deploy.sh && docker compose up -d       # deploy.sh writes .env
 #
-# One container. The host is assumed to already run PostgreSQL. Ferroma asks for
-# its host, user name and password on the setup page and remembers the answer.
-# The mail domain, the hostname, the public URL and TLS follow on the wizard.
+# One container. The host is assumed to already run PostgreSQL; deploy.sh asks
+# for its address, creates the role and database, and writes `.env` with the
+# database address, the API bind, the hostname/public URL, the JWT secret and
+# the TLS settings. This file reads that `.env` — `docker compose up -d` alone
+# still refuses to start without it, rather than booting on insecure defaults.
 # See docs/deployment.md §3.2.
 #
 # docker-compose.demo.yml is the other file, and it is a demonstration: it builds
@@ -41,45 +43,65 @@ services:
     container_name: ferroma
     restart: always
     # The host's own network, so the PostgreSQL already running here is
-    # 127.0.0.1 from inside the container. The setup page asks for it.
+    # 127.0.0.1 from inside the container.
     network_mode: host
+    # Values come from the `.env` `scripts/deploy.sh` writes — Compose reads that
+    # file automatically. Anything stated here still beats a stored wizard answer,
+    # so only answer what the deployment owns: the database address, the API bind,
+    # the hostname/public URL, the JWT secret and the TLS material. The optional
+    # wizard path is gone: the database connection has to be known before the
+    # first boot, and this is how it gets there.
+    env_file:
+      - .env
     environment:
-      # Only what a *process* needs to exist before it can serve a page is set here.
-      # The database address is not one of those: with DATABASE_URL unset the server
-      # binds the web port and asks for it on the setup page, then remembers the answer
-      # in the data volume. Stating it here would win over that page. The mail domain,
-      # the hostname, the public URL, the API listener and TLS are the same kind of
-      # answer, collected by the wizard once the database exists.
-      FERROMA_DATA_DIR: /var/lib/ferroma
+      FERROMA_DATA_DIR: ${FERROMA_DATA_DIR:-/var/lib/ferroma}
       FERROMA_LOG_LEVEL: ${FERROMA_LOG_LEVEL:-info}
       FERROMA_LOG_FORMAT: ${FERROMA_LOG_FORMAT:-json}
-      # Drop the PEMs into ./tls and tick "Serve TLS from this process" in the wizard.
-      # Enabling TLS before the files exist is refused with an explanation rather than
-      # applied and failing at the next boot.
-      # The certificate paths are the mounted files. Whether TLS is on, and whether 465
-      # and 993 listen, is the wizard's answer: stating it here would win over that
-      # answer, because a deployment value is never overridden by a stored one.
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env (scripts/deploy.sh writes it)}
+      FERROMA_API_HOST: ${FERROMA_API_HOST:-127.0.0.1}
+      FERROMA_API_PORT: ${FERROMA_API_PORT:-18080}
+      # The alias the server reads is FERROMA_API_PUBLIC_URL; the generic form
+      # carries the deploy.sh-written FERROMA_PUBLIC_URL there (Compose cannot
+      # nest one ${…} default inside another, so there is no `:-` fallback here
+      # — FERROMA_PUBLIC_URL itself is ` …:?`-guarded two lines below).
+      FERROMA__API__PUBLIC_URL: ${FERROMA_PUBLIC_URL}
+      FERROMA_HOSTNAME: ${FERROMA_HOSTNAME:?set FERROMA_HOSTNAME in .env (scripts/deploy.sh writes it)}
+      FERROMA_PUBLIC_URL: ${FERROMA_PUBLIC_URL:?set FERROMA_PUBLIC_URL in .env (scripts/deploy.sh writes it)}
+      FERROMA_JWT_SECRET: ${FERROMA_JWT_SECRET:?set FERROMA_JWT_SECRET in .env (scripts/deploy.sh writes it)}
+      # Terminate implicit TLS in Ferroma itself once deploy.sh has installed the
+      # PEMs under ./tls. The ports exist only when these are set — alongside
+      # FERROMA_TLS_ENABLED/CERT/KEY — which is why the demo stack and the
+      # `.env.example` spell the same three settings.
+      FERROMA_TLS_ENABLED: ${FERROMA_TLS_ENABLED:-false}
       FERROMA_TLS_CERT: ${FERROMA_TLS_CERT:-/etc/ferroma/tls/fullchain.pem}
       FERROMA_TLS_KEY: ${FERROMA_TLS_KEY:-/etc/ferroma/tls/privkey.pem}
-      # `Secure` cookies are dropped by the browser over plain HTTP, which would make the
-      # very first sign-in fail. Set SECURE_COOKIES=true in .env once the reverse proxy
-      # serves HTTPS — which is the production arrangement, and what scripts/deploy.sh
-      # writes. (Compose cannot nest one default inside another, so this is its own knob.)
-      FERROMA__API__SECURE_COOKIES: '${SECURE_COOKIES:-false}'
-      # Behind a load balancer or reverse proxy, honour X-Forwarded-For.
-      FERROMA__API__TRUST_PROXY_HEADERS: '${TRUST_PROXY_HEADERS:-false}'
+      FERROMA__SMTP__SMTPS_PORT: ${FERROMA__SMTP__SMTPS_PORT:-0}
+      FERROMA__IMAP__IMAPS_PORT: ${FERROMA__IMAP__IMAPS_PORT:-0}
+      # Behind the reverse proxy, the proxy terminates HTTPS and its headers are
+      # what must be believed. The API contract is unchanged: it still binds the
+      # loopback address above so the proxy is the only client.
+      FERROMA__API__TRUST_PROXY_HEADERS: ${FERROMA__API__TRUST_PROXY_HEADERS:-true}
+      FERROMA__API__SECURE_COOKIES: ${FERROMA__API__SECURE_COOKIES:-true}
+      # Plaintext SMTP/IMAP authentication is what a fresh deployment must not
+      # allow on the unauthenticated MX and plaintext IMAP listeners; deploy.sh
+      # writes both switches (false only with an explicit --no-tls run).
+      FERROMA__SMTP__REQUIRE_TLS_FOR_AUTH: ${FERROMA__SMTP__REQUIRE_TLS_FOR_AUTH:-true}
+      FERROMA__IMAP__REQUIRE_TLS_FOR_LOGIN: ${FERROMA__IMAP__REQUIRE_TLS_FOR_LOGIN:-true}
       FERROMA_DKIM_ENABLED: ${FERROMA_DKIM_ENABLED:-false}
       FERROMA_DKIM_SELECTOR: ${FERROMA_DKIM_SELECTOR:-default}
-      FERROMA_DKIM_KEY: /etc/ferroma/dkim/${FERROMA_DKIM_SELECTOR:-default}.private
-    # No `ports:` — host networking binds 25, 587, 465, 143, 993 and 8080 on the
-    # host directly. Docker cannot publish ports for a container in that mode.
+      FERROMA_DKIM_KEY: ${FERROMA_DKIM_KEY:-/var/lib/ferroma/dkim/default.private}
+      # Informational bookkeeping from deploy.sh; the server ignores these names,
+      # but keeping them here pins the .env contract the new check enforces.
+      FERROMA_API_PUBLIC_URL: ${FERROMA_API_PUBLIC_URL:-}
+      FERROMA_PUBLIC_PORT: ${FERROMA_PUBLIC_PORT:-443}
+    # No `ports:` — host networking binds 25, 587, 465, 143, 993 and the API port
+    # on the host directly. Docker cannot publish ports for a container in that mode.
     volumes:
       - ferroma-data:/var/lib/ferroma
-      - ./config/ferroma.toml:/etc/ferroma/ferroma.toml:ro
       - ./tls:/etc/ferroma/tls:ro
       - ./dkim:/etc/ferroma/dkim:ro
     healthcheck:
-      test: ['CMD', 'ferroma', 'healthcheck', '--url', 'http://127.0.0.1:8080/api/v1/health']
+      test: ['CMD-SHELL', 'ferroma healthcheck --url http://$${FERROMA_API_HOST:-127.0.0.1}:$${FERROMA_API_PORT:-18080}/api/v1/health']
       interval: 30s
       timeout: 5s
       retries: 3

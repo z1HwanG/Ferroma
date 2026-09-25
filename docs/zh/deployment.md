@@ -279,7 +279,8 @@ Admin 的 DNS Health 界面（`GET /api/v1/domains/:id/dns`，[api.md](api.md) �
 ## 3. 一个 compose 文件
 
 部署只有一个，`docker-compose.yml`。`docker compose up -d` 读取该文件，只启动
-Ferroma。部署需要 PostgreSQL；引导页收集数据库的主机、用户名和密码。
+Ferroma。部署需要 PostgreSQL；`scripts/deploy.sh` 会先把数据库地址写进 `.env`，
+再启动栈——引导页是演示栈的路径，不是这个文件的路径。
 
 `docker-compose.demo.yml` 是演示。它构建当前工作副本，在 Ferroma 旁启动一个
 PostgreSQL，全部以明文提供服务。该文件仅供查看运行效果，因此命令必须显式指定文件名：
@@ -304,9 +305,11 @@ docker compose -f docker-compose.demo.yml up -d
 
 ### 3.1 服务器已经有 PostgreSQL
 
-启动 `docker-compose.yml`。在引导页上填写已经在运行的那台 PostgreSQL 的主机、用户名和密码。
-已经占着 443 的反向代理继续占着；
-Ferroma 的 web 端口留在它后面。`scripts/deploy.sh` 驱动的是同一个文件。
+从 `scripts/deploy.sh` 起步，而不是单独跑 `docker compose up -d`。compose 文件
+会读取脚本写出的 `.env`，缺数据库地址、主机名、公网 URL 或 JWT 密钥时直接拒绝
+启动，不再用不安全的默认值开机、也不再用引导页询问数据库。已经占着 443 的
+反向代理继续占着；Ferroma 的 web 端口留在它后面。`scripts/deploy.sh` 驱动的是
+同一个文件。
 
 ```bash
 git clone … && cd Ferroma
@@ -340,8 +343,12 @@ git clone … && cd Ferroma
   文件能力（`Dockerfile` 里的 `setcap`）来覆盖这种情况；万一该能力没能保留下来，脚本会在
   启动前发现，并告诉你那行命令：
   `sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0`。
-* **`.env` 是全部配置。** 这个栈不挂载 `ferroma.toml`，任何设置都用环境变量覆盖
-  （`FERROMA__SMTP__PORT=2525` 这种双下划线形式），改完 `docker compose … up -d` 生效。
+* **`.env` 是全部配置。** 这个栈不挂载 `ferroma.toml`，任何设置都用环境变量覆盖：
+  `DATABASE_URL` 与 `FERROMA_API_HOST/PORT` 别名、JWT/TLS/DKIM 别名，以及
+  `FERROMA__SMTP__PORT=2525` 这种双下划线形式。改完 `docker compose … up -d`
+  生效；缺数据库地址、主机名、公网 URL 或 JWT 密钥时直接拒绝启动，而不是用不
+  安全的默认值开机。健康检查打的是配置里的
+  `FERROMA_API_HOST:FERROMA_API_PORT`，而不是写死的 `127.0.0.1:8080`。
 * **HTTPS 仍然归你的反向代理。** Ferroma 只在 `127.0.0.1:18080` 上提供明文 API，公网侧的
   TLS 由代理终结——就是 §5.3 / §5.4 描述的做法。代理本身跑在容器里、或者公网端口不是
   443（例如容器内 80/443、宿主机发布成 180/1443）时，看 §5.4 末尾那一节：API 要绑到
@@ -497,12 +504,12 @@ No database is connected yet. Open http://0.0.0.0:8080/ and enter:
 |---|---|---|---|
 | `POSTGRES_PASSWORD` | `openssl rand -base64 32` | 全部 | `${POSTGRES_PASSWORD:?…}`，缺它 compose 直接失败 |
 | `FERROMA_JWT_SECRET` | `openssl rand -base64 48` | 可选 | 签发访问/刷新令牌。留空时服务器会生成一份写入数据卷并复用；只有在多实例共享密钥时才需要显式设置 |
-| `FERROMA_HOSTNAME` | `mail.example.com` | 可选 | 必须与 PTR 记录一致。留空则由首次运行向导询问，并在下次启动采用其存储值 |
-| `FERROMA_PUBLIC_URL` | `https://mail.example.com` | 可选 | 用于 `.well-known/ferroma` 和链接中。与主机名同理：除非部署显式声明，否则由向导负责 |
+| `FERROMA_HOSTNAME` | `mail.example.com` | 生产必填（`:?`） | 必须与 PTR 记录一致；`scripts/deploy.sh` 写入 |
+| `FERROMA_PUBLIC_URL` | `https://mail.example.com` | 生产必填（`:?`） | 用于 `.well-known/ferroma` 和链接中；`scripts/deploy.sh` 写入 |
 
-这三项只要在环境里声明就优先于向导——这正是设计意图：清楚自己身份的部署声明一次，
-手工搭建的实例则被逐个询问。`scripts/deploy.sh --wizard`不写其中任何一项，因此全新
-容器只需要发布 web 端口，另加`POSTGRES_PASSWORD`（该脚本会自动生成）。
+主机名、公网 URL 与 JWT 密钥在环境里声明就优先于向导——这正是设计意图：清楚自己
+身份的部署声明一次，手工搭建的实例则被逐个询问。生产 compose 文件用 `:?` 守护
+这三项：`.env` 里缺任何一个都会在启动前失败，而不是用不安全的默认值开机。
 | `FERROMA_VERSION` | `0.1.12` | prod（`:?`） | 已发布的镜像标签；prod 从不构建 |
 
 ### 4.2 常设变量
@@ -684,7 +691,7 @@ server {
     }
 
     location / {
-        proxy_pass http://127.0.0.1:18080;   # prod 栈用 8080；§3.1 的栈默认 18080
+        proxy_pass http://127.0.0.1:18080;   # §3.1 的栈默认 18080
         proxy_http_version 1.1;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
@@ -1604,16 +1611,17 @@ characters` 结束——尽管镜像其实已经推上 Docker Hub 了。脚本�
 docker compose -f docker-compose.yml exec ferroma \
   ferroma healthcheck --url http://127.0.0.1:8080/api/v1/health
 
-# 或者不用 CLI。
+# 或者不用 CLI（换成配置里的主机和端口）。
 docker compose -f docker-compose.yml exec ferroma \
-  sh -c 'wget -qO- http://127.0.0.1:8080/api/v1/health || echo unreachable'
+  sh -c 'wget -qO- http://127.0.0.1:18080/api/v1/health || echo unreachable'
 ```
 
-几个 compose 文件与 `Dockerfile` 中的 Docker 健康检查每 30 秒运行一次
-`ferroma healthcheck --url http://127.0.0.1:8080/api/v1/health`，启动期为 20 到 30 秒，
-重试 3 次。`docker-compose.yml` 里的地址跟随 `FERROMA_API_HOST` 与
-`FERROMA_API_PORT`（默认 `127.0.0.1:18080`）——API 绑在哪儿，探针就打哪儿。代理在容器里
-因而 API 绑到 Docker 网桥地址时（§5.4 末尾），探针也跟着换过去，不会误报 unhealthy。
+`docker-compose.yml` 里的 Docker 健康检查用配置里的
+`FERROMA_API_HOST:FERROMA_API_PORT`（默认 `127.0.0.1:18080`）每 30 秒运行一次
+`ferroma healthcheck`，启动期 30 秒，重试 3 次——API 绑在哪儿，探针就打哪儿。
+代理在容器里因而 API 绑到 Docker 网桥地址时（§5.4 末尾），探针也跟着换过去，
+不会误报 unhealthy。演示栈与 `Dockerfile` 仍然打固定的 `127.0.0.1:8080`，那是
+那个栈实际服务的地址。
 
 ### 10.2 该盯什么
 
