@@ -36,6 +36,10 @@ use ferroma_storage::{Repositories, StorageError};
 use crate::password::{validate_password, PasswordHasher};
 use crate::token::{looks_like_opaque_token, AccessClaims, TokenService};
 
+// Valid PHC hash with the production Argon2id cost. Its random salt means it can
+// never authenticate a real account; it exists only to equalize unknown-user work.
+const DUMMY_PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$OVg5d1ZmR3BRMXhrWTd1Sw$xmH8Sl2zls6PEKrwcD1FbDDu333hfy7260Telm5pRQ4";
+
 /// How a session was established. Stored in `sessions.kind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -670,8 +674,11 @@ impl AuthService {
             .await
             .map_err(map_storage)?;
 
-        // Unknown account: same message and same cost profile as a wrong password.
+        // Unknown accounts perform the same Argon2 work as a wrong password, so
+        // the two are not distinguishable by timing. The dummy hash carries the
+        // production cost parameters, and verification cost follows the hash.
         let Some(user) = user else {
+            let _ = self.verify_password(password, DUMMY_PASSWORD_HASH).await;
             self.record_attempt(&email, ip_str.as_deref(), "password", false)
                 .await;
             return Err(invalid_credentials());
@@ -985,27 +992,47 @@ impl AuthService {
             return Err(FerromaError::Unauthorized("account disabled".into()));
         }
 
-        // Rotate: revoke the presented session, open a replacement of the same kind.
-        self.repos
+        // Claim the rotation with a conditional revoke and insert the replacement
+        // in one transaction. Concurrent requests cannot both create a live token.
+        let kind = SessionKind::parse(&session.kind).unwrap_or(SessionKind::Api);
+        let (refresh_raw, refresh_hash) = self.tokens.generate_refresh_token();
+        let new_session = self
+            .repos
             .sessions
-            .revoke(SessionId::new(session.id))
+            .rotate(
+                SessionId::new(session.id),
+                ferroma_storage::repository::NewSession {
+                    user_id,
+                    kind: kind.as_str().to_string(),
+                    token_hash: refresh_hash,
+                    device_id: session.device_id.map(ferroma_core::DeviceId::new),
+                    ip: ip.map(|address| address.to_string()),
+                    user_agent: session.user_agent.clone(),
+                    expires_at: self.tokens.refresh_expiry(Utc::now()),
+                },
+            )
             .await
             .map_err(map_storage)?;
 
-        let kind = SessionKind::parse(&session.kind).unwrap_or(SessionKind::Api);
-        let (new_session, mut pair) = self
-            .open_session(
-                &user,
-                kind,
-                session.device_id,
-                ip,
-                session.user_agent.as_deref(),
-            )
-            .await?;
+        let Some(new_session) = new_session else {
+            // A competing refresh won the conditional update. Report the reuse
+            // without burning the family: the winner may be this client's own
+            // retry, and its replacement must survive. A genuine replay — the
+            // token read back already revoked — still burns the family above,
+            // so the theft signal is preserved.
+            return Err(FerromaError::Unauthorized(
+                "refresh token was already used".into(),
+            ));
+        };
 
-        // Keep the caller's device association visible in the returned pair.
-        pair.session_id = SessionId::new(new_session.id);
-        Ok(pair)
+        let session_id = SessionId::new(new_session.id);
+        let access_token = self.tokens.sign_access(user_id, session_id)?;
+        Ok(TokenPair {
+            access_token,
+            refresh_token: refresh_raw,
+            expires_in: self.tokens.access_ttl_secs(),
+            session_id,
+        })
     }
 
     /// Revoke a session.
@@ -1201,12 +1228,21 @@ pub fn now() -> DateTime<Utc> {
 
 #[cfg(test)]
 mod tests {
-    use super::SessionKind;
+    use super::{SessionKind, DUMMY_PASSWORD_HASH};
 
     #[test]
     fn jmap_session_kind_round_trips_and_can_refresh() {
         assert_eq!(SessionKind::Jmap.as_str(), "jmap");
         assert_eq!(SessionKind::parse("jmap"), Some(SessionKind::Jmap));
         assert!(SessionKind::Jmap.is_refreshable());
+    }
+
+    #[test]
+    fn the_dummy_login_hash_carries_production_argon2_cost() {
+        // The dummy is only useful when it costs as much as a real password
+        // check: verification cost follows the hash, not the caller's hasher.
+        let stored = crate::password::PasswordHasher::stored_params(DUMMY_PASSWORD_HASH)
+            .expect("the dummy must be a parseable PHC string");
+        assert_eq!(stored, crate::password::Argon2Params::default());
     }
 }

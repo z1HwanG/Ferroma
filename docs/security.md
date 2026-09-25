@@ -217,7 +217,14 @@ without logging the token.
 ### 3.3 Rotation-based theft detection
 
 Every refresh rotates: the presented session is revoked and a replacement of the
-same kind is opened.
+same kind is opened. The handover is atomic —
+`SessionsRepository::rotate` revokes the old row and inserts the replacement in
+one transaction, so two concurrent requests with the same token cannot both mint
+a live pair. A request that loses the conditional update is refused as a reuse,
+but it does not burn the family — the winner may be the same client's own
+retry, and a benign race must not kill the legitimate replacement. Burning the
+family is reserved for a replay that reads back already revoked, which is the
+genuine theft signal.
 
 ```rust
 // crates/ferroma-auth/src/service.rs
@@ -393,10 +400,12 @@ over SMTP ([smtp.md](smtp.md) §8).
 | Wrong password | `invalid_credentials()` |
 | Disabled account | `invalid_credentials()` **and** a `warn` log naming the user id |
 
-The comment in the code is explicit: *"Unknown account: same message and same
-cost profile as a wrong password."* An attacker cannot enumerate accounts through
-the login endpoint, and each attempt costs one Argon2 verification either way —
-which is also why the throttle above has to exist.
+The code carries this out with a fixed dummy PHC hash: an unknown account runs
+one Argon2 verification against `DUMMY_PASSWORD_HASH` before returning
+`invalid_credentials()`. Both the message and the Argon2 work match a wrong
+password, so the login endpoint does not enumerate accounts through either —
+and each attempt costs one verification either way, which is also why the
+throttle above has to exist.
 
 The one place the server **does** distinguish is the audit log, where a disabled
 account produces `"login refused: account disabled"`. That is for the operator,

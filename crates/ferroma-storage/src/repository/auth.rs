@@ -104,6 +104,42 @@ impl SessionsRepository {
         Ok(())
     }
 
+    /// Atomically revoke `id` and create its rotated replacement.
+    ///
+    /// Returns `None` when another request has already revoked the old session.
+    /// Both writes share a transaction, so failure to create the replacement leaves
+    /// the original session valid and retryable.
+    pub async fn rotate(&self, id: SessionId, new: NewSession) -> Result<Option<Session>> {
+        let mut tx = self.pool.begin().await?;
+        let revoked = sqlx::query(
+            "UPDATE sessions SET revoked_at = NOW() WHERE id = $1 AND revoked_at IS NULL",
+        )
+        .bind(id.get())
+        .execute(&mut *tx)
+        .await?;
+        if revoked.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Ok(None);
+        }
+
+        let session = sqlx::query_as::<_, Session>(
+            "INSERT INTO sessions (user_id, kind, token_hash, device_id, ip, user_agent, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             RETURNING *",
+        )
+        .bind(new.user_id.get())
+        .bind(&new.kind)
+        .bind(&new.token_hash)
+        .bind(new.device_id.map(DeviceId::get))
+        .bind(new.ip.as_deref())
+        .bind(new.user_agent.as_deref())
+        .bind(new.expires_at)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(Some(session))
+    }
+
     /// Revoke one session. Returns `false` when it was already revoked or unknown.
     pub async fn revoke(&self, id: SessionId) -> Result<bool> {
         let done =

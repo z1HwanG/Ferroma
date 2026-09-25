@@ -250,6 +250,49 @@ async fn reusing_a_rotated_refresh_token_revokes_every_session() {
 }
 
 #[tokio::test]
+async fn concurrent_refreshes_leave_exactly_one_live_replacement() {
+    if !common::database_available().await {
+        eprintln!("skipping: no PostgreSQL reachable");
+        return;
+    }
+    let t = fresh_auth().await;
+    t.create_user("alice@example.com").await;
+    let first = login(&t, "alice@example.com").await;
+
+    // Two requests carrying the same refresh token race: exactly one may get a
+    // live pair, and the loser must look like a token reuse — never a pair.
+    let (one, other) = tokio::join!(
+        t.auth.refresh(&first.tokens.refresh_token, None),
+        t.auth.refresh(&first.tokens.refresh_token, None),
+    );
+    let winner = match (one, other) {
+        (Ok(pair), Err(err)) | (Err(err), Ok(pair)) => {
+            assert!(err.to_string().contains("already used"), "{err}");
+            pair
+        }
+        (Ok(_), Ok(_)) => panic!("concurrent refreshes must not both succeed"),
+        (Err(first), Err(second)) => panic!("one refresh must succeed: {first} / {second}"),
+    };
+
+    // A benign race must not kill the legitimate replacement: the winner's
+    // access token keeps working after the loser is refused.
+    let _ = t.auth.authenticate(&winner.access_token).await.unwrap();
+
+    // A later sequential replay of the spent token still reads back revoked,
+    // which is the theft signal that burns the family.
+    let err = t
+        .auth
+        .refresh(&first.tokens.refresh_token, None)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("already used"), "{err}");
+    let err = t.auth.authenticate(&winner.access_token).await.unwrap_err();
+    assert!(matches!(err, FerromaError::Unauthorized(_)), "{err:?}");
+
+    t.cleanup().await;
+}
+
+#[tokio::test]
 async fn an_expired_refresh_token_is_refused() {
     if !common::database_available().await {
         eprintln!("skipping: no PostgreSQL reachable");
