@@ -411,6 +411,7 @@ async function openDraft(messageId) {
       subject: draft.subject || '',
       text: draft.text || '',
       html: draft.html || undefined,
+      attachments: Array.isArray(draft.attachments) ? draft.attachments : [],
     });
   } catch (error) {
     toastError(error instanceof ApiError ? error.message : t('This draft could not be opened.'));

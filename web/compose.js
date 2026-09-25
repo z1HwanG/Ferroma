@@ -9,7 +9,7 @@
  * "Endpoints wired".
  */
 
-import { API_BASE, ApiError, request } from '../shared/api.js';
+import { API_BASE, ApiError, request, refreshAccessToken } from '../shared/api.js';
 import { createChipField } from './address.js';
 import { byId, clear, el, setText } from '../shared/dom.js';
 import {
@@ -58,6 +58,7 @@ function quotedSourceText(source) {
  * @property {string} [subject]
  * @property {string} [text]
  * @property {string} [html]
+ * @property {object[]} [attachments] draft attachments, as `GET /drafts` returns them
  */
 
 /** @type {null | (() => void)} */
@@ -405,6 +406,18 @@ export function openCompose(seed) {
 
   /** @type {Array<{id: number, filename: string}>} */
   const uploadedAttachments = [];
+  // Attachments already on the draft keep their rows: they render as uploaded,
+  // stay in the payload, and are removable — new uploads only append to them.
+  if (Array.isArray(seed.attachments)) {
+    for (const attachment of seed.attachments) {
+      if (!attachment || typeof attachment !== 'object') continue;
+      const id = Number(attachment.id);
+      if (!Number.isFinite(id) || id <= 0) continue;
+      const filename = String(attachment.filename || attachment.name || '');
+      if (filename === '') continue;
+      uploadedAttachments.push({ id, filename });
+    }
+  }
   let pendingUploads = 0;
   let submitting = false;
   // Uploads are asynchronous: never submit a partial attachment id list.
@@ -449,63 +462,80 @@ export function openCompose(seed) {
 
     const body = new FormData();
     body.append('file', file, file.name);
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${API_BASE}/attachments`);
-    xhr.withCredentials = true;
-    let token = null;
-    try {
-      token = window.localStorage.getItem('ferroma.access_token');
-    } catch {
-      token = null;
-    }
-    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
 
-    xhr.upload.addEventListener('progress', (event) => {
-      if (!event.lengthComputable) return;
-      const percent = Math.round((event.loaded / event.total) * 100);
-      bar.style.width = `${percent}%`;
-      stateText.textContent = `${percent}%`;
-    });
-
-    xhr.addEventListener('load', () => {
-      let payload = null;
+    const sendUpload = (retried) => {
+      const attempt = new XMLHttpRequest();
+      attempt.open('POST', `${API_BASE}/attachments`);
+      attempt.withCredentials = true;
+      let token = null;
       try {
-        payload = JSON.parse(xhr.responseText);
+        token = window.localStorage.getItem('ferroma.access_token');
       } catch {
-        payload = null;
+        token = null;
       }
-      if (xhr.status >= 200 && xhr.status < 300 && payload && payload.id) {
-        bar.style.width = '100%';
-        stateText.textContent = t('uploaded');
-        uploadedAttachments.push({ id: Number(payload.id), filename: String(payload.filename || file.name) });
-        remove.textContent = t('Detach');
+      if (token) attempt.setRequestHeader('Authorization', `Bearer ${token}`);
+
+      attempt.upload.addEventListener('progress', (event) => {
+        if (!event.lengthComputable) return;
+        const percent = Math.round((event.loaded / event.total) * 100);
+        bar.style.width = `${percent}%`;
+        stateText.textContent = `${percent}%`;
+      });
+
+      attempt.addEventListener('load', async () => {
+        let payload = null;
+        try {
+          payload = JSON.parse(attempt.responseText);
+        } catch {
+          payload = null;
+        }
+        if (attempt.status >= 200 && attempt.status < 300 && payload && payload.id) {
+          bar.style.width = '100%';
+          stateText.textContent = t('uploaded');
+          uploadedAttachments.push({ id: Number(payload.id), filename: String(payload.filename || file.name) });
+          remove.textContent = t('Detach');
+          remove.addEventListener('click', detach);
+          uploadFinished();
+          return;
+        }
+        // An expired access token must behave like every other `request()` call:
+        // refresh once and retry before reporting a failure.
+        if (attempt.status === 401 && !retried) {
+          stateText.textContent = t('retrying…');
+          const refreshed = await refreshAccessToken();
+          if (refreshed) {
+            sendUpload(true);
+            return;
+          }
+        }
+        uploadFinished();
+        stateText.textContent = t('failed');
+        const message =
+          payload && payload.error && payload.error.message
+            ? payload.error.message
+            : t('Upload failed (HTTP {status}).', { status: attempt.status });
+        toastError(`${file.name}: ${message}`);
         remove.addEventListener('click', detach);
-        return;
+      });
+
+      attempt.addEventListener('error', () => {
+        uploadFinished();
+        stateText.textContent = t('failed');
+        toastError(t('{name} could not be uploaded — the server was unreachable.', { name: file.name }));
+        remove.addEventListener('click', detach);
+      });
+
+      uploadStarted();
+      try {
+        attempt.send(body);
+      } catch {
+        uploadFinished();
+        stateText.textContent = t('failed');
+        toastError(t('{name} could not be uploaded — the server was unreachable.', { name: file.name }));
       }
-      stateText.textContent = t('failed');
-      const message =
-        payload && payload.error && payload.error.message
-          ? payload.error.message
-          : t('Upload failed (HTTP {status}).', { status: xhr.status });
-      toastError(`${file.name}: ${message}`);
-      remove.addEventListener('click', detach);
-    });
+    };
 
-    xhr.addEventListener('error', () => {
-      stateText.textContent = t('failed');
-      toastError(t('{name} could not be uploaded — the server was unreachable.', { name: file.name }));
-      remove.addEventListener('click', detach);
-    });
-
-    xhr.addEventListener('loadend', uploadFinished);
-    uploadStarted();
-    try {
-      xhr.send(body);
-    } catch {
-      uploadFinished();
-      stateText.textContent = t('failed');
-      toastError(t('{name} could not be uploaded — the server was unreachable.', { name: file.name }));
-    }
+    sendUpload(false);
   };
 
   attachButton.addEventListener('click', () => attachmentsInput.click());
@@ -514,6 +544,29 @@ export function openCompose(seed) {
     for (const file of Array.from(attachmentsInput.files || [])) uploadFile(file);
     attachmentsInput.value = '';
   });
+
+  // A draft carrying attachments must show them: the rows render exactly like a
+  // finished upload, including the shared Detach behaviour.
+  for (const kept of uploadedAttachments.slice()) {
+    const row = el('li', { class: 'upload-row' }, [
+      el('span', { class: 'upload-name', title: kept.filename, text: kept.filename }),
+      el('span', { class: 'upload-bar', style: 'width: 100%' }),
+      el('span', { class: 'upload-state', text: t('uploaded') }),
+    ]);
+    const remove = el('button', {
+      type: 'button',
+      class: 'btn btn-small',
+      text: t('Detach'),
+      'aria-label': t('Remove {name}', { name: kept.filename }),
+    });
+    remove.addEventListener('click', () => {
+      const index = uploadedAttachments.findIndex((item) => item.id === kept.id);
+      if (index >= 0) uploadedAttachments.splice(index, 1);
+      row.remove();
+    });
+    row.append(remove);
+    uploads.append(row);
+  }
 
   /* ----------------------------------------------------------------- toggles */
 

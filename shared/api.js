@@ -253,6 +253,16 @@ async function tryRefresh(signal) {
   return refreshing;
 }
 
+/**
+ * Refresh the access token outside `request`, for call sites that cannot use it
+ * (an upload needs progress events, so it stays on `XMLHttpRequest`).
+ *
+ * @returns {Promise<boolean>} whether a fresh access token is now stored.
+ */
+export async function refreshAccessToken() {
+  return tryRefresh(undefined);
+}
+
 /** Build a query string, dropping empty values. */
 export function query(params) {
   const search = new URLSearchParams();

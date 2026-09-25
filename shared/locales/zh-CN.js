@@ -1026,6 +1026,7 @@ export const zhCN = {
   'Queued for {count} recipients: {recipients}': '已排队发送给 {count} 位收件人：{recipients}',
   'Quote': '引用',
   'Remove': '移除',
+  'retrying…': '正在重试…',
   'Remove {name}': '移除 {name}',
   'Remove formatting': '清除格式',
   'Remove star': '移除星标',
