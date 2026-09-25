@@ -765,11 +765,14 @@ impl<'a> AcmeClient<'a> {
         let mut attempt = 0usize;
         loop {
             let nonce = self.take_nonce().await?;
-            let account = match self.kid.as_deref() {
-                Some(kid) => AccountRef::Kid(kid),
-                None => AccountRef::Jwk(&self.key.jwk()?),
+            let body = if let Some(kid) = self.kid.as_deref() {
+                sign_request(self.key, url, &nonce, &AccountRef::Kid(kid), payload)?
+            } else {
+                // Keep the JWK alive through `sign_request`; borrowing the temporary
+                // returned by `self.key.jwk()` does not extend it past this statement.
+                let jwk = self.key.jwk()?;
+                sign_request(self.key, url, &nonce, &AccountRef::Jwk(&jwk), payload)?
             };
-            let body = sign_request(self.key, url, &nonce, &account, payload)?;
             let response = self
                 .http
                 .request(
