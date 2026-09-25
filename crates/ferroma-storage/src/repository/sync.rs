@@ -179,11 +179,16 @@ impl OperationsRepository {
             return Ok(OperationOutcome::Fresh);
         }
 
-        // Lost the race (or a genuine replay): the row must be there. It can only be
-        // missing if a purge deleted it between the two statements, which is worth a
-        // retry rather than a hard failure.
+        // Lost the race (or a genuine replay): the row must be there. A key is
+        // scoped to both its owner and operation kind; never let a collision replay
+        // another user's cached response or silently suppress a different mutation.
         for _ in 0..3 {
             if let Some(existing) = self.find(operation_id).await? {
+                if existing.user_id != user_id.map(UserId::get) || existing.kind != kind {
+                    return Err(StorageError::Conflict(
+                        "operation_id is already used by another user or operation".into(),
+                    ));
+                }
                 return Ok(OperationOutcome::Replay(existing));
             }
         }

@@ -550,6 +550,46 @@ async fn a_failed_operation_is_recorded_and_replayed_as_a_failure() {
 }
 
 #[tokio::test]
+async fn an_operation_id_does_not_cross_users_or_kinds() {
+    let h = harness!();
+
+    // One user's completed operation must never answer another user's request.
+    let first: serde_json::Value = h
+        .service
+        .with_operation("op_scoped_1", h.user_id, "send", || async {
+            Ok(serde_json::json!({ "message_id": 7001 }))
+        })
+        .await
+        .unwrap();
+    assert_eq!(first["message_id"], 7001);
+
+    // No such row: the mismatch is on ownership, not on a foreign key, and the
+    // repository must refuse before any cached result can leak across accounts.
+    let other_user = UserId::new(h.user_id.get() + 100_000);
+    let err = h
+        .service
+        .with_operation::<serde_json::Value, _, _>("op_scoped_1", other_user, "send", || async {
+            Ok(serde_json::json!({ "message_id": 7002 }))
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(err, FerromaError::Conflict(_)), "{err:?}");
+
+    // The same user reusing the key for a *different* mutation must fail too —
+    // otherwise the second mutation would be swallowed as a replay.
+    let err = h
+        .service
+        .with_operation::<serde_json::Value, _, _>("op_scoped_1", h.user_id, "move", || async {
+            Ok(serde_json::json!({ "message_id": 7003 }))
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(err, FerromaError::Conflict(_)), "{err:?}");
+
+    h.cleanup().await;
+}
+
+#[tokio::test]
 async fn an_unfinished_operation_asks_the_client_to_retry() {
     let h = harness!();
     // Claim the id without completing it, as a crash mid-request would leave it.

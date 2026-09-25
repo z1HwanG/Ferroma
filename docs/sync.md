@@ -505,6 +505,13 @@ three times before giving up with
 `StorageError::Conflict("operation … was claimed but disappeared")`, which can
 only happen if a purge ran between the two statements.
 
+A replay is scoped to its owner and kind: the stored `user_id` and `kind` must
+match the retry, or `begin` refuses with
+`StorageError::Conflict("operation_id is already used by another user or
+operation")`. A cross-user collision then fails loudly instead of replaying
+another account's cached response, and the same user reusing a key for a
+different mutation fails instead of swallowing the second mutation as a replay.
+
 The full server-side sequence for a mutating request:
 
 ```text
@@ -541,10 +548,12 @@ Webmail client cannot always put a field in a body (a `DELETE` has none).
   than that has been purged (`OperationsRepository::purge_older_than`) and will be
   treated as fresh. A client retrying a month-old request is not retrying, it is
   re-issuing, and re-issuing is what the user asked for.
-* **Operations are per user.** `operations.user_id` is part of the row, so user
-  A's id cannot collide with user B's usefully — but the primary key is the id
-  string alone, so a client should namespace its ids per account, which
-  `op_<uuid4>` does.
+* **Operations are per user, and that is enforced.** `operations.user_id` and
+  `kind` are part of the claim: a replay whose owner or operation kind differs
+  is a `409 conflict`, not a replay. The primary key is still the id string
+  alone, so a client should namespace its ids per account — `op_<uuid4>` does —
+  and a collision now fails loudly instead of answering with someone else's
+  cached result.
 
 ---
 

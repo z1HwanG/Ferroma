@@ -470,6 +470,12 @@ RETURNING *
 `StorageError::Conflict("operation … was claimed but disappeared")` 放弃，
 而这只可能在两条语句之间有清理运行时发生。
 
+重放限定在同一个所有者和同一种操作：存入的 `user_id` 与 `kind` 必须与重试
+一致，否则 `begin` 以
+`StorageError::Conflict("operation_id is already used by another user or
+operation")` 拒绝。跨用户的键冲突会明确失败，而不是重放另一个账号的缓存
+响应；同一用户把一个键用于另一种变更也会失败，而不是把第二个变更当成重放吞掉。
+
 变更型请求完整的服务端序列：
 
 ```text
@@ -505,9 +511,11 @@ Webmail 客户端并不总能往请求体里放字段（`DELETE` 就没有请求
   已被清理（`OperationsRepository::purge_older_than`），会被当作全新的。
   客户端重试一个月前的请求不是重试，而是重新发起，
   而重新发起正是用户要求的。
-* **操作是按用户的。** `operations.user_id` 是行的一部分，
-  因此用户 A 的 id 无法与用户 B 的 id 有意义地冲突；但主键只是那个 id 字符串，
-  所以客户端应当按账号给自己的 id 加命名空间，`op_<uuid4>` 正是这样做的。
+* **操作是按用户的，而且是强制的。** `operations.user_id` 与 `kind` 是认领的
+  一部分：所有者或操作类型不同的重放是 `409 conflict`，而不是重放。主键仍然
+  只是那个 id 字符串，因此客户端应当按账号给自己的 id 加命名空间——
+  `op_<uuid4>` 正是这样做的；发生冲突时现在会明确失败，而不是把别人的缓存
+  结果答回去。
 
 ---
 
